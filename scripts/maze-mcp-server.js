@@ -12,6 +12,7 @@ const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
 const readline = require("node:readline");
+const GAME_WON_GEM_COUNT = 100;
 const { spawnSync } = require("node:child_process");
 const { publicObservationStatus, redactAgentStatus } = require("./codex-play");
 const {
@@ -169,7 +170,7 @@ function startMaze() {
     "--level", process.env.MAZEBENCH_LEVEL_ID || "level_HxI",
     "--view", process.env.MAZEBENCH_VIEW || "top-diagonal",
     "--yaw", String(Number(process.env.MAZEBENCH_YAW) || 0),
-    "--game-won-gem-count", String(positiveInt(process.env.MAZEBENCH_GEMS, 100)),
+    "--game-won-gem-count", String(GAME_WON_GEM_COUNT),
     "--max-actions", PRIMARY_MOVE_BUDGET == null ? "unlimited" : String(PRIMARY_MOVE_BUDGET)
   ];
   if (process.env.MAZEBENCH_MODE === "vision") {
@@ -228,13 +229,14 @@ writeJson(PAUSE_CAPABILITY_FILE, {
 
 function compactStatus(value) {
   const status = value?.status || value || {};
+  const gemCount = Math.max(0, Number(status.gem_count) || 0);
   return {
     action_count: Math.max(0, Number(status.action_count) || 0),
     current_room: String(status.current_room || ""),
     current_view: String(status.current_view || ""),
     game_lost: Boolean(status.game_lost || status.player_dead),
-    game_won: Boolean(status.game_won || status.solved),
-    gem_count: Math.max(0, Number(status.gem_count) || 0),
+    game_won: gemCount >= GAME_WON_GEM_COUNT,
+    gem_count: gemCount,
     ...(process.env.MAZEBENCH_MODE === "json" ? { player: status.player || null } : {}),
     quit: Boolean(status.quit),
     yaw: Number(status.yaw) || 0
@@ -948,10 +950,9 @@ function kimiResultIsTerminal(value, input) {
   const candidate = value?.final_observation || value;
   const status = candidate?.status && typeof candidate.status === "object" ? candidate.status : candidate;
   if (
-    status?.game_won ||
+    Math.max(0, Number(status?.gem_count) || 0) >= GAME_WON_GEM_COUNT ||
     status?.game_lost ||
     status?.quit ||
-    status?.solved ||
     status?.user_pause_requested
   ) {
     return true;
@@ -1726,9 +1727,11 @@ if (require.main === module) {
 
 module.exports = {
   callTool,
+  compactStatus,
   createRequestContext,
   createWorker,
   finishWorkerContext,
+  kimiResultIsTerminal,
   listWorkers,
   safeWorkerId,
   sessionFor,

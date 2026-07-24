@@ -38,7 +38,7 @@
 //                or "world"                                   (default 1 = 3x3)
 //   view         top | top-diagonal | diagonal | side-diagonal | side
 //   yaw          0-3 camera yaw                               (default 0)
-//   gems         unique gems required for game_won            (default 100)
+//   gems         legacy compatibility input; game_won is fixed at 100
 //   model_name   underlying LLM id (codex -m / claude --model) (agent default)
 //   reasoning    reasoning effort. codex: low|medium|high|xhigh; claude:
 //                low|medium|high|xhigh|max (model/agent default when unset)
@@ -2712,7 +2712,7 @@ async function main() {
     fast: isTruthy(raw.fast, false),
     fps: raw.fps ? positiveInt(raw.fps, undefined) : undefined,
     gameId: normalizeGameId(raw.game),
-    gems: positiveInt(raw.gems, 100),
+    gems: 100,
     height: raw.height ? positiveInt(raw.height, undefined) : undefined,
     levelId: normalizeLevelId(raw.level),
     mode,

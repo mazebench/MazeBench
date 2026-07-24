@@ -31,7 +31,8 @@ The package brings its own Node runtime for the JavaScript maze engine. Perspect
 
 The model receives the current observation and must answer with exactly one command. MazeBench applies that command to a persistent game session and returns the next observation.
 
-The default objective is to collect **100 unique gems** across the world. A rollout wins only when `game_won_gem_count` is reached; collecting one gem does not mark the world complete.
+The win condition is fixed at **100 unique gems** across the world. No harness,
+observation mode, environment variable, or replay can lower that threshold.
 
 ### Commands
 
@@ -64,7 +65,6 @@ Evaluator-only metrics saved after the rollout include:
 
 - `collected_gems`
 - `visited_level_count`
-- `current_level_solved`
 - `block_pushes`
 - `novel_block_positions`
 
@@ -207,7 +207,7 @@ Prime CLI 0.6.x passes these settings under `[env.args]` to MazeBench's hosted c
 | `level_ids` | string or list | `None` | Optional starting-room set. Accepts `HxI` or `level_HxI`. |
 | `view` | string | `top-diagonal` | Initial ASCII camera view. |
 | `yaw` | integer | `0` | Initial camera yaw. |
-| `game_won_gem_count` | integer | `100` | Unique gems required for a semantic win. |
+| `game_won_gem_count` | integer | `100` | Legacy compatibility field; normalized to the fixed global value `100`. |
 | `gem_reward_weight` | number | `1.0` | Gem reward multiplier. |
 | `room_reward_weight` | number | `0.1` | New-room reward multiplier. |
 | `push_reward_weight` | number | `0.05` | Novel-block-position reward multiplier. |

@@ -22,6 +22,7 @@ SESSION_FILE = f"{ARTIFACT_ROOT}/session.json"
 HELPER = f"{RUNTIME_ROOT}/scripts/maze-play.js"
 TELEMETRY_PREFIX = "MAZEBENCH_EVENT_V1:"
 PLAYWRIGHT_CORE_VERSION = "1.60.0"
+GAME_WON_GEM_COUNT = 100
 UNSAFE_HARNESS_MESSAGE = (
     "mazebench-agent is disabled because a coding-agent sandbox can inspect the "
     "bundled benchmark runtime and hidden state. Use the isolated mazebench taskset."
@@ -176,8 +177,8 @@ class MazeBenchAgentData(vf.TaskData):
     level_id: str = DEFAULT_LEVEL_ID
     view: str = DEFAULT_VIEW
     yaw: int = DEFAULT_YAW
-    game_won_gem_count: int = 69
-    target_gems: int = 69
+    game_won_gem_count: int = GAME_WON_GEM_COUNT
+    target_gems: int = GAME_WON_GEM_COUNT
     max_actions: int | None = 20
     observation_mode: str = "text"
     omniscient: bool = False
@@ -202,7 +203,6 @@ def _slim_status(value: Any) -> dict[str, Any]:
         "observation_mode",
         "player",
         "player_dead",
-        "solved",
         "visited_levels",
         "yaw",
     )
@@ -300,7 +300,7 @@ class MazeBenchAgentTask(vf.Task[MazeBenchAgentData]):
         trace.info["maze_status"] = status
         trace.info["maze_replay"] = {
             "game_id": "maze",
-            "game_won_gem_count": self.data.game_won_gem_count,
+            "game_won_gem_count": GAME_WON_GEM_COUNT,
             "initial": initial,
             "start_level_id": self.data.level_id,
             "target_gems": self.data.target_gems,
@@ -332,7 +332,7 @@ class MazeBenchAgentTask(vf.Task[MazeBenchAgentData]):
 class MazeBenchAgentConfig(vf.TasksetConfig):
     num_examples: int = 1
     start_level_id: str = DEFAULT_LEVEL_ID
-    game_won_gem_count: int = 69
+    game_won_gem_count: int = GAME_WON_GEM_COUNT
     target_gems: int | None = None
     max_actions: int | None = 20
     observation_mode: str = "text"
@@ -352,7 +352,7 @@ class MazeBenchAgentTaskset(
         raise RuntimeError(UNSAFE_HARNESS_MESSAGE)
         tasks: list[MazeBenchAgentTask] = []
         count = max(1, int(self.config.num_examples))
-        target = int(self.config.target_gems or self.config.game_won_gem_count)
+        target = int(self.config.target_gems or GAME_WON_GEM_COUNT)
         for index in range(count):
             data = MazeBenchAgentData(
                 idx=index,
@@ -366,7 +366,7 @@ class MazeBenchAgentTaskset(
                 level_id=self.config.start_level_id,
                 view=self.config.view,
                 yaw=int(self.config.yaw),
-                game_won_gem_count=max(1, int(self.config.game_won_gem_count)),
+                game_won_gem_count=GAME_WON_GEM_COUNT,
                 target_gems=max(1, target),
                 max_actions=(
                     None

@@ -78,7 +78,6 @@ DEFAULT_VISION_WIDTH = 512
 # 3x3 benchmark window) or "world" for the whole map.
 DEFAULT_VISION_VIEW = "1"
 DEFAULT_GAME_WON_GEM_COUNT = 100
-GAME_CONFIG_RELATIVE_PATH = Path("games") / "maze" / "config.json"
 DEFAULT_GEM_REWARD_WEIGHT = env_float("MAZEBENCH_GEM_REWARD_WEIGHT", 1.0)
 DEFAULT_ROOM_REWARD_WEIGHT = env_float("MAZEBENCH_ROOM_REWARD_WEIGHT", 0.1)
 DEFAULT_PUSH_REWARD_WEIGHT = env_float("MAZEBENCH_PUSH_REWARD_WEIGHT", 0.05)
@@ -123,31 +122,7 @@ def write_live_actions(actions: list[dict[str, Any]]) -> None:
 
 
 def load_game_won_gem_count() -> int:
-    """Read the shared win threshold from games/maze/config.json."""
-    configured = env_int("MAZEBENCH_GAME_WON_GEM_COUNT", 0, minimum=1)
-    if configured > 0:
-        return configured
-
-    candidates: list[Path] = []
-
-    env_root = os.environ.get(REPO_ROOT_ENV)
-    if env_root:
-        candidates.append(Path(env_root).expanduser())
-
-    candidates.append(Path.cwd())
-    candidates.append(Path(__file__).resolve().parent / "runtime")
-    candidates.extend(Path(__file__).resolve().parents)
-
-    for candidate in candidates:
-        config_path = candidate / GAME_CONFIG_RELATIVE_PATH
-        try:
-            config = json.loads(config_path.read_text(encoding="utf8"))
-            count = int(config.get("game_won_gem_count"))
-        except (OSError, ValueError, TypeError, AttributeError):
-            continue
-        if count > 0:
-            return count
-
+    """Return the fixed global win threshold used by every harness and mode."""
     return DEFAULT_GAME_WON_GEM_COUNT
 
 
@@ -337,10 +312,8 @@ def target_text_for_row(row: dict[str, Any]) -> str:
             f"{'' if target_gems == 1 else 's'}."
         )
 
-    game_won_gem_count = int(row.get("game_won_gem_count") or GAME_WON_GEM_COUNT)
     return (
-        f"Collect {game_won_gem_count} unique gem"
-        f"{'' if game_won_gem_count == 1 else 's'} to win."
+        f"Collect {GAME_WON_GEM_COUNT} unique gems to win."
     )
 
 
@@ -706,7 +679,7 @@ def make_row(
     row = {
         "example_id": example_id,
         "game_id": DEFAULT_GAME_ID,
-        "game_won_gem_count": int(game_won_gem_count),
+        "game_won_gem_count": GAME_WON_GEM_COUNT,
         "level_id": str(payload["current_room"]),
         "node_bin": node_bin,
         "observation": str(payload["level"]),
@@ -748,7 +721,7 @@ def build_rows(
         rows.append(
             make_row(
                 example_id=index,
-                game_won_gem_count=game_won_gem_count,
+                game_won_gem_count=GAME_WON_GEM_COUNT,
                 level_id=level_id,
                 node_bin=node_bin,
                 repo_root=repo_root,
@@ -784,7 +757,7 @@ class MazeSession:
                 node_bin,
                 str(self.repo_root / "scripts" / "maze-bridge.js"),
                 "--game-won-gem-count",
-                str(int(game_won_gem_count)),
+                str(GAME_WON_GEM_COUNT),
                 "--level",
                 normalize_level_id(level_id),
                 "--view",
@@ -1194,7 +1167,7 @@ def prime_resume_prompt(checkpoint: dict[str, Any]) -> vf.Messages:
         )
     target_text = target_text_for_row(
         {
-            "game_won_gem_count": int(task.get("game_won_gem_count") or GAME_WON_GEM_COUNT),
+            "game_won_gem_count": GAME_WON_GEM_COUNT,
             "target_gems": int(task.get("target_gems") or 0),
         }
     )
@@ -1257,7 +1230,6 @@ def slim_status(status: dict[str, Any] | None) -> dict[str, Any]:
         "room_changed",
         "push_count",
         "pushes_this_action",
-        "solved",
         "visited_levels",
         "yaw",
     )
@@ -1441,7 +1413,7 @@ class MazeBenchUser(vf.User[vf.UserConfig, MazeBenchState]):
         self.vision_session = None
         self.vision_session_failed = False
         self.session = MazeSession(
-            game_won_gem_count=task.game_won_gem_count,
+            game_won_gem_count=GAME_WON_GEM_COUNT,
             level_id=task.level_id,
             observation_mode=task.observation_mode,
             omniscient=task.omniscient,
@@ -1634,7 +1606,7 @@ class MazeBenchUser(vf.User[vf.UserConfig, MazeBenchState]):
         self.state.game_won = False
         self.state.maze_replay = {
             "game_id": task.game_id,
-            "game_won_gem_count": int(task.game_won_gem_count),
+            "game_won_gem_count": GAME_WON_GEM_COUNT,
             "initial": slim_status(status),
             "start_level_id": task.level_id,
             "target_gems": int(task.target_gems),
@@ -1643,12 +1615,8 @@ class MazeBenchUser(vf.User[vf.UserConfig, MazeBenchState]):
         }
 
     def update_terminal_flags(self, status: dict[str, Any]) -> None:
-        task = self.task
         self.state.game_lost = bool(status.get("game_lost") or status.get("quit"))
-        self.state.game_won = bool(
-            status.get("game_won")
-            or int(status.get("gem_count") or 0) >= int(task.game_won_gem_count)
-        )
+        self.state.game_won = int(status.get("gem_count") or 0) >= GAME_WON_GEM_COUNT
 
     def record_scorecard(self, status: dict[str, Any]) -> None:
         scorecard = status.get("scorecard")
@@ -1844,11 +1812,6 @@ class MazeBenchTaskBehavior:
         return float(status.get("gem_count") or 0)
 
     @vf.metric
-    async def current_level_solved(self, trace: vf.Trace) -> float:
-        status = trace.state.maze_status or {}
-        return 1.0 if status.get("solved") else 0.0
-
-    @vf.metric
     async def visited_level_count(self, trace: vf.Trace) -> float:
         status = trace.state.maze_status or {}
         return float(len(status.get("visited_levels") or []))
@@ -1880,7 +1843,7 @@ class MazeBenchTaskset(vf.Taskset[MazeBenchTask, MazeBenchConfig]):
         )
         rows = build_rows(
             count=self.config.num_examples,
-            game_won_gem_count=int(self.config.game_won_gem_count),
+            game_won_gem_count=GAME_WON_GEM_COUNT,
             level_ids=normalized_level_ids,
             node_bin=self.config.node_bin,
             repo_root=resolved_repo_root,
@@ -1910,7 +1873,7 @@ class MazeBenchTaskset(vf.Taskset[MazeBenchTask, MazeBenchConfig]):
             if checkpoint:
                 expected = {
                     "level_id": str(row["level_id"]),
-                    "game_won_gem_count": int(row["game_won_gem_count"]),
+                    "game_won_gem_count": GAME_WON_GEM_COUNT,
                     "observation_mode": self.config.observation_mode,
                     "omniscient": bool(self.config.omniscient),
                     "hide_names": bool(self.config.hide_names),
@@ -1942,7 +1905,7 @@ class MazeBenchTaskset(vf.Taskset[MazeBenchTask, MazeBenchConfig]):
                 auto_quit_mode=self.config.auto_quit_mode,
                 auto_quit_window=int(self.config.auto_quit_window),
                 game_id=str(row["game_id"]),
-                game_won_gem_count=int(row["game_won_gem_count"]),
+                game_won_gem_count=GAME_WON_GEM_COUNT,
                 level_id=str(row["level_id"]),
                 max_actions=(
                     None

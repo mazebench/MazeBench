@@ -13,6 +13,36 @@ const codexAvailable = spawnSync("codex", ["--version"], { encoding: "utf8" }).s
 let httpChild = null;
 
 try {
+  const terminalProbe = spawnSync(
+    process.execPath,
+    [
+      "-e",
+      `const {compactStatus,kimiResultIsTerminal}=require(${JSON.stringify(path.join(rootDir, "scripts", "maze-mcp-server.js"))});` +
+        `process.stdout.write(JSON.stringify({` +
+          `compactBelow:compactStatus({gem_count:2,game_won:true,solved:true}).game_won,` +
+          `compactWon:compactStatus({gem_count:100}).game_won,` +
+          `kimiBelow:kimiResultIsTerminal({final_observation:{gem_count:2,game_won:true,solved:true}},{clone_id:"test-worker"}),` +
+          `kimiWon:kimiResultIsTerminal({final_observation:{gem_count:100}},{clone_id:"test-worker"})` +
+        `}));`
+    ],
+    {
+      cwd: rootDir,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        MAZEBENCH_RUN_DIR: runDir,
+        MAZEBENCH_SESSION_FILE: path.join(runDir, "terminal-probe-session.json")
+      }
+    }
+  );
+  assert.equal(terminalProbe.status, 0, terminalProbe.stderr);
+  assert.deepEqual(JSON.parse(terminalProbe.stdout), {
+    compactBelow: false,
+    compactWon: true,
+    kimiBelow: false,
+    kimiWon: true
+  });
+
   const seededFramePath = path.join(runDir, "frames", "frame-000.png");
   fs.mkdirSync(path.dirname(seededFramePath), { recursive: true });
   fs.writeFileSync(seededFramePath, Buffer.from("89504e470d0a1a0a", "hex"));

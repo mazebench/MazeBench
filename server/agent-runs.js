@@ -38,6 +38,7 @@ const {
   normalizeAutoQuitConfig
 } = require("../shared/auto-quit");
 const { BOARD_STATE_HASH_VERSION } = require("../shared/board-state");
+const GAME_WON_GEM_COUNT = 100;
 const {
   CHECKPOINT_FILE: PRIME_RESUME_CHECKPOINT_FILE,
   writePrimeResumeCheckpoint
@@ -1620,7 +1621,11 @@ function createAgentRunService({
     if (unlimited || quitBlocked) {
       const session = loadJson(path.join(runDirFor(runId), "session.json"), null);
       const status = session?.lastStatus || session?.actions?.at?.(-1)?.status || null;
-      if (status?.game_won || status?.game_lost || status?.quit) return null;
+      if (
+        Math.max(0, Number(status?.gem_count) || 0) >= GAME_WON_GEM_COUNT ||
+        status?.game_lost ||
+        status?.quit
+      ) return null;
     }
 
     const conversationId = readConversationId(runId);
@@ -1880,13 +1885,12 @@ function createAgentRunService({
         command_text: record.command_text,
         moved: record.status?.moved,
         gem_count: record.status?.gem_count,
-        game_won: Boolean(record.status?.game_won),
+        game_won: Math.max(0, Number(record.status?.gem_count) || 0) >= GAME_WON_GEM_COUNT,
         game_lost: Boolean(record.status?.game_lost),
         quit: Boolean(record.status?.quit),
         current_room: record.status?.current_room,
         player: record.status?.player || null,
         player_dead: Boolean(record.status?.player_dead),
-        solved: Boolean(record.status?.solved),
         valid: record.valid !== false && !record.error,
         error: record.error || null,
         level: record.status?.level || null,
@@ -1952,7 +1956,7 @@ function createAgentRunService({
       "--level",
       String(meta.level_id || "level_HxI"),
       "--game-won-gem-count",
-      String(Math.max(1, Number(meta.gem_total) || 69))
+      String(GAME_WON_GEM_COUNT)
     ];
     if (meta.hide_names) {
       argv.push("--hide-names", "--hide-names-seed", String(meta.hide_names_seed || "1"));
@@ -1978,7 +1982,6 @@ function createAgentRunService({
       level: payload.level || "",
       player: payload.player || null,
       player_dead: Boolean(payload.player_dead),
-      solved: Boolean(payload.solved),
       visited_levels: payload.visited_levels || [payload.current_room || meta.level_id || "level_HxI"],
       yaw: Number(payload.yaw) || 0
     };
@@ -2035,7 +2038,10 @@ function createAgentRunService({
     if (!config.enabled) return null;
     const actions = readActions(runId);
     const last = actions[actions.length - 1];
-    if (last?.game_won || last?.quit) return null;
+    if (
+      Math.max(0, Number(last?.gem_count) || 0) >= GAME_WON_GEM_COUNT ||
+      last?.quit
+    ) return null;
     let initialHash = readInitialBoardStateHash(runId);
     let evaluationActions = actions;
     const legacyBoardStateHashes = readInitialBoardStateHashVersion(runId) !== BOARD_STATE_HASH_VERSION ||
@@ -2480,7 +2486,6 @@ function createAgentRunService({
       start_room_is_default: Boolean(defaultLevelId && meta.level_id === defaultLevelId),
       current_room: last ? last.current_room : meta.level_id,
       complete,
-      solved: Boolean(last && last.solved),
       has_video: hasVideo,
       video_status: videoStatus,
       has_reasoning: fs.existsSync(path.join(runDir, "reasoning.json")),
@@ -3817,7 +3822,7 @@ function createAgentRunService({
         }
         const terminal = Boolean(
           metadata.finished_at ||
-          status.game_won ||
+          Math.max(0, Number(status.gem_count) || 0) >= GAME_WON_GEM_COUNT ||
           status.game_lost ||
           status.quit ||
           fs.existsSync(path.join(workerDir, "scorecard.json"))
@@ -3918,7 +3923,7 @@ function createAgentRunService({
       "--level", String(launchParams.level_id || summary.level_id || "level_HxI"),
       "--view", String(launchParams.view || summary.view || "top-diagonal"),
       "--yaw", String(Number(launchParams.yaw ?? summary.yaw) || 0),
-      "--game-won-gem-count", String(Math.max(1, Number(summary.gem_total) || 100)),
+      "--game-won-gem-count", String(GAME_WON_GEM_COUNT),
       "--observation-mode", "text",
       "--hide-names-seed", seed || "1"
     ];
@@ -3985,10 +3990,7 @@ function createAgentRunService({
       "--level", String(launchParams.level_id || summary.level_id || "level_HxI"),
       "--view", String(launchParams.view || summary.view || "top-diagonal"),
       "--yaw", String(Number(launchParams.yaw ?? summary.yaw) || 0),
-      "--game-won-gem-count", String(Math.max(
-        1,
-        Number(launchParams.game_won_gem_count || summary.game_won_gem_count || summary.gem_total) || 100
-      )),
+      "--game-won-gem-count", String(GAME_WON_GEM_COUNT),
       "--observation-mode", "text"
     ];
     const messages = [{ command: "observe" }, ...replay, { command: "close" }];
@@ -4083,7 +4085,7 @@ function createAgentRunService({
       "--level", String(session.levelId || summary.level_id || "level_HxI"),
       "--view", String(session.view || summary.view || "top-diagonal"),
       "--yaw", String(Number(session.yaw) || 0),
-      "--game-won-gem-count", String(Math.max(1, Number(session.gameWonGemCount) || 100)),
+      "--game-won-gem-count", String(GAME_WON_GEM_COUNT),
       "--observation-mode", "json",
       "--hide-names-seed", seed
     ];
@@ -4149,7 +4151,7 @@ function createAgentRunService({
       const context = createTerminalContext(loadMazeEngine(), {
         gameId,
         levelId,
-        gameWonGemCount: Math.max(1, Number(summary.gems) || 100),
+        gameWonGemCount: GAME_WON_GEM_COUNT,
         hideNames,
         hideNamesSeed: seed,
         pitch,
@@ -4918,10 +4920,7 @@ function createAgentRunService({
 
     const unlimited = params.unlimited === true || params.unlimited === "true";
     const moves = unlimited ? null : Math.max(1, Math.min(MAX_LOCAL_MOVE_BUDGET, Number(params.moves) || 20));
-    const gems =
-      game.id === "maze"
-        ? Math.max(1, Math.min(1000, Number(params.gems) || 100))
-        : Math.max(1, buildWorlds.countWorldGems(game) || 1);
+    const gems = GAME_WON_GEM_COUNT;
     const view = VIEW_NAMES.includes(String(params.view)) ? String(params.view) : "top-diagonal";
     const wantContainer = !(params.container === false || params.container === "false");
     const wantTools = params.tools === true || params.tools === "true";
@@ -5131,7 +5130,7 @@ function createAgentRunService({
       "--level",
       levelId,
       "--game-won-gem-count",
-      String(gemTotal)
+      String(GAME_WON_GEM_COUNT)
     ];
 
     if (unlimited) {

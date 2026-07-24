@@ -147,6 +147,7 @@ print("chat blank retry ready")`
   assert.equal(options.unlimited, false);
   assert.equal(options.allowQuit, false);
   assert.equal(options.video, false);
+  assert.equal(options.gameWonGemCount, 100);
 
   const checkpointPath = path.join(outDir, "prime-resume.json");
   fs.writeFileSync(checkpointPath, JSON.stringify({ action_count: 12 }));
@@ -181,7 +182,7 @@ print("chat blank retry ready")`
     num_train_examples: 1,
     num_eval_examples: 1,
     start_level_id: "level_HxI",
-    game_won_gem_count: 69,
+    game_won_gem_count: 100,
     max_actions: 750,
     allow_quit: false,
     auto_quit: false,

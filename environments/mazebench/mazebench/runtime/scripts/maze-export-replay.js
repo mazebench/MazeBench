@@ -442,7 +442,7 @@ function rowFromSession(session) {
     maze_scorecard: scorecard,
     maze_replay: {
       game_id: session.gameId || "maze",
-      game_won_gem_count: Number(session.gameWonGemCount) || 100,
+      game_won_gem_count: 100,
       start_level_id: session.levelId || "level_HxI",
       target_gems: 0,
       initial: {
@@ -675,7 +675,7 @@ function rowFromActionLog(actionRecords, runMeta = {}, initialStatus = null) {
     maze_scorecard: {},
     maze_replay: {
       game_id: runMeta.game_id || "maze",
-      game_won_gem_count: Number(runMeta.gem_total) || 100,
+      game_won_gem_count: 100,
       start_level_id: runMeta.level_id || "level_HxI",
       target_gems: 0,
       initial: {
@@ -1051,8 +1051,7 @@ function extractMazeOptions(row, metadata) {
   const info = row.info?.mazebench || row.info || {};
   const task = row.task || {};
   const replay = row.maze_replay || row.info?.maze_replay || {};
-  const gameWonGemCount =
-    Number(replay.game_won_gem_count || info.game_won_gem_count || task.game_won_gem_count || 100) || 100;
+  const gameWonGemCount = 100;
   const view = String(info.view || task.view || replay.initial?.view || "top-diagonal");
   const yaw = Number(info.yaw ?? task.yaw ?? replay.initial?.yaw ?? 0);
 

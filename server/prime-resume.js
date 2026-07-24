@@ -152,7 +152,7 @@ function buildPrimeResumeCheckpoint(runDir, { initialStatus = null, sourceRunId 
       auto_quit_mode: task.auto_quit_mode === "rolling" ? "rolling" : "cumulative",
       auto_quit_window: Math.max(1, Math.floor(Number(task.auto_quit_window) || 100)),
       game_id: String(task.game_id || "maze"),
-      game_won_gem_count: Math.max(1, Math.floor(Number(task.game_won_gem_count) || 69)),
+      game_won_gem_count: 100,
       level_id: String(task.level_id || "level_HxI"),
       observation_mode: ["json", "vision"].includes(task.observation_mode) ? task.observation_mode : "ascii",
       omniscient: Boolean(task.omniscient),

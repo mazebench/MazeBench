@@ -21,6 +21,7 @@ from mcp.types import CallToolResult, ImageContent, TextContent
 from pydantic import Field
 
 from mazebench.mazebench import (
+    GAME_WON_GEM_COUNT,
     MazeBenchConfig,
     MazeBenchState,
     MazeBenchTaskBehavior,
@@ -84,15 +85,16 @@ def _public_observation(status: dict[str, Any], mode: str) -> dict[str, Any]:
     """Return only the observation fields intended for the model."""
 
     observation_mode = "ascii" if mode in {"ascii", "text"} else mode
+    gem_count = max(0, int(status.get("gem_count") or 0))
     common: dict[str, Any] = {
         "observation_mode": observation_mode,
         "current_room": str(status.get("current_room") or ""),
         "current_view": str(status.get("current_view") or ""),
         "yaw": int(status.get("yaw") or 0),
-        "gem_count": max(0, int(status.get("gem_count") or 0)),
+        "gem_count": gem_count,
         "visited_levels": [str(level) for level in status.get("visited_levels") or []],
         "player_dead": bool(status.get("player_dead")),
-        "game_won": bool(status.get("game_won")),
+        "game_won": gem_count >= GAME_WON_GEM_COUNT,
         "game_lost": bool(status.get("game_lost")),
     }
     if observation_mode == "json":
@@ -165,7 +167,7 @@ that object directly rather than transcribing it into a different format."""
         mode_policy = ""
     objective = target_text_for_row(
         {
-            "game_won_gem_count": task.game_won_gem_count,
+            "game_won_gem_count": GAME_WON_GEM_COUNT,
             "target_gems": task.target_gems,
         }
     )
@@ -253,7 +255,7 @@ class MazeBenchToolset(vf.Toolset[MazeBenchToolsetConfig]):
         self._status_error = ""
         self._vision_session: VisionSession | None = None
         self._session = MazeSession(
-            game_won_gem_count=task.game_won_gem_count,
+            game_won_gem_count=GAME_WON_GEM_COUNT,
             level_id=task.level_id,
             observation_mode=task.observation_mode,
             omniscient=task.omniscient,
@@ -350,7 +352,7 @@ class MazeBenchToolset(vf.Toolset[MazeBenchToolsetConfig]):
         return bool(
             self._closed
             or status.get("game_lost")
-            or status.get("game_won")
+            or int(status.get("gem_count") or 0) >= GAME_WON_GEM_COUNT
             or status.get("quit")
             or self._auto_quit
             or (task.max_actions is not None and len(self._actions) >= int(task.max_actions))
@@ -360,7 +362,7 @@ class MazeBenchToolset(vf.Toolset[MazeBenchToolsetConfig]):
         status = self._status or {}
         replay = {
             "game_id": self.task.game_id,
-            "game_won_gem_count": int(self.task.game_won_gem_count),
+            "game_won_gem_count": GAME_WON_GEM_COUNT,
             "initial": slim_status(self._initial),
             "start_level_id": self.task.level_id,
             "target_gems": int(self.task.target_gems),
@@ -369,10 +371,7 @@ class MazeBenchToolset(vf.Toolset[MazeBenchToolsetConfig]):
         }
         state = MazeBenchState(
             game_lost=bool(status.get("game_lost") or status.get("quit")),
-            game_won=bool(
-                status.get("game_won")
-                or int(status.get("gem_count") or 0) >= int(self.task.game_won_gem_count)
-            ),
+            game_won=int(status.get("gem_count") or 0) >= GAME_WON_GEM_COUNT,
             maze_auto_quit=self._auto_quit,
             maze_actions=self._actions,
             maze_initial_board_state_hash=self._initial_hash,

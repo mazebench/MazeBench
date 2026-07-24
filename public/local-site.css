@@ -4866,13 +4866,6 @@ button.run-tools__file:focus-visible {
   border-color: rgba(255, 91, 117, 0.32);
 }
 
-.agent-feed__row.is-solved {
-  background:
-    linear-gradient(120deg, rgba(101, 243, 212, 0.06), transparent 30%),
-    rgba(10, 14, 34, 0.84);
-  border-color: rgba(101, 243, 212, 0.34);
-}
-
 .agent-feed__head {
   align-items: flex-start;
   display: flex;
@@ -5010,12 +5003,6 @@ button.run-tools__file:focus-visible {
   background: rgba(255, 91, 117, 0.1);
   border-color: rgba(255, 91, 117, 0.28);
   color: #ff9cad;
-}
-
-.agent-feed__flag.is-solved {
-  background: rgba(101, 243, 212, 0.1);
-  border-color: rgba(101, 243, 212, 0.28);
-  color: #7ff7df;
 }
 
 .agent-feed__agents svg,

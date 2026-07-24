@@ -49,7 +49,7 @@ async def verify_boundary() -> None:
             config = MazeBenchToolConfig(
                 num_examples=1,
                 start_level_id="level_HxI",
-                game_won_gem_count=69,
+                game_won_gem_count=100,
                 max_actions=1,
             )
             taskset = MazeBenchToolTaskset(config=config)

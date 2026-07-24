@@ -17,9 +17,12 @@ const {
   rowFromActionLog
 } = require(path.join(ROOT_DIR, "scripts", "maze-export-replay.js"));
 const {
+  publicObservationStatus,
   redactAgentStatus,
   redactVisionStatus,
-  requiredActionsRemaining
+  requiredActionsRemaining,
+  sequenceTerminalReason,
+  terminalStatus
 } = require(codexPlayScript);
 const { recordNoMoveIfIdle } = require(path.join(ROOT_DIR, "scripts", "maze-agent-local.js"));
 const { evaluateAutoQuit } = require(path.join(ROOT_DIR, "shared", "auto-quit.js"));
@@ -38,6 +41,7 @@ const {
   GAME_WON_GEM_COUNT,
   isGameWon,
   loadMazeEngine,
+  normalizeGameWonGemCount,
   replayActionCommands,
   renderScreen,
   resetLevel,
@@ -47,6 +51,23 @@ const {
   undoMove
 } = require(terminalScript);
 const mazeEngine = loadMazeEngine();
+
+assert.equal(normalizeGameWonGemCount(1), 100, "legacy threshold overrides cannot lower the global target");
+assert.equal(normalizeGameWonGemCount(999), 100, "legacy threshold overrides cannot raise the global target");
+
+for (const mode of ["text", "json", "vision"]) {
+  const belowTarget = publicObservationStatus(
+    { gem_count: 2, game_won: true, solved: true },
+    { mode }
+  );
+  assert.equal(belowTarget.game_won, false, `${mode} mode derives game_won from the 100-gem target`);
+  assert.equal(Object.prototype.hasOwnProperty.call(belowTarget, "solved"), false);
+}
+assert.equal(publicObservationStatus({ gem_count: 100 }, { mode: "text" }).game_won, true);
+assert.equal(terminalStatus({ gem_count: 2, game_won: true, solved: true }), false);
+assert.equal(sequenceTerminalReason({ gem_count: 2, game_won: true, solved: true }), "");
+assert.equal(terminalStatus({ gem_count: 100 }), true);
+assert.equal(sequenceTerminalReason({ gem_count: 100 }), "game_won");
 
 {
   const literal = asciiGlyphPalette();
@@ -208,7 +229,7 @@ assert.deepEqual(
     { level: "AFTER-ROTATE", current_view: "top", yaw: 2 }
   ]);
   assert.equal(row.maze_replay.start_level_id, "level_AB");
-  assert.equal(row.maze_replay.game_won_gem_count, 70);
+  assert.equal(row.maze_replay.game_won_gem_count, 100);
   assert.deepEqual(row.maze_replay.initial, { view: "diagonal", yaw: 0 });
 
   const rejectedGoto = rowFromActionLog(
@@ -274,8 +295,7 @@ assert.deepEqual(
   const config = JSON.parse(
     fs.readFileSync(path.join(ROOT_DIR, "games", "maze", "config.json"), "utf8")
   );
-  assert.equal(Number.isInteger(config.game_won_gem_count), true);
-  assert.equal(config.game_won_gem_count > 0, true);
+  assert.equal(config.game_won_gem_count, 100);
   assert.equal(GAME_WON_GEM_COUNT, config.game_won_gem_count);
 }
 
@@ -1354,7 +1374,11 @@ function syntheticFloor(width, height) {
 
   context.options.gameWonGemCount = 1;
   assert.equal(isGameWon(context), false);
-  context.stats.collectedGemIds.add("fake-gem-id");
+  for (let index = 0; index < 99; index += 1) {
+    context.stats.collectedGemIds.add(`fake-gem-id-${index}`);
+  }
+  assert.equal(isGameWon(context), false);
+  context.stats.collectedGemIds.add("fake-gem-id-99");
   assert.equal(isGameWon(context), true);
   const wonScorecard = JSON.parse(buildScorecard(context, 61000)).scorecard;
   assert.deepEqual(wonScorecard.result, {
@@ -1364,7 +1388,7 @@ function syntheticFloor(width, height) {
 
   // Regression: overshooting the threshold (e.g. two gems collected by one
   // action) must still count as a win.
-  context.stats.collectedGemIds.add("fake-gem-id-2");
+  context.stats.collectedGemIds.add("fake-gem-id-100");
   assert.equal(isGameWon(context), true);
   const overshotScorecard = JSON.parse(buildScorecard(context, 61000)).scorecard;
   assert.equal(overshotScorecard.result.won, true);
@@ -2374,7 +2398,7 @@ function syntheticFloor(width, height) {
 }
 
 {
-  const [firstMove, secondMove, thirdMove, won] = runBridge(
+  const [firstMove, secondMove, thirdMove, collectedOne] = runBridge(
     [
       { command: "move", direction: "up" },
       { command: "move", direction: "right" },
@@ -2387,13 +2411,13 @@ function syntheticFloor(width, height) {
   assert.equal(firstMove.game_won, undefined);
   assert.equal(secondMove.game_won, undefined);
   assert.equal(thirdMove.game_won, undefined);
-  assert.equal(won.gem_count, 1);
-  assert.equal(won.game_won, true);
-  assert.equal(won.current_room, "level_IxC");
-  assert.deepEqual(won.scorecard.result, {
-    percent: 100,
-    won: true
-  });
+  assert.equal(collectedOne.gem_count, 1);
+  assert.equal(collectedOne.game_won, undefined);
+  assert.equal(collectedOne.scorecard, undefined);
+  assert.equal(collectedOne.current_room, "level_IxC");
+  for (const response of [firstMove, secondMove, thirdMove, collectedOne]) {
+    assert.equal(Object.prototype.hasOwnProperty.call(response, "solved"), false);
+  }
 }
 
 {

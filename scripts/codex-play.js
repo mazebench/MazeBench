@@ -12,6 +12,7 @@ const {
 } = require("./playwright-process");
 
 const directions = new Set(["up", "down", "left", "right"]);
+const GAME_WON_GEM_COUNT = 100;
 const VISION_TEXT_BOARD_KEYS = new Set([
   "_render_state",
   "ascii",
@@ -190,7 +191,7 @@ function publicObservationStatus(value, { mode = "text" } = {}) {
       ? source.visited_levels.map(String)
       : [],
     player_dead: source?.player_dead === true,
-    game_won: source?.game_won === true,
+    game_won: Math.max(0, Number(source?.gem_count) || 0) >= GAME_WON_GEM_COUNT,
     game_lost: source?.game_lost === true
   };
 
@@ -237,11 +238,10 @@ function requiredActionsRemaining(session) {
 
 function terminalStatus(status) {
   return Boolean(
-    status?.game_won ||
+    Math.max(0, Number(status?.gem_count) || 0) >= GAME_WON_GEM_COUNT ||
     status?.game_lost ||
     status?.player_dead ||
-    status?.quit ||
-    status?.solved
+    status?.quit
   );
 }
 
@@ -258,7 +258,7 @@ start options:
   --level <id>              maze world level id (default level_HxI)
   --view <name>             top | top-diagonal | diagonal | side-diagonal | side
   --yaw <0-3>               camera yaw
-  --game-won-gem-count <n>  unique gems for game_won (default 100)
+  --game-won-gem-count <n>  legacy input; game_won is fixed at 100 unique gems
   --max-actions <n|unlimited> hard action budget enforced by the helper
   --vision                  render a PNG each turn; output includes frame_image
                             (path) and drops the ASCII board
@@ -280,7 +280,7 @@ function bridgeArgs(session) {
     "--level", normalizeLevelId(session.levelId),
     "--view", session.view || "top-diagonal",
     "--yaw", String(normalizeYaw(session.yaw)),
-    "--game-won-gem-count", String(positiveInt(session.gameWonGemCount, 100))
+    "--game-won-gem-count", String(GAME_WON_GEM_COUNT)
   ];
 
   if (session.observationMode === "json") {
@@ -796,7 +796,7 @@ function applySequencePauseRequest(stateFile, actionCount, response) {
 }
 
 function sequenceTerminalReason(status) {
-  if (status?.game_won || status?.solved) return "game_won";
+  if (Math.max(0, Number(status?.gem_count) || 0) >= GAME_WON_GEM_COUNT) return "game_won";
   if (status?.game_lost || status?.player_dead) return "player_dead";
   if (status?.quit) return "quit";
   return "";
@@ -925,7 +925,7 @@ async function main() {
       allowQuit: options.allowQuit !== false,
       createdAt: new Date().toISOString(),
       gameId: String(options.game || "maze").trim() || "maze",
-      gameWonGemCount: positiveInt(options.gameWonGemCount, 100),
+      gameWonGemCount: GAME_WON_GEM_COUNT,
       maxActions: normalizedMaxActions(options.maxActions, 100),
       levelId: normalizeLevelId(options.level),
       nodeBin: options.nodeBin || process.execPath,
@@ -1074,5 +1074,7 @@ module.exports = {
   publicObservationStatus,
   redactAgentStatus,
   redactVisionStatus,
-  requiredActionsRemaining
+  requiredActionsRemaining,
+  sequenceTerminalReason,
+  terminalStatus
 };

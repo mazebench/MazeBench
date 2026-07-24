@@ -42,6 +42,7 @@ const VISION_RUNTIME_IMAGE = "mcr.microsoft.com/playwright:v1.60.0-noble";
 const PRIME_REASONING_LEVELS = new Set(["low", "medium", "high"]);
 const PRIME_PROVIDER_RETRY_ATTEMPTS = 3;
 const PRIME_PROVIDER_RETRY_BASE_MS = 30_000;
+const GAME_WON_GEM_COUNT = 100;
 
 function harnessDefinition(harnessId) {
   return harnessId === "none" ? null : PRIME_HARNESSES.get(harnessId);
@@ -67,7 +68,7 @@ function parseArgs(argv) {
   const opts = {
     envDir: "",
     environment: "mazebench/mazebench",
-    gameWonGemCount: 69,
+    gameWonGemCount: GAME_WON_GEM_COUNT,
     harness: "none",
     harnessConfig: {},
     hosted: false,
@@ -122,7 +123,10 @@ function parseArgs(argv) {
     else if (arg === "--model") opts.model = next();
     else if (arg === "--run-id") opts.runId = String(next() || "");
     else if (arg === "--level") opts.levelId = String(next() || opts.levelId);
-    else if (arg === "--game-won-gem-count") opts.gameWonGemCount = Math.max(1, Number(next()) || 69);
+    else if (arg === "--game-won-gem-count") {
+      next();
+      opts.gameWonGemCount = GAME_WON_GEM_COUNT;
+    }
     else if (arg === "--max-turns") opts.maxTurns = positiveTurnBudget(next());
     else if (arg === "--unlimited") opts.unlimited = true;
     else if (arg === "--hosted") opts.hosted = true;
@@ -270,7 +274,6 @@ function writeInitialStatus(opts) {
       level: payload.level || "",
       player: payload.player || null,
       player_dead: Boolean(payload.player_dead),
-      solved: Boolean(payload.solved),
       visited_levels: payload.visited_levels || [payload.current_room || opts.levelId],
       yaw: Number(payload.yaw) || 0
     });

@@ -121,7 +121,7 @@ function parseArgs(argv) {
 Options:
   --level <id>       Maze world level id, for example level_HxI.
   --game-won-gem-count <n>
-                     Unique gems required for the game_won condition.
+                     Legacy input; game_won is fixed at 100 unique gems.
   --view <name>      top, top-diagonal, diagonal, side-diagonal, or side.
   --pitch <0-4>      Camera pitch; 0 is top-down, 4 is side.
   --yaw <0-3>        Camera yaw rotation.
@@ -464,7 +464,6 @@ function sessionSnapshot(session, extra = {}) {
       : [],
     player,
     player_dead: playerDead,
-    solved: context.engine.isSolved(context.state),
     visited_levels: Array.from(session.visitedLevels),
     yaw: context.options.yaw,
     _render_state: renderStateSnapshot(session),

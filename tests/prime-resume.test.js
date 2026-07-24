@@ -47,6 +47,7 @@ try {
     initialStatus: { board_state_hash: "zero" }
   });
   assert.equal(checkpoint.action_count, 2);
+  assert.equal(checkpoint.task.game_won_gem_count, 100);
   assert.equal(checkpoint.initial_board_state_hash, "zero");
   assert.equal(checkpoint.final_board_state_hash, "two");
   assert.deepEqual(checkpoint.messages, [

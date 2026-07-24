@@ -230,7 +230,7 @@ prompt_task = SimpleNamespace(
 os.environ["MAZEBENCH_PRIME_HARNESS"] = "kimi-code"
 prompt = module._tool_prompt(prompt_task)
 assert "Kimi Code compatibility rule" in prompt
-assert "Collect 75 unique gems to win." in prompt
+assert "Collect 100 unique gems to win." in prompt
 assert "Collect 0 gems" not in prompt
 assert "never provide a final" in prompt
 assert "completion_allowed: false" in prompt
@@ -261,8 +261,9 @@ public_observation = module._public_observation(
         "novel_push_count": 3,
         "novel_pushes_this_action": 1,
         "player_dead": True,
-        "game_won": False,
+        "game_won": True,
         "game_lost": False,
+        "solved": True,
         "allowed_commands": ["undo", "reset", "go to level X Y"],
         "visited_levels": ["level_HxH", "level_HxI"],
     },
@@ -277,11 +278,13 @@ assert "push_count" not in public_observation
 assert "pushes_this_action" not in public_observation
 assert "novel_push_count" not in public_observation
 assert "novel_pushes_this_action" not in public_observation
+assert "solved" not in public_observation
 assert public_observation["observation_mode"] == "ascii"
 assert public_observation["current_room"] == "level_HxI"
 assert public_observation["current_view"] == "top-diagonal"
 assert public_observation["yaw"] == 3
 assert public_observation["gem_count"] == 1
+assert public_observation["game_won"] is False
 assert public_observation["player_dead"] is True
 assert public_observation["allowed_commands"] == ["undo", "reset", "go to level X Y"]
 assert public_observation["visited_levels"] == ["level_HxH", "level_HxI"]
@@ -315,8 +318,11 @@ async def probe():
         auto_quit_threshold=0.0,
         auto_quit_window=100,
         game_won_gem_count=999,
+        game_id="maze",
+        level_id="level_HxI",
         max_actions=None,
         observation_mode="json",
+        target_gems=0,
     )
     toolset._lock = asyncio.Lock()
     toolset._closed = False
@@ -340,8 +346,17 @@ async def probe():
             "objects": {"player": [[1, 2, 0]], "gem": [[2, 2, 0]]},
         },
     }
+    toolset._initial = dict(toolset._status)
     toolset._session = SimpleNamespace(request=lambda *args, **kwargs: None)
     toolset._write_snapshot = lambda: None
+    toolset._status = {**toolset._status, "game_won": True, "solved": True, "gem_count": 2}
+    assert toolset._terminal() is False
+    assert toolset._state_payload()["game_won"] is False
+    assert toolset._state_payload()["maze_replay"]["game_won_gem_count"] == 100
+    toolset._status = {**toolset._status, "gem_count": 100}
+    assert toolset._terminal() is True
+    assert toolset._state_payload()["game_won"] is True
+    toolset._status = {**toolset._status, "game_won": False, "solved": False, "gem_count": 0}
 
     async def fake_run_blocking(_func, command, **_kwargs):
         if command == "observe":
@@ -598,6 +613,7 @@ print("kimi observe break ready")`
   assert.equal(Object.prototype.hasOwnProperty.call(startStatus, "player"), false);
   assert.equal(Object.prototype.hasOwnProperty.call(startStatus, "scorecard"), false);
   assert.match(startStatus.level, /P|p/);
+  assert.equal(JSON.parse(fs.readFileSync(statePath, "utf8")).gameWonGemCount, 100);
 
   const action = spawnSync(
     process.execPath,

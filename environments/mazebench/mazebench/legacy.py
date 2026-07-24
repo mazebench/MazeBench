@@ -161,10 +161,6 @@ def visited_level_count(state: vf.State, **_: Any) -> float:
     return float(len((state.get("maze_status") or {}).get("visited_levels") or []))
 
 
-def current_level_solved(state: vf.State, **_: Any) -> float:
-    return 1.0 if (state.get("maze_status") or {}).get("solved") else 0.0
-
-
 def block_pushes(state: vf.State, **_: Any) -> float:
     return float((state.get("maze_status") or {}).get("push_count") or 0)
 
@@ -266,7 +262,7 @@ class LegacyMazeEnv(vf.MultiTurnEnv):
         row = _row_from_state(state)
         state["maze_row"] = row
         session = MazeSession(
-            game_won_gem_count=int(row.get("game_won_gem_count") or GAME_WON_GEM_COUNT),
+            game_won_gem_count=GAME_WON_GEM_COUNT,
             level_id=str(row.get("level_id") or DEFAULT_START_LEVEL_ID),
             observation_mode=self.observation_mode,
             omniscient=self.omniscient,
@@ -296,7 +292,7 @@ class LegacyMazeEnv(vf.MultiTurnEnv):
         ]
         state["maze_replay"] = {
             "game_id": row.get("game_id") or DEFAULT_GAME_ID,
-            "game_won_gem_count": int(row.get("game_won_gem_count") or GAME_WON_GEM_COUNT),
+            "game_won_gem_count": GAME_WON_GEM_COUNT,
             "initial": slim_status(status),
             "start_level_id": str(row.get("level_id") or DEFAULT_START_LEVEL_ID),
             "target_gems": int(row.get("target_gems") or DEFAULT_TARGET_GEMS),
@@ -351,11 +347,10 @@ class LegacyMazeEnv(vf.MultiTurnEnv):
         else:
             result_text = action_result_text(error="maze session is not available")
 
-        target = int(row.get("game_won_gem_count") or GAME_WON_GEM_COUNT)
         state["game_lost"] = bool(
             self.allow_quit and (status.get("game_lost") or status.get("quit"))
         )
-        state["game_won"] = bool(status.get("game_won") or int(status.get("gem_count") or 0) >= target)
+        state["game_won"] = int(status.get("gem_count") or 0) >= GAME_WON_GEM_COUNT
 
         terminal = state["game_lost"] or state["game_won"]
         auto_quit = None if terminal else self.auto_quit_evaluation(state)
@@ -472,11 +467,7 @@ def load_environment(
         raise ValueError("Hosted Training supports MazeBench ASCII and JSON observations.")
 
     resolved_start = str(start_level_id or os.environ.get("MAZEBENCH_START_LEVEL_ID") or DEFAULT_START_LEVEL_ID)
-    resolved_win_count = int(
-        game_won_gem_count
-        if game_won_gem_count is not None
-        else env_int("MAZEBENCH_GAME_WON_GEM_COUNT", GAME_WON_GEM_COUNT, minimum=1)
-    )
+    resolved_win_count = GAME_WON_GEM_COUNT
     resolved_max_actions = None if unlimited else int(
         max_actions
         if max_actions is not None
@@ -562,7 +553,6 @@ def load_environment(
     rubric.add_reward_func(block_progress_score, weight=weights["pushes"])
     rubric.add_metric(collected_gems)
     rubric.add_metric(visited_level_count)
-    rubric.add_metric(current_level_solved)
     rubric.add_metric(block_pushes)
     rubric.add_metric(novel_block_positions)
 

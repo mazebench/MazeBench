@@ -32,7 +32,7 @@ def config_for_checkpoint(path: Path) -> MazeBenchConfig:
         ),
         auto_quit_window=max(1, int(task.get("auto_quit_window") or 100)),
         start_level_id=str(task.get("level_id") or "level_HxI"),
-        game_won_gem_count=max(1, int(task.get("game_won_gem_count") or 69)),
+        game_won_gem_count=100,
         observation_mode=str(task.get("observation_mode") or "ascii"),
         omniscient=bool(task.get("omniscient")),
         hide_names=bool(task.get("hide_names")),
@@ -70,7 +70,7 @@ async def verify(path: Path) -> dict:
 def self_test() -> None:
     root = Path(__file__).resolve().parents[1]
     session = MazeSession(
-        game_won_gem_count=70,
+        game_won_gem_count=100,
         level_id="level_HxI",
         observation_mode="ascii",
         omniscient=False,
@@ -102,7 +102,7 @@ def self_test() -> None:
                         "auto_quit_mode": "rolling",
                         "auto_quit_window": 100,
                         "game_id": "maze",
-                        "game_won_gem_count": 70,
+                        "game_won_gem_count": 100,
                         "level_id": "level_HxI",
                         "observation_mode": "ascii",
                         "omniscient": False,

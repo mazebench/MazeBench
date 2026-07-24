@@ -88,7 +88,7 @@ assert.match(toml, /model = "Qwen\/Qwen3\.5-0\.8B"/);
 assert.match(toml, /rollouts_per_example = 8/);
 assert.match(toml, /\[\[env\]\]\nid = "mazebench\/mazebench"/);
 assert.match(toml, /\[env\.args\]/);
-assert.match(toml, /game_won_gem_count = 69/);
+assert.match(toml, /game_won_gem_count = 100/);
 assert.match(toml, /push_reward_weight = 0\.05/);
 assert.match(toml, /max_actions = 256/);
 assert.match(toml, /allow_quit = false/);
@@ -105,7 +105,7 @@ assert.deepEqual(parsedToml.env[0].args, {
   num_train_examples: 1,
   num_eval_examples: 1,
   start_level_id: "level_HxI",
-  game_won_gem_count: 69,
+  game_won_gem_count: 100,
   gem_reward_weight: 1,
   room_reward_weight: 0.1,
   push_reward_weight: 0.05,

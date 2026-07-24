@@ -34,29 +34,14 @@ const {
 const ROOT_DIR = path.resolve(__dirname, "..");
 const DEFAULT_TERMINAL_REPLAY_ROOT = path.join(ROOT_DIR, "outputs", "maze-terminal");
 
-function normalizeGameWonGemCount(value) {
-  const count = Number(value);
-  return Number.isFinite(count) && count > 0 ? count : 100;
+const GAME_WON_GEM_COUNT = 100;
+
+// The benchmark win condition is deliberately global and fixed. Keep accepting
+// the legacy argument so old replays and launchers remain readable, but never
+// let a harness, mode, environment variable, or replay lower the threshold.
+function normalizeGameWonGemCount(_value) {
+  return GAME_WON_GEM_COUNT;
 }
-
-const GAME_CONFIG_PATH = path.join(ROOT_DIR, "games", "maze", "config.json");
-
-function configuredGameWonGemCount() {
-  if (process.env.MAZEBENCH_GAME_WON_GEM_COUNT) {
-    return normalizeGameWonGemCount(process.env.MAZEBENCH_GAME_WON_GEM_COUNT);
-  }
-
-  try {
-    const config = JSON.parse(fs.readFileSync(GAME_CONFIG_PATH, "utf8"));
-    return normalizeGameWonGemCount(config?.game_won_gem_count);
-  } catch (_error) {
-    // Fall back to the built-in default when the shared config is missing.
-  }
-
-  return 100;
-}
-
-const GAME_WON_GEM_COUNT = configuredGameWonGemCount();
 const TILE_GRANULARITY = 4;
 const MAX_PITCH = TILE_GRANULARITY;
 const TOP_DOWN_TILE_SIZE = 4;
@@ -271,7 +256,7 @@ Options:
   --max-expanded-states <n>
                      Solver search cap used by --solve.
   --game-won-gem-count <n>
-                     Unique gems required for the game_won condition.
+                     Legacy input; game_won is fixed at 100 unique gems.
   --record-replay    Write local replay artifacts for non-interactive runs.
                      Interactive runs write replay artifacts by default.
   --no-replay        Do not write replay artifacts for interactive runs.
@@ -3660,9 +3645,8 @@ async function solveContext(context) {
 function renderScreen(context) {
   applyCollectedGemsToContext(context);
   const { engine, level, options, playData, state } = context;
-  const solved = engine.isSolved(state) ? " solved" : "";
   const header =
-    `${playData.gameId} ${level.id} | view=${VIEW_NAMES[options.pitch]} yaw=${options.yaw}${solved}`;
+    `${playData.gameId} ${level.id} | view=${VIEW_NAMES[options.pitch]} yaw=${options.yaw}`;
   return `${header}\n${renderAscii(playData, engine, state, options)}`;
 }
 

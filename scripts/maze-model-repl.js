@@ -4,6 +4,11 @@ const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const readline = require("node:readline");
+const GAME_WON_GEM_COUNT = 100;
+
+function gameWon(status) {
+  return Math.max(0, Number(status?.gem_count) || 0) >= GAME_WON_GEM_COUNT;
+}
 
 const ROOT_DIR = path.resolve(__dirname, "..");
 const bridgeScript = path.join(ROOT_DIR, "scripts", "maze-bridge.js");
@@ -138,7 +143,7 @@ Options:
   --yaw <0-3>        Camera yaw rotation.
   --target-gems <n>  Target gem count used in the multi-turn user prompt.
   --game-won-gem-count <n>
-                     Unique gems required for the game_won condition.
+                     Legacy input; game_won is fixed at 100 unique gems.
   --max-turns <n>    Turn budget shown in the local harness instructions.
   --prompt-only      Print the model-facing prompt/actions and exit.
 
@@ -230,7 +235,7 @@ function actionResultText(status) {
   if (status.player_dead) {
     details.push(status.death_message || DEATH_MESSAGE);
   }
-  if ((status.quit || status.game_lost || status.game_won) && status.scorecard) {
+  if ((status.quit || status.game_lost || gameWon(status)) && status.scorecard) {
     details.push(`Final scorecard:\n${JSON.stringify(status.scorecard, null, 2)}`);
   }
 
@@ -568,7 +573,7 @@ function formatAction(message) {
 function printEnvResponse(response, options) {
   console.log("\n=== ENV RESPONSE (USER) ===");
 
-  if (response.quit || response.game_lost || response.game_won) {
+  if (response.quit || response.game_lost || gameWon(response)) {
     console.log("The game has ended. No further action is available.");
     return;
   }
@@ -725,7 +730,7 @@ async function run() {
           message.command === "quit" ||
           message.command === "close" ||
           response.game_lost ||
-          response.game_won
+          gameWon(response)
         ) {
           closing = true;
           input.close();

@@ -1563,14 +1563,14 @@
           run.prime_evaluation_score != null ? ["score", String(run.prime_evaluation_score)] : null,
           run.turns ? ["moves", String(run.turns)] : null,
           run.turns ? ["gems", String(run.gem_count ?? 0)] : null,
-          run.solved ? ["result", "SOLVED"] : run.auto_quit_triggered ? ["result", "AUTO-QUIT"] : null
+          run.auto_quit_triggered ? ["result", "AUTO-QUIT"] : null
         ].filter(Boolean)
       : [
           ["status", statusLabel],
           ["moves", `${run.turns}/${run.unlimited ? "∞" : run.moves}`],
           ["gems", String(run.gem_count ?? 0)],
           ["room", levelLabel(run.current_room)],
-          run.solved ? ["result", "SOLVED"] : run.auto_quit_triggered ? ["result", "AUTO-QUIT"] : null
+          run.auto_quit_triggered ? ["result", "AUTO-QUIT"] : null
         ].filter(Boolean);
     if (run.swarm) {
       chips.push(
@@ -3305,8 +3305,7 @@
       const flags = [
         action.valid === false || invalidReason ? "invalid" : null,
         action.moved === false ? "blocked" : null,
-        action.player_dead ? "died" : null,
-        action.solved ? "SOLVED" : null
+        action.player_dead ? "died" : null
       ].filter(Boolean);
       const nextMove = {
         action: invalidReason ? `Invalid: ${invalidReason}` : action.command_text,
@@ -3639,9 +3638,7 @@
           ? " is-danger"
           : move.flags.includes("blocked")
             ? " is-blocked"
-            : move.flags.includes("SOLVED")
-              ? " is-solved"
-              : "";
+            : "";
         const agentBadge = multiAgentRun && activeAgents
           ? `<span class="agent-feed__agents" role="img" aria-label="${escapeText(activeAgents)} agent${activeAgents === 1 ? "" : "s"} active" title="Agents active on this move">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8ZM22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>
