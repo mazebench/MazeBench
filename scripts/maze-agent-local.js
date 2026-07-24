@@ -2085,21 +2085,30 @@ function runAgent(config, prompt) {
 
 function ensureScorecard(config) {
   if (!fs.existsSync(config.sessionFile)) {
-    return false;
+    return { ok: false, reason: "missing-session" };
   }
+  // Finalizing replays the whole saved history, so the ceiling has to grow with
+  // it rather than stay a flat 30s that long unlimited runs silently blow past.
+  const actionCount = sessionActionCount(config.sessionFile);
+  const timeout = Math.min(600000, 60000 + actionCount * 20);
   // Scoring runs only after the provider process has exited.
   const result = spawnSync(process.execPath, [HELPER, "finalize", "--state", config.sessionFile], {
     cwd: ROOT_DIR,
     encoding: "utf8",
     env: { ...process.env, MAZEBENCH_TRUSTED_FINALIZE: "1" },
-    timeout: 30000,
+    timeout,
     killSignal: "SIGKILL"
   });
   if (result.status !== 0) {
-    console.warn(`Could not finalize scorecard: ${(result.stderr || "").trim()}`);
-    return false;
+    // A SIGKILL from the timeout leaves no stderr and a null status; say so
+    // rather than reporting an empty reason.
+    const detail = (result.stderr || "").trim() ||
+      (result.signal ? `finalize timed out after ${Math.round(timeout / 1000)}s (${result.signal})` : "") ||
+      `finalize exited ${result.status}`;
+    console.warn(`Could not finalize scorecard: ${detail}`);
+    return { ok: false, reason: "finalize-failed", detail };
   }
-  return true;
+  return { ok: true };
 }
 
 function exportReplay(config) {
@@ -2854,12 +2863,21 @@ async function main() {
   }
 
   const finalized = ensureScorecard(config);
-  if (!finalized) {
+  if (!finalized.ok) {
+    if (finalized.reason === "missing-session") {
+      console.error(
+        `\nNo session was written at ${config.sessionFile}. The agent likely never ran the ` +
+          "start command. Nothing to export."
+      );
+      process.exit(1);
+    }
+    // The session exists and the moves are saved — only scoring failed. Exiting
+    // non-zero here would strand a resumable run, because the server only
+    // auto-continues on a clean exit.
     console.error(
-      `\nNo session was written at ${config.sessionFile}. The agent likely never ran the ` +
-        "start command. Nothing to export."
+      `\nScorecard could not be finalized (${finalized.detail}); the session and its ` +
+        `${sessionActionCount(config.sessionFile)} saved actions are intact at ${config.sessionFile}.`
     );
-    process.exit(1);
   }
 
   // Signal the rendering phase so the web UI can show a replay progress bar
