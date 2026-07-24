@@ -432,6 +432,12 @@ function assertMove(move, yaw, expected) {
   assert.equal(internal.board_state_hash_version, 1);
   assert.deepEqual(internal.collected_gems, ["gem-secret"]);
   assert.equal(internal.push_count, 4);
+  const internalText = redactAgentStatus(source, { mode: "text", includeInternalSignals: true });
+  assert.deepEqual(
+    internalText.player,
+    { x: 1, y: 2, elevation: 0 },
+    "trusted session storage retains player coordinates for heatmaps"
+  );
 
   const unfinished = {
     actions: [{ command: "up" }],
@@ -2313,7 +2319,7 @@ function syntheticFloor(width, height) {
     const saved = JSON.parse(fs.readFileSync(stateFile, "utf8"));
     assert.deepEqual(JSON.parse(finalized), { ok: true, finalized: true });
     assert.equal(Object.prototype.hasOwnProperty.call(saved.lastStatus, "level"), false);
-    assert.equal(Object.prototype.hasOwnProperty.call(saved.lastStatus, "player"), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(saved.lastStatus, "player"), true);
     assert.equal(saved.scorecard.actions.total, 0);
   } finally {
     fs.rmSync(outDir, { recursive: true, force: true });

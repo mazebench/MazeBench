@@ -160,7 +160,11 @@ function redactAgentStatus(value, { mode = "text", includeInternalSignals = fals
         if (!includeInternalSignals && MODEL_PRIVATE_STATUS_KEYS.has(normalized)) return false;
         if (!includeInternalSignals && normalized.includes("board_state_hash")) return false;
         if (normalized === "_render_state") return false;
-        if (mode !== "json" && EXPLICIT_PLAYER_POSITION_KEYS.has(normalized)) return false;
+        if (
+          !includeInternalSignals &&
+          mode !== "json" &&
+          EXPLICIT_PLAYER_POSITION_KEYS.has(normalized)
+        ) return false;
         if (mode === "text" && normalized === "json_observation") return false;
         if (mode === "json" && normalized !== "json_observation" && VISION_TEXT_BOARD_KEYS.has(normalized)) return false;
         if (mode === "vision" && VISION_TEXT_BOARD_KEYS.has(normalized)) return false;

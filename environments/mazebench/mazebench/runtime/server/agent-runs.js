@@ -1889,7 +1889,12 @@ function createAgentRunService({
         game_lost: Boolean(record.status?.game_lost),
         quit: Boolean(record.status?.quit),
         current_room: record.status?.current_room,
-        player: record.status?.player || null,
+        player: normalizedPlayerPosition(record.status?.player) ||
+          inferredTopDownPlayerPosition(
+            record.status?.level,
+            record.status?.current_view,
+            record.status?.yaw
+          ),
         player_dead: Boolean(record.status?.player_dead),
         valid: record.valid !== false && !record.error,
         error: record.error || null,
@@ -1916,7 +1921,8 @@ function createAgentRunService({
     // Older runs predate initial-status.json. Parse their session once so the
     // heatmap still includes move zero without making every poll pay that cost.
     const status = initialStatus || loadJson(path.join(runDir, "session.json"), null)?.initial || null;
-    const player = normalizedPlayerPosition(status?.player);
+    const player = normalizedPlayerPosition(status?.player) ||
+      inferredTopDownPlayerPosition(status?.level, status?.current_view, status?.yaw);
     if (!player) return null;
     initialPlayerCache.set(runId, player);
     return player;
@@ -1930,6 +1936,50 @@ function createAgentRunService({
     const elevation = Number(value?.elevation);
     if (Number.isFinite(elevation)) player.elevation = elevation;
     return player;
+  }
+
+  // Text-mode runs created before trusted player coordinates were persisted
+  // still contain every top-down ASCII observation. Recover those positions
+  // while the JSONL is already being parsed instead of synchronously replaying
+  // a large run on the HTTP thread. Other camera pitches remain untouched
+  // because their projected row mixes room depth with actor elevation.
+  function inferredTopDownPlayerPosition(level, view, yaw) {
+    if (String(view || "") !== "top") return null;
+    const rows = String(level || "").split(/\r?\n/);
+    let left = Infinity;
+    let top = Infinity;
+    let found = false;
+
+    rows.forEach((row, rowIndex) => {
+      for (let columnIndex = 0; columnIndex < row.length; columnIndex += 1) {
+        if (row[columnIndex] !== "P") continue;
+        found = true;
+        left = Math.min(left, columnIndex);
+        top = Math.min(top, rowIndex);
+      }
+    });
+    if (!found) return null;
+
+    const roomSize = 16;
+    const displayX = Math.floor(left / 4);
+    const displayY = Math.floor(top / 4);
+    if (
+      displayX < 0 ||
+      displayX >= roomSize ||
+      displayY < 0 ||
+      displayY >= roomSize
+    ) return null;
+
+    switch ((Math.floor(Number(yaw) || 0) % 4 + 4) % 4) {
+      case 1:
+        return { x: displayY, y: roomSize - 1 - displayX };
+      case 2:
+        return { x: roomSize - 1 - displayX, y: roomSize - 1 - displayY };
+      case 3:
+        return { x: roomSize - 1 - displayY, y: displayX };
+      default:
+        return { x: displayX, y: displayY };
+    }
   }
 
   function readInitialBoardStateHash(runId) {
@@ -4234,7 +4284,8 @@ function createAgentRunService({
     const jsonObservation = status?.json_observation || reconstructedJson?.observation || null;
     const jsonDisplayPalette = status?.json_display_palette || reconstructedJson?.displayPalette ||
       (jsonObservation ? jsonDisplayPaletteForRun(summary, metadata, jsonObservation) : null);
-    let player = normalizedPlayerPosition(status?.player);
+    let player = normalizedPlayerPosition(status?.player) ||
+      inferredTopDownPlayerPosition(status?.level, status?.current_view, status?.yaw);
     if (primary && !player) {
       const reconstructed = reconstructBoardStateTimeline(runId, summary);
       player = absoluteTurn === 0

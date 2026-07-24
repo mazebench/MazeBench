@@ -128,6 +128,28 @@ assert.equal(
 const oversizedRunId = "perf-run-oversized";
 const oversizedRunDir = path.join(tempRoot, "outputs", "maze-local", "site", oversizedRunId);
 const replayMarker = path.join(tempRoot, "legacy-replay-started");
+const legacyTopBoard = (worldX, worldY, yaw = 0) => {
+  const roomSize = 16;
+  const tileSize = 4;
+  const normalizedYaw = (yaw % 4 + 4) % 4;
+  const display = normalizedYaw === 1
+    ? { x: roomSize - 1 - worldY, y: worldX }
+    : normalizedYaw === 2
+      ? { x: roomSize - 1 - worldX, y: roomSize - 1 - worldY }
+      : normalizedYaw === 3
+        ? { x: worldY, y: roomSize - 1 - worldX }
+        : { x: worldX, y: worldY };
+  const rows = Array.from(
+    { length: roomSize * tileSize },
+    () => Array.from({ length: roomSize * tileSize }, () => "q")
+  );
+  for (let row = display.y * tileSize; row < (display.y + 1) * tileSize; row += 1) {
+    for (let column = display.x * tileSize; column < (display.x + 1) * tileSize; column += 1) {
+      rows[row][column] = "P";
+    }
+  }
+  return rows.map((row) => row.join("")).join("\n");
+};
 fs.mkdirSync(oversizedRunDir, { recursive: true });
 fs.mkdirSync(path.join(tempRoot, "scripts"), { recursive: true });
 fs.writeFileSync(
@@ -151,7 +173,9 @@ fs.writeFileSync(path.join(oversizedRunDir, "initial-status.json"), JSON.stringi
   board_state_hash: "initial-v3",
   board_state_hash_version: 3,
   current_room: "level_HxI",
-  level: "W"
+  current_view: "top",
+  level: legacyTopBoard(0, 0),
+  yaw: 0
 }));
 fs.writeFileSync(
   path.join(oversizedRunDir, "actions.jsonl"),
@@ -162,7 +186,9 @@ fs.writeFileSync(
       board_state_hash: `state-${index + 1}`,
       board_state_hash_version: 3,
       current_room: "level_HxI",
-      level: "W"
+      current_view: "top",
+      level: legacyTopBoard((index + 1) % 16, Math.floor((index + 1) / 16) % 16, index % 4),
+      yaw: index % 4
     }
   })).join("\n")}\n`
 );
@@ -170,14 +196,23 @@ fs.writeFileSync(
 const oversizedProgress = service.getRunProgress(oversizedRunId);
 assert.equal(oversizedProgress.actions.length, 500);
 assert.deepEqual(oversizedProgress.history_sync, { current: 500, total: 501, complete: false });
-assert.equal(oversizedProgress.initial_player, null);
+assert.deepEqual(oversizedProgress.initial_player, { x: 0, y: 0 });
+assert.deepEqual(oversizedProgress.actions[0].player, { x: 1, y: 0 });
+assert.deepEqual(oversizedProgress.actions[499].player, {
+  x: 500 % 16,
+  y: Math.floor(500 / 16) % 16
+});
 assert.equal(
   fs.existsSync(replayMarker),
   false,
-  "oversized legacy runs must not synchronously replay history on the HTTP server thread"
+  "oversized legacy heatmaps must not synchronously replay history on the HTTP server thread"
 );
 const oversizedFinalProgress = service.getRunProgress(oversizedRunId, { afterTurn: 500 });
 assert.deepEqual(oversizedFinalProgress.actions.map((action) => action.turn), [501]);
+assert.deepEqual(oversizedFinalProgress.actions[0].player, {
+  x: 501 % 16,
+  y: Math.floor(501 / 16) % 16
+});
 assert.deepEqual(oversizedFinalProgress.history_sync, { current: 501, total: 501, complete: true });
 assert.equal(fs.existsSync(replayMarker), false);
 
