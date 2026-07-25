@@ -427,11 +427,27 @@ function renderStateSnapshot(session) {
   };
 }
 
+// The half of a snapshot that mutates the session: settling collected gems into
+// the board, and recording the room and tile the action landed on. Every later
+// action and the scorecard read this, so replay must run it for each action.
+function advanceSessionState(session) {
+  applyCollectedGemsToContext(session);
+  session.visitedLevels.add(session.context.level.id);
+  syncSessionStats(session);
+}
+
 function sessionSnapshot(session, extra = {}) {
   const context = session.context;
-  applyCollectedGemsToContext(session);
-  session.visitedLevels.add(context.level.id);
-  syncSessionStats(session);
+  advanceSessionState(session);
+
+  // Replaying a saved history discards every intermediate observation, so
+  // rendering the board, hashing it, and building the legend for each of
+  // thousands of actions is pure waste. Advance the state and return the
+  // minimum the replay loops check (`ok`).
+  if (session.replayFast) {
+    return { ok: true, action_count: session.actionCount };
+  }
+
   const currentView = VIEW_NAMES[context.options.pitch];
   const rendered = splitRenderedScreen(renderScreen(context));
   const gameWonGemCount = normalizeGameWonGemCount(context.options?.gameWonGemCount);
@@ -509,6 +525,7 @@ function createSession(options) {
     mazeEngine,
     novelPushStates: new Set(),
     pushCount: 0,
+    replayFast: false,
     visitedLevels: new Set([context.level.id])
   };
 
@@ -645,6 +662,13 @@ function handleCommand(session, message) {
 
   if (command === "restore_checkpoint") {
     return restoreCheckpoint(session, message.checkpoint);
+  }
+
+  // Toggled around a history replay so the discarded intermediate observations
+  // are never rendered. Off for the command whose observation is actually read.
+  if (command === "replay_fast") {
+    session.replayFast = message.enabled !== false;
+    return { ok: true, replay_fast: session.replayFast };
   }
 
   if (command === "observe") {

@@ -320,7 +320,19 @@ function runBridge(session, message) {
   const bootstrap = checkpoint
     ? [{ command: "restore_checkpoint", checkpoint }]
     : [];
-  const messages = [...bootstrap, ...replay, message, { command: "close" }];
+  // Bracket the replay so the bridge advances state without rendering an
+  // observation per historical action; the requested command still renders.
+  const fastMode = replay.length
+    ? { on: [{ command: "replay_fast", enabled: true }], off: [{ command: "replay_fast", enabled: false }] }
+    : { on: [], off: [] };
+  const messages = [
+    ...bootstrap,
+    ...fastMode.on,
+    ...replay,
+    ...fastMode.off,
+    message,
+    { command: "close" }
+  ];
   const result = spawnSync(session.nodeBin || process.execPath, bridgeArgs(session), {
     cwd: session.repoRoot,
     encoding: "utf8",
@@ -336,7 +348,8 @@ function runBridge(session, message) {
     .map((line) => line.trim())
     .filter(Boolean)
     .map((line) => JSON.parse(line));
-  const responseIndex = bootstrap.length + replay.length;
+  // `message` is always second to last, ahead of the trailing close.
+  const responseIndex = messages.length - 2;
   const previousFailure = responses.slice(0, responseIndex).find((response) => !response.ok);
   if (previousFailure) {
     throw new Error(`Replay failed before requested command: ${previousFailure.error || "unknown error"}`);
@@ -373,7 +386,11 @@ function replayedBridgeSession(session) {
 
   try {
     if (checkpoint) handleCommand(liveSession, { command: "restore_checkpoint", checkpoint });
+    // The replayed observations are discarded; only the new actions below need
+    // rendering, so skip it until the history is caught up.
+    handleCommand(liveSession, { command: "replay_fast", enabled: true });
     replay.forEach((action) => handleCommand(liveSession, action.message));
+    handleCommand(liveSession, { command: "replay_fast", enabled: false });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Replay failed before requested sequence: ${message}`);
