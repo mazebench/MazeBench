@@ -17,10 +17,16 @@ assert.match(runService, /const LARGE_TELEMETRY_REFRESH_MS = 10_000/);
 assert.match(runService, /Date\.now\(\) - cached\.checkedAt < LARGE_TELEMETRY_REFRESH_MS/);
 assert.match(runService, /const MAX_SYNCHRONOUS_HISTORY_REPLAY_ACTIONS = 500/);
 assert.match(runService, /if \(actions\.length > MAX_SYNCHRONOUS_HISTORY_REPLAY_ACTIONS\) return null/);
+assert.match(runService, /const MAX_PROGRESS_LOG_BYTES = 256 \* 1024/);
+assert.match(runService, /size - requestedStart > MAX_PROGRESS_LOG_BYTES/);
 assert.match(runService, /actions: tokenUsage\.actions\.filter/);
 assert.match(runService, /reasoning\.filter\(\(entry\)/);
 assert.match(runService, /apiPricingForRun\(summary, listProviderModels\("prime"\)\.models\)/);
 assert.match(runScript, /const FEED_RENDER_BATCH = 200/);
+assert.match(runScript, /const MAX_RETAINED_LOG_CHARACTERS = 512 \* 1024/);
+assert.match(runScript, /function appendRunnerLog\(chunk, resetToTail = false\)/);
+assert.match(runScript, /if \(!active\) return/);
+assert.match(runScript, /toolsDuration\.textContent !== durationText/);
 assert.doesNotMatch(runScript, /frame\?turn=/);
 assert.doesNotMatch(runScript, /mayRenderLiveFrame/);
 assert.match(runScript, /function drawAsciiBitmap\(board, turn = null\)/);
@@ -99,17 +105,33 @@ fs.writeFileSync(
   path.join(runDir, "reasoning.json"),
   JSON.stringify(Array.from({ length: 450 }, (_, index) => ({ move: index + 1, reasoning: `Move ${index + 1}` })))
 );
+const oversizedLog = `${Array.from(
+  { length: 9000 },
+  (_, index) => `runner line ${String(index).padStart(5, "0")} ${"x".repeat(48)}`
+).join("\n")}\n`;
+fs.writeFileSync(path.join(runDir, "launcher.log"), oversizedLog);
 
 const initialProgress = service.getRunProgress(runId);
 assert.equal(initialProgress.actions.length, 450);
 assert.equal(initialProgress.actions.filter((action) => action.level).length, 1);
 assert.ok(Buffer.byteLength(JSON.stringify(initialProgress.actions)) < 150_000);
+assert.equal(initialProgress.log_truncated, true);
+assert.equal(initialProgress.log_offset, Buffer.byteLength(oversizedLog));
+assert.ok(Buffer.byteLength(initialProgress.log_chunk) <= 256 * 1024);
+assert.doesNotMatch(initialProgress.log_chunk, /runner line 00000/);
+assert.match(initialProgress.log_chunk, /runner line 08999/);
 
 fs.appendFileSync(path.join(runDir, "actions.jsonl"), `${actionLine(451)}\n`);
-const incrementalProgress = service.getRunProgress(runId, { afterTurn: 450, logOffset: 0 });
+fs.appendFileSync(path.join(runDir, "launcher.log"), "latest runner line\n");
+const incrementalProgress = service.getRunProgress(runId, {
+  afterTurn: 450,
+  logOffset: initialProgress.log_offset
+});
 assert.deepEqual(incrementalProgress.actions.map((action) => action.turn), [451]);
 assert.equal(incrementalProgress.actions[0].level.length, 4096);
 assert.ok(incrementalProgress.reasoning.length <= 6);
+assert.equal(incrementalProgress.log_truncated, false);
+assert.equal(incrementalProgress.log_chunk, "latest runner line\n");
 
 fs.mkdirSync(path.join(runDir, "frames"), { recursive: true });
 fs.writeFileSync(path.join(runDir, "frames", "frame-451.png"), "legacy exact frame");
