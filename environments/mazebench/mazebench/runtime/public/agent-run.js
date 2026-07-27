@@ -18,6 +18,7 @@
   const feedResult = document.getElementById("run-feed-result");
   const feedExportButton = document.getElementById("run-feed-export");
   const feedTextExportButton = document.getElementById("run-feed-export-txt");
+  const logLimitNote = document.getElementById("run-log-limit-note");
   const notesInput = document.getElementById("run-notes-input");
   const notesSaveButton = document.getElementById("run-notes-save");
   const notesSaveLabel = document.getElementById("run-notes-save-label");
@@ -225,6 +226,7 @@
   if (isPrime && stopButton) stopButton.textContent = "Cancel Run";
 
   const FEED_RENDER_BATCH = 200;
+  const MAX_RETAINED_LOG_CHARACTERS = 512 * 1024;
   const BOARD_STATE_NOVELTY_WINDOW = 100;
   const DEFAULT_REPLAY_FPS = 30;
   const REPLAY_BUFFER_FRAMES = 240;
@@ -351,7 +353,15 @@
 
   function refreshLiveToolsTiming(now = Date.now()) {
     if (!state.toolsData) return;
-    if (toolsDuration) toolsDuration.textContent = formatToolDuration(liveToolsWallTime(state.toolsData, now));
+    const active = Math.max(0, Number(state.toolsData.counts?.active) || 0);
+    const elapsed = active
+      ? liveToolsWallTime(state.toolsData, now)
+      : Math.max(0, Number(state.toolsData.counts?.duration_ms) || 0);
+    const durationText = formatToolDuration(elapsed);
+    if (toolsDuration && toolsDuration.textContent !== durationText) {
+      toolsDuration.textContent = durationText;
+    }
+    if (!active) return;
     const executions = new Map(
       (Array.isArray(state.toolsData.executions) ? state.toolsData.executions : [])
         .filter((execution) => execution.status === "running")
@@ -360,8 +370,28 @@
     toolsExecutionList?.querySelectorAll('[data-tool-status="running"]').forEach((element) => {
       const execution = executions.get(String(element.dataset.toolExecution || ""));
       const label = element.querySelector("[data-tool-status-label]");
-      if (execution && label) label.textContent = toolsStatusLabel(execution, now);
+      const statusText = execution ? toolsStatusLabel(execution, now) : "";
+      if (label && statusText && label.textContent !== statusText) label.textContent = statusText;
     });
+  }
+
+  function appendRunnerLog(chunk, resetToTail = false) {
+    if (!logEl || !chunk) return;
+    const previousLogScrollTop = logEl.scrollTop;
+    const previousLogScrollLeft = logEl.scrollLeft;
+    let text = resetToTail ? String(chunk) : `${logEl.textContent || ""}${chunk}`;
+    let truncated = resetToTail;
+    if (text.length > MAX_RETAINED_LOG_CHARACTERS) {
+      let start = text.length - MAX_RETAINED_LOG_CHARACTERS;
+      const firstLineBreak = text.indexOf("\n", start);
+      if (firstLineBreak >= 0) start = firstLineBreak + 1;
+      text = text.slice(start);
+      truncated = true;
+    }
+    if (logEl.textContent !== text) logEl.textContent = text;
+    logEl.scrollTop = previousLogScrollTop;
+    logEl.scrollLeft = previousLogScrollLeft;
+    if (logLimitNote && truncated) logLimitNote.hidden = false;
   }
 
   function renderToolsFiles(workspace) {
@@ -4015,11 +4045,7 @@
       }
 
       if (progress.log_chunk) {
-        const previousLogScrollTop = logEl.scrollTop;
-        const previousLogScrollLeft = logEl.scrollLeft;
-        logEl.append(document.createTextNode(progress.log_chunk));
-        logEl.scrollTop = previousLogScrollTop;
-        logEl.scrollLeft = previousLogScrollLeft;
+        appendRunnerLog(progress.log_chunk, Boolean(progress.log_truncated));
       }
       state.logOffset = progress.log_offset;
 

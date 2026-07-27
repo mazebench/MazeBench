@@ -15,7 +15,7 @@ assert.match(runScript, />FPS<\/span>/);
 assert.match(runScript, /const DEFAULT_REPLAY_FPS = 30/);
 assert.match(runScript, /: DEFAULT_REPLAY_FPS;/);
 assert.doesNotMatch(runScript, /<select data-replay-rate/);
-assert.match(pages, /agent-run\.js\?v=20260722-history-progress-1/);
+assert.match(pages, /agent-run\.js\?v=20260727-bounded-run-log-1/);
 assert.match(pages, /id="run-history-progress"[^>]+role="progressbar"/);
 assert.doesNotMatch(pages, /Loading move 0/);
 assert.match(runScript, /function updateHistoryLoadProgress\(sync\)/);

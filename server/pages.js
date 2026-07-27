@@ -1493,11 +1493,15 @@ function createPageRenderer({
 
         <section class="panel">
           <h2>Runner log</h2>
+          <p id="run-log-limit-note" class="muted" hidden>
+            Showing the most recent log output to keep this page responsive.
+            <a class="text-link" href="/agent-runs/${encodeURIComponent(run.id)}/files/launcher.log" download="launcher.log">Download the full log</a>.
+          </p>
           <pre id="run-log" class="agent-log"></pre>
         </section>
         ${replayExportSection}
         <script>window.__AGENT_RUN__ = ${serializeForScript(clientRun)}; window.__AGENT_RUN_WORLD__ = ${serializeForScript(runWorld)};</script>
-        <script src="/agent-run.js?v=20260722-history-progress-1" defer></script>`
+        <script src="/agent-run.js?v=20260727-bounded-run-log-1" defer></script>`
     });
   }
 

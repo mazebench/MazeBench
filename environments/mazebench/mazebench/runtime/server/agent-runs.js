@@ -361,6 +361,7 @@ const RUN_FAVORITE_FILE = "favorite.json";
 const RUN_REVIEW_FILE = "run-review.json";
 const RUN_NOTES_FILE = "run-notes.json";
 const MAX_RUN_NOTES_LENGTH = 50_000;
+const MAX_PROGRESS_LOG_BYTES = 256 * 1024;
 const TOOL_WORKSPACE_MAX_ENTRIES = 2000;
 const TOOL_WORKSPACE_READ_BYTES = 512 * 1024;
 const RUN_ID_PATTERN = /^[a-z0-9][a-z0-9-]{4,80}$/i;
@@ -2201,22 +2202,31 @@ function createAgentRunService({
     const logPath = path.join(runDirFor(runId), "launcher.log");
 
     if (!fs.existsSync(logPath)) {
-      return { chunk: "", offset: 0 };
+      return { chunk: "", offset: 0, truncated: false };
     }
 
     const size = fs.statSync(logPath).size;
-    const start = Math.max(0, Math.min(Number(offset) || 0, size));
+    const requestedStart = Math.max(0, Math.min(Number(offset) || 0, size));
 
-    if (start >= size) {
-      return { chunk: "", offset: size };
+    if (requestedStart >= size) {
+      return { chunk: "", offset: size, truncated: false };
     }
 
+    // The runner log contains every model observation and can grow to tens of
+    // megabytes. A run page needs recent diagnostics, not the entire artifact
+    // in one JSON response and one wrapped DOM text node. When the unread span
+    // is oversized, skip directly to its tail; the complete log remains
+    // downloadable through the run artifact route.
+    const truncated = size - requestedStart > MAX_PROGRESS_LOG_BYTES;
+    const start = truncated ? Math.max(requestedStart, size - MAX_PROGRESS_LOG_BYTES) : requestedStart;
     const fd = fs.openSync(logPath, "r");
 
     try {
       const buffer = Buffer.alloc(size - start);
       fs.readSync(fd, buffer, 0, buffer.length, start);
-      return { chunk: buffer.toString("utf8"), offset: size };
+      const firstLineBreak = truncated ? buffer.indexOf(0x0a) : -1;
+      const visible = firstLineBreak >= 0 ? buffer.subarray(firstLineBreak + 1) : buffer;
+      return { chunk: visible.toString("utf8"), offset: size, truncated };
     } finally {
       fs.closeSync(fd);
     }
@@ -4465,6 +4475,7 @@ function createAgentRunService({
       initial_player: initialPlayer,
       log_chunk: log.chunk,
       log_offset: log.offset,
+      log_truncated: log.truncated,
       token_usage: incrementalTokenUsage,
       tool_activity: historySync.complete ? readToolActivity(runId, summary) : null,
       tools_workspace: historySync.complete ? readToolsWorkspace(runId, summary) : null,
