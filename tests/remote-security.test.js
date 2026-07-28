@@ -86,6 +86,8 @@ async function main() {
       .createHash("sha256")
       .update(linkConfig.pending_link.code_verifier, "ascii")
       .digest("base64url");
+    assert.equal(linkUrl.origin, "https://mazebench.com");
+    assert.equal(linkConfig.origin, "https://mazebench.com");
     assert.equal(linkUrl.searchParams.get("code_challenge"), expectedChallenge);
     assert.equal(linkUrl.searchParams.has("token"), false);
 
@@ -275,6 +277,10 @@ async function main() {
     assert.equal(importedWorld.prefix, "draft");
     assert.deepEqual(importedWorld.editorState, editorState);
     assert.equal(publicRequests.length, 2);
+    assert.ok(
+      publicRequests.every(({ url }) => url.origin === "https://dev.mazebench.com"),
+      "the explicitly selected development origin remains supported"
+    );
     assert.ok(publicRequests.every(({ url }) => url.pathname.endsWith("/export")));
     const communityWorlds = await remote.listRemoteWorlds("community");
     assert.equal(communityWorlds[0].id, "community_world");

@@ -650,7 +650,7 @@ function createPageRenderer({
           </div>
           <div class="online-pull" style="margin-top: 14px">
             <label class="field"><span>Or download a published world from ${escapeHtml(
-              (remoteStatusSafe().origin || "https://dev.mazebench.com").replace(/^https?:\/\//, "")
+              (remoteStatusSafe().origin || "https://mazebench.com").replace(/^https?:\/\//, "")
             )} by id to edit</span><input id="download-world-id" type="text" placeholder="mbw_…" autocomplete="off" spellcheck="false"></label>
             <button id="download-world" type="button">Download &amp; Edit</button>
           </div>

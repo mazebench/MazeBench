@@ -2,10 +2,11 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 
-// Bridge to the hosted site (dev.mazebench.com, soon mazebench.com). The
-// hosted API is session-cookie based with no CORS headers, so the browser
-// never talks to it directly: this local server holds the session token in
-// data/remote.json and makes server-to-server calls with a Cookie header.
+// Bridge to the hosted site (mazebench.com, with dev.mazebench.com retained
+// for explicit development use). The hosted API is session-cookie based with
+// no CORS headers, so the browser never talks to it directly: this local
+// server holds the session token in data/remote.json and makes server-to-server
+// calls with a Cookie header.
 //
 // Connecting an account:
 //   1. Device link (preferred): open <origin>/link-local?return_to=<local
@@ -14,7 +15,7 @@ const path = require("path");
 //      PKCE-bound code. This server exchanges it for a draft-sync-only token.
 
 const SESSION_COOKIE = "mazebench_session";
-const DEFAULT_ORIGIN = "https://dev.mazebench.com";
+const DEFAULT_ORIGIN = "https://mazebench.com";
 const REQUEST_TIMEOUT_MS = 20000;
 const ALLOWED_REMOTE_ORIGINS = new Set([
   "https://dev.mazebench.com",

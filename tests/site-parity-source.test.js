@@ -85,6 +85,8 @@ try {
   const remoteConfig = JSON.parse(
     fs.readFileSync(path.join(remoteConfigRoot, "data", "remote.json"), "utf8")
   );
+  assert.equal(linkUrl.origin, "https://mazebench.com");
+  assert.equal(remoteConfig.origin, "https://mazebench.com");
   assert.equal(linkUrl.searchParams.get("return_to"), callback);
   assert.match(codeChallenge, /^[A-Za-z0-9_-]{43}$/);
   assert.equal(linkUrl.searchParams.has("token"), false);
