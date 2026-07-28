@@ -744,23 +744,29 @@ assert.match(
   "the Save button must dispatch to the whole-world hosted save"
 );
 
-const hostedCameraSection = sourceSection(
+const editorCameraSection = sourceSection(
   authorSource,
-  "function landEditorOnWholeWorld",
-  "// The construction-then-dive"
+  "function editorDiveIntoRoom",
+  "// Post-boot choreography"
 );
-assert.match(hostedCameraSection, /app\.cameraFlightFitOptions = editorWorldFitOptions\(app\)/);
-assert.match(hostedCameraSection, /tilt: 0\.42/);
-assert.match(hostedCameraSection, /zoom: 1/);
+assert.match(editorCameraSection, /const worldFit = editorWorldFitOptions\(app\)/);
+assert.match(editorCameraSection, /app\.cameraFlightFitOptions = null/);
+assert.match(editorCameraSection, /tilt: endTilt/);
+assert.match(editorCameraSection, /zoom: 1/);
 assert.match(
   rendererSource,
   /if \(app\.editorWorldView === true\) \{[\s\S]*normalizedCameraFitOptions\([\s\S]*app\.cameraFlightFitOptions,[\s\S]*stableCameraWorldHeight\(\)[\s\S]*return wholeWorldFit/,
-  "hosted editor rendering must fit the supplied whole-world bounds instead of the current room"
+  "the editor camera dive must consume its supplied world-to-room bounds"
 );
 assert.match(
   authorSource,
-  /if \(landEditorOnWholeWorld\(app\)\) \{[\s\S]*revealEditorWorld\(\);[\s\S]*return;[\s\S]*editorDiveIntoRoom/,
-  "hosted editor boot must stay on the whole-world fit instead of diving into one room"
+  /editorDiveIntoRoom\(app, \(\) => \{[\s\S]*editorBootReveal\.state = "done"/,
+  "hosted and local editors must both land zoomed into the active room"
+);
+assert.doesNotMatch(
+  authorSource,
+  /landEditorOnWholeWorld/,
+  "hosted editors must not remain parked on the whole-world camera fit"
 );
 const renderLoadedSection = sourceSection(
   authorSource,

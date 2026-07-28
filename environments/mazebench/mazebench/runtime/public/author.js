@@ -2286,9 +2286,6 @@
       resetHistory: true,
       resetLevelEntry: true
     });
-    if (editorBootReveal.state === "done") {
-      landEditorOnWholeWorld(app, { render: false });
-    }
 
     if (shouldStartNoiseTicker) {
       app.syncNoiseTicker();
@@ -2337,10 +2334,6 @@
     const finishLook = () => {
       editorBootReveal.state = "done";
       timing.fallbackAtMs = Math.round(performance.now());
-      if (landEditorOnWholeWorld(app)) {
-        revealEditorWorld();
-        return;
-      }
       app.cameraFlightFitOptions = null;
       app.worldViewUniformBrightness = false;
       app.homeVectorTheme = false;
@@ -2410,12 +2403,6 @@
       renderer.beginHomeEdgeReveal({
         onComplete: () => {
           timing.sweepDoneAtMs = Math.round(performance.now());
-          if (landEditorOnWholeWorld(app)) {
-            editorBootReveal.state = "done";
-            timing.meltDoneAtMs = Math.round(performance.now());
-            revealEditorWorld();
-            return;
-          }
           // Dive from the world vista down onto the edited room while the
           // glow melts — the same construction-then-dive the play routes
           // land with.
@@ -4041,30 +4028,6 @@
     };
   }
 
-  function landEditorOnWholeWorld(app, options = {}) {
-    if (!hostedWorldDraftMode || !app) {
-      return false;
-    }
-    app.cameraFlightFitOptions = editorWorldFitOptions(app);
-    app.worldViewUniformBrightness = true;
-    app.homeVectorTheme = false;
-    app.vectorGlowAmount = 0;
-    app.threeRenderer?.setDebugCameraView?.({
-      yaw: 0,
-      // Keep enough perspective to read the 3D pieces while staying
-      // overhead enough that rows do not hide behind one another.
-      tilt: 0.42,
-      zoom: 1,
-      mode: "perspective",
-      skipRender: true
-    });
-    app.threeRenderer?.invalidateSceneCache?.();
-    if (options.render !== false) {
-      app.render();
-    }
-    return true;
-  }
-
   // The construction-then-dive every other surface plays: the camera starts
   // far out over the world's center, the glow sweep traces the whole world
   // in, then the camera dives down onto the room being edited while the
@@ -4151,8 +4114,8 @@
 
   // Post-boot choreography, staged so nothing competes with the glow sweep:
   // prime neighbor states, mesh the world's room groups INCREMENTALLY (8ms
-  // slices per frame instead of one synchronous build), then ease the camera
-  // back until the whole world is in frame — and only after that start the
+  // slices per frame instead of one synchronous build), then land the camera
+  // on the active room — and only after that start the
   // heavy background work (map thumbnails, palette preview renders).
   let editorWorldRevealStarted = false;
 
@@ -6806,7 +6769,6 @@
       authorUrlForLevel(state.levelId)
     );
     renderAll({ renderScene: false });
-    landEditorOnWholeWorld(editorRenderer.app);
   }
 
   async function switchToNeighborLevel(target) {
