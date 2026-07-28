@@ -149,6 +149,8 @@
       // host-only route state (such as MazeJam save ids) and run a custom
       // camera flight before committing the destination room.
       hostOwnsWorldMapNavigation: playData?.hostOwnsWorldMapNavigation === true,
+      disableHorizontalNeighborFetches:
+        playData?.disableHorizontalNeighborFetches === true,
       autoUndoPlayerFalls: playData?.autoUndoPlayerFalls === true,
       flyoverRadius: Math.max(1, Math.min(6, Number(playData?.flyoverRadius) || 3)),
       canvas,
@@ -386,7 +388,11 @@
     }
 
     async function loadHorizontalNeighborLevelState(levelId, options = {}) {
-      if (!levelId || typeof window.fetch !== "function") {
+      if (
+        app.disableHorizontalNeighborFetches ||
+        !levelId ||
+        typeof window.fetch !== "function"
+      ) {
         return null;
       }
 
@@ -439,7 +445,12 @@
           return storedLevelState;
         })
         .catch((error) => {
-          app.horizontalNeighborLevelStates.delete(levelId);
+          // A host can replace an in-flight remote lookup with a complete
+          // browser-local world snapshot. A stale 404 must not delete that
+          // newer prepared room from the render cache.
+          if (app.horizontalNeighborLevelStates.get(levelId) === request) {
+            app.horizontalNeighborLevelStates.delete(levelId);
+          }
           throw error;
         });
 
@@ -517,7 +528,11 @@
     }
 
     function queueHorizontalNeighborLevelState(levelId, options = {}) {
-      if (!levelId || typeof window.fetch !== "function") {
+      if (
+        app.disableHorizontalNeighborFetches ||
+        !levelId ||
+        typeof window.fetch !== "function"
+      ) {
         return;
       }
 
@@ -538,7 +553,10 @@
     }
 
     function syncHorizontalNeighborLevelStates() {
-      if (app.worldViewVistaMode === true) {
+      if (
+        app.disableHorizontalNeighborFetches ||
+        app.worldViewVistaMode === true
+      ) {
         return;
       }
 

@@ -94,6 +94,7 @@ const playData = adapter.buildPlayData({
 
 assert.equal(playData.gameId, "maze");
 assert.deepEqual(playData.cameraView, { width: 3, height: 2 });
+assert.equal(playData.disableHorizontalNeighborFetches, false);
 assert.equal(playData.terrain[0][0].type, "wall");
 assert.equal(playData.terrain[0][0].underlay.type, "floor");
 assert.equal(playData.terrain[0][1].type, "floor");
@@ -107,6 +108,14 @@ assert.deepEqual(
   ]
 );
 assert.equal(playData.actors[1].modelUrl, "/assets/maze/assets_3d/gem.glb");
+
+const localWorldPlayData = adapter.buildPlayData({
+  cells: [["."]],
+  disableHorizontalNeighborFetches: true,
+  height: 1,
+  width: 1
+});
+assert.equal(localWorldPlayData.disableHorizontalNeighborFetches, true);
 
 const clonePlayData = adapter.buildPlayData({
   cells: [["c1+c1"]],

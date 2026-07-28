@@ -1181,6 +1181,8 @@
     return buildPlayData({
       cameraView: options.cameraView || null,
       cells: options.cells || state.cells,
+      disableHorizontalNeighborFetches:
+        options.disableHorizontalNeighborFetches === true,
       editorRender: options.editorRender === true,
       gameId: authorData.game.id,
       height: state.height,
@@ -2146,6 +2148,7 @@
         height: state.height
       },
       editorRender: true,
+      disableHorizontalNeighborFetches: hostedWorldDraftMode,
       levelId: state.levelId,
       levelLabel: state.levelId,
       worldColumns,
