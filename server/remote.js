@@ -1,3 +1,4 @@
+const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 
@@ -9,14 +10,16 @@ const path = require("path");
 // Connecting an account:
 //   1. Device link (preferred): open <origin>/link-local?return_to=<local
 //      callback>. The hosted site (once it ships the endpoint) asks the
-//      signed-in user to approve, mints a session, and redirects back here
-//      with the token.
-//   2. Manual token: paste the `mazebench_session` cookie value from a
-//      signed-in browser session into the connect form.
+//      signed-in user to approve, then redirects back with a short-lived
+//      PKCE-bound code. This server exchanges it for a draft-sync-only token.
 
 const SESSION_COOKIE = "mazebench_session";
 const DEFAULT_ORIGIN = "https://dev.mazebench.com";
 const REQUEST_TIMEOUT_MS = 20000;
+const ALLOWED_REMOTE_ORIGINS = new Set([
+  "https://dev.mazebench.com",
+  "https://mazebench.com"
+]);
 
 function createRemoteService({ buildWorlds, ensureDirectory, getGame, loadJson, rootDir }) {
   const dataDir = path.join(rootDir, "data");
@@ -25,6 +28,8 @@ function createRemoteService({ buildWorlds, ensureDirectory, getGame, loadJson, 
   function readConfig() {
     return {
       origin: DEFAULT_ORIGIN,
+      pending_link: null,
+      session_origin: "",
       session_token: "",
       user: null,
       linked_at: null,
@@ -46,32 +51,45 @@ function createRemoteService({ buildWorlds, ensureDirectory, getGame, loadJson, 
   function sanitizeOrigin(value) {
     try {
       const url = new URL(String(value));
-
-      if (!["http:", "https:"].includes(url.protocol)) {
-        return null;
-      }
-
-      return url.origin;
+      return ALLOWED_REMOTE_ORIGINS.has(url.origin) && url.href === `${url.origin}/`
+        ? url.origin
+        : null;
     } catch (error) {
       return null;
     }
   }
 
-  async function remoteFetch(pathname, { method = "GET", body = undefined, auth = false } = {}) {
+  async function remoteFetch(
+    pathname,
+    {
+      method = "GET",
+      body = undefined,
+      auth = false,
+      followSameOriginRedirect = false,
+      sendSession = true
+    } = {}
+  ) {
     const config = readConfig();
+    const origin = sanitizeOrigin(config.origin);
+    if (!origin) {
+      throw new Error("The configured MazeBench origin is not trusted.");
+    }
     const headers = { accept: "application/json" };
 
     if (body !== undefined) {
       headers["content-type"] = "application/json";
     }
 
+    const sessionBoundToOrigin =
+      Boolean(config.session_token) &&
+      config.session_origin === origin;
     if (auth) {
-      if (!config.session_token) {
+      if (!sessionBoundToOrigin) {
         throw new Error("Not connected to a mazebench.com account.");
       }
 
       headers.cookie = `${SESSION_COOKIE}=${config.session_token}`;
-    } else if (config.session_token) {
+    } else if (sendSession && sessionBoundToOrigin) {
       // Send the cookie opportunistically so owner-only resources work too.
       headers.cookie = `${SESSION_COOKIE}=${config.session_token}`;
     }
@@ -79,22 +97,35 @@ function createRemoteService({ buildWorlds, ensureDirectory, getGame, loadJson, 
     let response;
 
     try {
-      response = await fetch(`${config.origin}${pathname}`, {
+      response = await fetch(`${origin}${pathname}`, {
         method,
         headers,
         body: body === undefined ? undefined : JSON.stringify(body),
         redirect: "manual",
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
       });
+      if (followSameOriginRedirect && isRedirect(response.status)) {
+        const location = response.headers.get("location");
+        const redirectUrl = location ? new URL(location, origin) : null;
+        if (!redirectUrl || redirectUrl.origin !== origin) {
+          throw new Error("The hosted site returned an unsafe redirect.");
+        }
+        response = await fetch(redirectUrl, {
+          method: "GET",
+          headers: { accept: "application/json" },
+          redirect: "manual",
+          signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+        });
+      }
     } catch (error) {
-      throw new Error(`Could not reach ${config.origin}: ${error instanceof Error ? error.message : error}`);
+      throw new Error(`Could not reach ${origin}: ${error instanceof Error ? error.message : error}`);
     }
 
     const payload = await response.json().catch(() => null);
 
     if (!response.ok) {
       const message = payload?.error || payload?.message || `${response.status} ${response.statusText}`;
-      throw new Error(`${config.origin}${pathname} failed: ${message}`);
+      throw new Error(`${origin}${pathname} failed: ${message}`);
     }
 
     return payload;
@@ -105,7 +136,11 @@ function createRemoteService({ buildWorlds, ensureDirectory, getGame, loadJson, 
 
     return {
       origin: config.origin,
-      connected: Boolean(config.session_token),
+      connected: Boolean(
+        config.session_token &&
+        sanitizeOrigin(config.origin) &&
+        config.session_origin === sanitizeOrigin(config.origin)
+      ),
       user: config.user,
       linked_at: config.linked_at
     };
@@ -115,10 +150,23 @@ function createRemoteService({ buildWorlds, ensureDirectory, getGame, loadJson, 
     const origin = sanitizeOrigin(value);
 
     if (!origin) {
-      throw new Error("Origin must be a valid http(s) URL.");
+      throw new Error("Origin must be an approved MazeBench HTTPS URL.");
     }
 
-    writeConfig({ ...readConfig(), origin });
+    const config = readConfig();
+    writeConfig(
+      config.origin === origin
+        ? { ...config, origin }
+        : {
+            ...config,
+            origin,
+            pending_link: null,
+            session_origin: "",
+            session_token: "",
+            user: null,
+            linked_at: null
+          }
+    );
     return getStatus();
   }
 
@@ -130,41 +178,131 @@ function createRemoteService({ buildWorlds, ensureDirectory, getGame, loadJson, 
     }
 
     const config = readConfig();
-    writeConfig({ ...config, session_token: trimmed });
+    const origin = sanitizeOrigin(config.origin);
+    if (!origin) {
+      throw new Error("The configured MazeBench origin is not trusted.");
+    }
+    writeConfig({ ...config, session_origin: origin, session_token: trimmed });
 
     let session;
 
     try {
       session = await remoteFetch("/api/session", { auth: true });
     } catch (error) {
-      writeConfig({ ...config, session_token: "" });
+      writeConfig({
+        ...config,
+        session_origin: "",
+        session_token: "",
+        user: null,
+        linked_at: null
+      });
       throw error;
     }
 
     if (!session?.authenticated || !session?.user) {
-      writeConfig({ ...config, session_token: "" });
+      writeConfig({
+        ...config,
+        session_origin: "",
+        session_token: "",
+        user: null,
+        linked_at: null
+      });
       throw new Error("That token is not an active mazebench.com session.");
+    }
+    if (session.user.session_scope !== "draft_sync") {
+      writeConfig({ ...config, session_token: "", user: null, linked_at: null });
+      throw new Error(
+        "Browser session tokens cannot be linked to localhost. Use the secure Link Local flow."
+      );
     }
 
     writeConfig({
       ...readConfig(),
+      pending_link: null,
       user: session.user,
       linked_at: new Date().toISOString()
     });
     return getStatus();
   }
 
-  function disconnect() {
-    writeConfig({ ...readConfig(), session_token: "", user: null, linked_at: null });
+  async function disconnect() {
+    const config = readConfig();
+    try {
+      if (
+        config.session_token &&
+        config.session_origin === sanitizeOrigin(config.origin)
+      ) {
+        await remoteFetch("/api/session", { auth: true, method: "DELETE" });
+      }
+    } catch {
+      // Local revocation is unconditional. The hosted credential expires
+      // within 24 hours even if the network is unavailable during disconnect.
+    } finally {
+      writeConfig({
+        ...readConfig(),
+        pending_link: null,
+        session_origin: "",
+        session_token: "",
+        user: null,
+        linked_at: null
+      });
+    }
     return getStatus();
   }
 
   function deviceLinkUrl(localCallbackUrl) {
     const config = readConfig();
-    const url = new URL("/link-local", config.origin);
+    const origin = sanitizeOrigin(config.origin);
+    if (!origin) {
+      throw new Error("The configured MazeBench origin is not trusted.");
+    }
+    const codeVerifier = crypto.randomBytes(32).toString("base64url");
+    const codeChallenge = crypto
+      .createHash("sha256")
+      .update(codeVerifier, "ascii")
+      .digest("base64url");
+    writeConfig({
+      ...config,
+      pending_link: {
+        code_verifier: codeVerifier,
+        created_at: new Date().toISOString(),
+        return_to: localCallbackUrl
+      }
+    });
+    const url = new URL("/link-local", origin);
 
     url.searchParams.set("return_to", localCallbackUrl);
+    url.searchParams.set("code_challenge", codeChallenge);
     return url.toString();
+  }
+
+  async function completeDeviceLink(code) {
+    const normalizedCode = String(code || "");
+    if (!/^mbl_[A-Za-z0-9_-]{43}$/.test(normalizedCode)) {
+      throw new Error("The local link code is invalid. Start Link Local again.");
+    }
+    const config = readConfig();
+    const pending = config.pending_link;
+    const createdAt = Date.parse(pending?.created_at || "");
+    if (
+      !pending?.code_verifier ||
+      !Number.isFinite(createdAt) ||
+      Date.now() - createdAt > 10 * 60 * 1000
+    ) {
+      throw new Error("The local link request expired. Start Link Local again.");
+    }
+    const exchange = await remoteFetch("/api/local-link/exchange", {
+      body: {
+        code: normalizedCode,
+        code_verifier: pending.code_verifier
+      },
+      method: "POST",
+      sendSession: false
+    });
+    if (exchange?.scope !== "draft_sync" || !exchange?.token) {
+      throw new Error("The hosted site did not return a draft-sync credential.");
+    }
+    return connectWithToken(exchange.token);
   }
 
   async function listRemoteWorlds(view = "drafts") {
@@ -172,7 +310,10 @@ function createRemoteService({ buildWorlds, ensureDirectory, getGame, loadJson, 
       ? view
       : "drafts";
     const needsAuth = normalizedView === "drafts" || normalizedView === "published";
-    const payload = await remoteFetch(`/api/build/worlds?view=${normalizedView}`, { auth: needsAuth });
+    const payload = await remoteFetch(`/api/build/worlds?view=${normalizedView}`, {
+      auth: needsAuth,
+      sendSession: needsAuth
+    });
     const worlds = Array.isArray(payload?.worlds) ? payload.worlds : [];
 
     return worlds.map((world) => ({
@@ -189,7 +330,26 @@ function createRemoteService({ buildWorlds, ensureDirectory, getGame, loadJson, 
   }
 
   async function fetchRemoteWorld(remoteWorldId) {
-    const payload = await remoteFetch(`/api/build/worlds/${encodeURIComponent(remoteWorldId)}`);
+    let payload = null;
+    if (getStatus().connected) {
+      try {
+        payload = await remoteFetch(
+          `/api/build/worlds/${encodeURIComponent(remoteWorldId)}`,
+          { auth: true }
+        );
+      } catch (error) {
+        if (!/404/.test(String(error.message))) throw error;
+      }
+    }
+    if (!payload) {
+      payload = await remoteFetch(
+        `/api/build/worlds/${encodeURIComponent(remoteWorldId)}/export`,
+        {
+          followSameOriginRedirect: true,
+          sendSession: false
+        }
+      );
+    }
     const world = payload?.world || payload;
 
     if (!world?.editor_state) {
@@ -298,6 +458,7 @@ function createRemoteService({ buildWorlds, ensureDirectory, getGame, loadJson, 
   }
 
   return {
+    completeDeviceLink,
     connectWithToken,
     deviceLinkUrl,
     disconnect,
@@ -307,6 +468,10 @@ function createRemoteService({ buildWorlds, ensureDirectory, getGame, loadJson, 
     pushWorld,
     setOrigin
   };
+}
+
+function isRedirect(status) {
+  return [301, 302, 303, 307, 308].includes(Number(status));
 }
 
 module.exports = {

@@ -7755,7 +7755,11 @@
       setStatus(`Downloaded play-mode solution ${format.toUpperCase()}.`, "success");
     } catch (error) {
       if (statusUrl) {
-        fetch(statusUrl, { method: "DELETE" }).catch(() => {});
+        fetch(statusUrl, {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: "{}"
+        }).catch(() => {});
       }
       setStatus(
         error instanceof Error ? error.message : `Could not render solution ${format.toUpperCase()}.`,

@@ -1,8 +1,10 @@
 const fs = require("fs");
 const path = require("path");
 const { URL } = require("url");
+const { isLoopbackHost, isLoopbackPeer } = require("./network");
 
 const PREVIEW_REQUEST_BODY_MAX_BYTES = 20 * 1024 * 1024;
+const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 function createRequestRouter({
   agentRuns,
@@ -49,6 +51,17 @@ function createRequestRouter({
     const url = new URL(request.url, `http://${request.headers.host || "localhost"}`);
     const segments = url.pathname.split("/").filter(Boolean);
     const publicFilePath = publicFileRoutes.get(url.pathname);
+    if (!isLoopbackRequest(request)) {
+      sendHtml(response, 403, "Forbidden.");
+      return;
+    }
+    if (segments[0] === "api") {
+      const localApiError = validateLocalApiRequest(request, url, segments);
+      if (localApiError) {
+        sendJson(response, localApiError.status, { error: localApiError.message });
+        return;
+      }
+    }
 
     if (publicFilePath) {
       sendFile(request, response, publicFilePath, getContentType(publicFilePath));
@@ -438,14 +451,8 @@ function createRequestRouter({
         return;
       }
 
-      if (segments.length === 3 && segments[2] === "connect" && request.method === "POST") {
-        const payload = await readJsonBody(request);
-        sendJson(response, 200, await remote.connectWithToken(payload?.token));
-        return;
-      }
-
       if (segments.length === 3 && segments[2] === "disconnect" && request.method === "POST") {
-        sendJson(response, 200, remote.disconnect());
+        sendJson(response, 200, await remote.disconnect());
         return;
       }
 
@@ -463,10 +470,10 @@ function createRequestRouter({
       }
 
       if (segments.length === 4 && segments[2] === "link" && segments[3] === "callback" && request.method === "GET") {
-        const token = url.searchParams.get("token") || "";
+        const code = url.searchParams.get("code") || "";
 
         try {
-          await remote.connectWithToken(token);
+          await remote.completeDeviceLink(code);
           sendRedirect(response, "/build?linked=1");
         } catch (error) {
           sendRedirect(response, `/build?link_error=${encodeURIComponent(error.message)}`);
@@ -1041,6 +1048,64 @@ function createRequestRouter({
   return {
     handleRequest
   };
+}
+
+function validateLocalApiRequest(request, url, segments) {
+  const host = String(request.headers.host || "");
+  if (!isLoopbackRequest(request)) {
+    return {
+      status: 403,
+      message: "Local API requests require a loopback Host and TCP peer."
+    };
+  }
+
+  const isLinkCallback =
+    request.method === "GET" &&
+    segments.length === 4 &&
+    segments[1] === "remote" &&
+    segments[2] === "link" &&
+    segments[3] === "callback";
+  if (isLinkCallback) {
+    const fetchSite = String(request.headers["sec-fetch-site"] || "").toLowerCase();
+    const fetchMode = String(request.headers["sec-fetch-mode"] || "").toLowerCase();
+    const fetchDest = String(request.headers["sec-fetch-dest"] || "").toLowerCase();
+    if (
+      fetchSite &&
+      fetchSite !== "same-origin" &&
+      fetchSite !== "none" &&
+      (fetchMode !== "navigate" || fetchDest !== "document")
+    ) {
+      return { status: 403, message: "Local link callbacks require a top-level navigation." };
+    }
+  } else {
+    const expectedOrigin = new URL(`http://${host}`).origin;
+    const origin = String(request.headers.origin || "");
+    if (origin && origin !== expectedOrigin) {
+      return { status: 403, message: "Cross-site local API requests are not allowed." };
+    }
+    const fetchSite = String(request.headers["sec-fetch-site"] || "").toLowerCase();
+    if (fetchSite && fetchSite !== "same-origin" && fetchSite !== "none") {
+      return { status: 403, message: "Cross-site local API requests are not allowed." };
+    }
+  }
+
+  if (UNSAFE_METHODS.has(String(request.method || "").toUpperCase())) {
+    const contentType = String(request.headers["content-type"] || "")
+      .split(";", 1)[0]
+      .trim()
+      .toLowerCase();
+    if (contentType !== "application/json") {
+      return { status: 415, message: "Local API mutations require application/json." };
+    }
+  }
+  return null;
+}
+
+function isLoopbackRequest(request) {
+  return (
+    isLoopbackHost(request?.headers?.host) &&
+    isLoopbackPeer(request?.socket?.remoteAddress)
+  );
 }
 
 module.exports = {

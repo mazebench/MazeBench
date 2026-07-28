@@ -1,4 +1,5 @@
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -78,6 +79,23 @@ try {
     rootDir: remoteConfigRoot
   });
   remote.disconnect();
+  const callback = "http://localhost:3000/api/remote/link/callback";
+  const linkUrl = new URL(remote.deviceLinkUrl(callback));
+  const codeChallenge = linkUrl.searchParams.get("code_challenge");
+  const remoteConfig = JSON.parse(
+    fs.readFileSync(path.join(remoteConfigRoot, "data", "remote.json"), "utf8")
+  );
+  assert.equal(linkUrl.searchParams.get("return_to"), callback);
+  assert.match(codeChallenge, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(linkUrl.searchParams.has("token"), false);
+  assert.equal(
+    crypto
+      .createHash("sha256")
+      .update(remoteConfig.pending_link.code_verifier, "ascii")
+      .digest("base64url"),
+    codeChallenge,
+    "the browser code must be bound to the verifier held only by the local server"
+  );
   const remoteConfigMode = fs.statSync(path.join(remoteConfigRoot, "data", "remote.json")).mode & 0o777;
   assert.equal(remoteConfigMode, 0o600, "the local hosted-session cache must be owner-readable only");
 } finally {
@@ -90,6 +108,8 @@ assert.doesNotMatch(playTheme, /--mb-sign-gap|--mb-scene-h/);
 assert.doesNotMatch(playTheme, /wordmark-m/);
 assert.doesNotMatch(playTheme, /mbTick/);
 assert.match(router, /if \(url\.pathname === "\/play"\) \{[\s\S]*?sendRedirect\(response, "\/build"\)/);
+assert.match(router, /remote\.completeDeviceLink\(code\)/);
+assert.doesNotMatch(router, /url\.searchParams\.get\("token"\)/);
 assert.match(favicon, /Maze Bench Minotaur/);
 assert.match(favicon, /M 358\.428 591\.327/);
 assert.match(favicon, /M 684 591\.750/);

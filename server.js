@@ -1,6 +1,7 @@
 const http = require("http");
 const fs = require("fs");
 const { HOST, PORT, createRequestHandler } = require("./server/app");
+const { browserHostForBind } = require("./server/network");
 
 const server = http.createServer(createRequestHandler());
 
@@ -50,7 +51,7 @@ server.on("error", (error) => {
 });
 
 server.on("listening", () => {
-  const url = `http://${HOST}:${port}`;
+  const url = `http://${browserHostForBind(HOST)}:${port}`;
   console.log(`MazeBench running at ${url}`);
   writeState(port, url);
 });

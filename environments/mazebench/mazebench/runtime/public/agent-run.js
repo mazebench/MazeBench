@@ -4133,7 +4133,11 @@
   }
 
   async function runAction(action) {
-    const response = await fetch(`/api/agent/runs/${encodeURIComponent(runId)}/${action}`, { method: "POST" });
+    const response = await fetch(`/api/agent/runs/${encodeURIComponent(runId)}/${action}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}"
+    });
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}));
       throw new Error(payload.error || `Request failed (${response.status}).`);
@@ -4297,7 +4301,11 @@
   deleteButton?.addEventListener("click", async () => {
     if (!window.confirm("Delete this run and its artifacts? This can't be undone.")) return;
     try {
-      const response = await fetch(`/api/agent/runs/${encodeURIComponent(runId)}`, { method: "DELETE" });
+      const response = await fetch(`/api/agent/runs/${encodeURIComponent(runId)}`, {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: "{}"
+      });
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
         throw new Error(payload.error || `Request failed (${response.status}).`);
