@@ -4093,49 +4093,25 @@
     return primedStates;
   }
 
-  // World-fit rectangle in world units, relative to the current room's
-  // origin — the same shape play's camera flights feed the renderer.
-  function editorWorldFitOptions(app) {
-    const unit = app.TILE_SIZE || 64;
-    const roomSpan = 16 * unit;
-    const coordinates = parseLevelCoordinates(state.levelId) || { column: "A", row: "A" };
-    const columnIndex = Math.max(0, columnIndexByValue.get(coordinates.column) ?? 0);
-    const rowIndex = Math.max(0, rowIndexByValue.get(coordinates.row) ?? 0);
-    const minX = -columnIndex * roomSpan;
-    const maxX = (worldColumns.length - columnIndex) * roomSpan;
-    const minZ = -rowIndex * roomSpan;
-    const maxZ = (worldRows.length - rowIndex) * roomSpan;
-    return {
-      centerX: (minX + maxX) / 2,
-      centerZ: (minZ + maxZ) / 2,
-      maxX,
-      maxZ,
-      minX,
-      minZ
-    };
-  }
-
-  // The construction-then-dive every other surface plays: the camera starts
-  // far out over the world's center, the glow sweep traces the whole world
-  // in, then the camera dives down onto the room being edited while the
-  // vector look melts into editor colors.
+  // Keep the fit frame continuous with the blue sweep, then ease its pulled-
+  // back camera onto the room being edited while the vector look melts into
+  // editor colors. Neighbor rooms remain rendered around this fixed room fit.
   function editorDiveIntoRoom(app, onDone) {
     const rendererApi = app.threeRenderer;
     const unit = app.TILE_SIZE || 64;
-    const roomSpan = 16 * unit;
-    const worldFit = editorWorldFitOptions(app);
+    const roomWidth = Math.max(1, Number(app.state?.width) || 16) * unit;
+    const roomHeight = Math.max(1, Number(app.state?.height) || 16) * unit;
     const roomFit = {
-      centerX: roomSpan / 2,
-      centerZ: roomSpan / 2,
-      maxX: roomSpan,
-      maxZ: roomSpan,
+      centerX: roomWidth / 2,
+      centerZ: roomHeight / 2,
+      maxX: roomWidth,
+      maxZ: roomHeight,
       minX: 0,
       minZ: 0
     };
-    // Exactly the numbers the draft play route dives with (flyCameraToRoom
-    // from the world vista): 900ms cosine ease, tilt 1.3 -> 0.22, zoom
-    // 0.2 -> 1 interpolated in log space, glow melting alongside, and the
-    // brightness flip + 900ms world-shadow fade kicked at flight start.
+    // Preserve the existing 900ms cosine camera ease: tilt 1.3 -> 0.22,
+    // zoom 0.2 -> 1 in log space, glow melting alongside, and the brightness
+    // flip + world-shadow fade kicked at flight start.
     const durationMs = 900;
     const startedAt = performance.now();
     const startTilt = 1.3;
@@ -4172,14 +4148,10 @@
       const progress = raw < 0 ? 0 : raw > 1 ? 1 : raw;
       // Play's flight easing (cosine ease-in-out), not the quad variant.
       const eased = 0.5 - Math.cos(Math.PI * progress) / 2;
-      app.cameraFlightFitOptions = {
-        centerX: worldFit.centerX + (roomFit.centerX - worldFit.centerX) * eased,
-        centerZ: worldFit.centerZ + (roomFit.centerZ - worldFit.centerZ) * eased,
-        maxX: worldFit.maxX + (roomFit.maxX - worldFit.maxX) * eased,
-        maxZ: worldFit.maxZ + (roomFit.maxZ - worldFit.maxZ) * eased,
-        minX: worldFit.minX + (roomFit.minX - worldFit.minX) * eased,
-        minZ: worldFit.minZ + (roomFit.minZ - worldFit.minZ) * eased
-      };
+      // The preceding blue sweep already uses this exact current-room fit.
+      // Holding it fixed avoids a one-frame whole-world/double-zoom snap at
+      // progress zero while retaining the renderer's flight/shadow fast path.
+      app.cameraFlightFitOptions = { ...roomFit };
       rendererApi.setDebugCameraView({
         yaw: 0,
         tilt: startTilt + (endTilt - startTilt) * eased,
