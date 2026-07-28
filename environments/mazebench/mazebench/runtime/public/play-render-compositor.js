@@ -360,7 +360,12 @@
 
       function step(now) {
         app.levelTransitionFrameId = null;
-        (app.renderOncePerFrame || app.render)(now);
+        // A camera/model callback may already have rendered the default
+        // "scene" channel at this exact RAF timestamp. The transition loop
+        // must use its own channel: if renderOncePerFrame dedupes this
+        // callback after we clear levelTransitionFrameId, no callback remains
+        // to advance or complete the transition.
+        (app.renderOncePerFrame || app.render)(now, "level-transition");
       }
 
       app.levelTransitionFrameId = window.requestAnimationFrame(step);
