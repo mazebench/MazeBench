@@ -3552,6 +3552,99 @@
   const localLevelThumbs = new Map();
   let currentLevelThumbTimer = 0;
 
+  function localThumbTerrainColor(cell) {
+    const types = Array.isArray(cell?.layers)
+      ? cell.layers.map((layer) => layer?.type)
+      : [cell?.type];
+
+    if (types.includes("wall")) return "#383039";
+    if (types.includes("ice_wall")) return "#7bb1c6";
+    if (types.includes("ice") || types.includes("slope")) return "#abdbea";
+    if (types.includes("orange_button")) return "#ed9142";
+    if (types.includes("exit")) return "#40965b";
+    return "#d9bc94";
+  }
+
+  function localThumbActorColor(type) {
+    if (type === "gem") return "#1fd8df";
+    if (type === "player" || type === "circle_player") return "#48b85f";
+    if (type === "clone") return "#345087";
+    if (type === "box" || type === "weightless_box") return "#856244";
+    if (type === "puncher") return "#be6f44";
+    return "#596273";
+  }
+
+  // Hosted editors already receive every saved room's cells in the page.
+  // Draw their map tiles synchronously with a tiny 2D canvas: the map is
+  // useful on its first frame, no WebGL contexts or model downloads are
+  // needed, and no preview bytes ever leave the browser.
+  function renderSimpleLevelThumbFromCells(levelId, cells, width, height) {
+    const safeWidth = Math.max(1, Number(width) || cells?.[0]?.length || 1);
+    const safeHeight = Math.max(1, Number(height) || cells?.length || 1);
+    const playData = buildPlayData({
+      cameraView: { width: safeWidth, height: safeHeight },
+      cells: cells.map((row) => row.slice()),
+      editorRender: true,
+      gameId: authorData.game.id,
+      height: safeHeight,
+      includeGems: true,
+      levelId: "__author_thumbnail_simple_" + encodeURIComponent(levelId),
+      levelLabel: levelId,
+      width: safeWidth
+    });
+    const terrain = Array.isArray(playData?.terrain) ? playData.terrain : [];
+    const canvas = document.createElement("canvas");
+    canvas.width = 128;
+    canvas.height = 128;
+    const context = canvas.getContext("2d");
+
+    if (!context) {
+      return "";
+    }
+
+    context.fillStyle = "#171923";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    const cellWidth = canvas.width / safeWidth;
+    const cellHeight = canvas.height / safeHeight;
+
+    for (let y = 0; y < safeHeight; y += 1) {
+      for (let x = 0; x < safeWidth; x += 1) {
+        context.fillStyle = localThumbTerrainColor(terrain[y]?.[x]);
+        context.fillRect(
+          Math.floor(x * cellWidth),
+          Math.floor(y * cellHeight),
+          Math.ceil(cellWidth),
+          Math.ceil(cellHeight)
+        );
+      }
+    }
+
+    for (const actor of Array.isArray(playData?.actors) ? playData.actors : []) {
+      const x = Number(actor?.x);
+      const y = Number(actor?.y);
+
+      if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        continue;
+      }
+
+      context.fillStyle = localThumbActorColor(actor?.type);
+      context.beginPath();
+      context.arc(
+        (x + 0.5) * cellWidth,
+        (y + 0.5) * cellHeight,
+        Math.max(1.5, Math.min(cellWidth, cellHeight) * 0.3),
+        0,
+        Math.PI * 2
+      );
+      context.fill();
+    }
+
+    const url = canvas.toDataURL("image/png");
+    localLevelThumbs.set(levelId, url);
+    applyLocalThumbToMapTile(levelId, url);
+    return url;
+  }
+
   function ensureThumbApp() {
     if (worldThumbRenderer.ready) {
       return worldThumbRenderer.ready;
@@ -3617,6 +3710,9 @@
   async function renderLevelThumbFromCells(levelId, cells, width, height, options = {}) {
     if (!levelId || !Array.isArray(cells) || !cells.length) {
       return;
+    }
+    if (!clientPreviewPersistence) {
+      return renderSimpleLevelThumbFromCells(levelId, cells, width, height);
     }
     const app = await ensureThumbApp();
     if (!app) {
@@ -4597,8 +4693,20 @@
       if (local) {
         return local;
       }
+      const level = levelsById.get(levelId);
+      const cells = levelId === state.levelId ? state.cells : level?.cells;
+      const width = levelId === state.levelId ? state.width : level?.width;
+      const height = levelId === state.levelId ? state.height : level?.height;
+
+      if (
+        !clientPreviewPersistence &&
+        Array.isArray(cells) &&
+        cells.length > 0
+      ) {
+        return renderSimpleLevelThumbFromCells(levelId, cells, width, height);
+      }
       const fromWorld = authorData.worldPreviewUrls && authorData.worldPreviewUrls[levelId];
-      return fromWorld || levelsById.get(levelId)?.previewUrl || null;
+      return fromWorld || level?.previewUrl || null;
     };
 
     const tiles = [];
@@ -6086,7 +6194,49 @@
     });
   }
 
+  function cachedAuthorLevelPayload(levelId) {
+    if (clientPreviewPersistence) {
+      return null;
+    }
+
+    const level = authorData.existingLevels.find(
+      (entry) => entry.id === levelId
+    );
+
+    if (!level || !Array.isArray(level.cells) || level.cells.length === 0) {
+      return null;
+    }
+
+    const width = Math.max(1, Number(level.width) || level.cells[0]?.length || 1);
+    const height = Math.max(1, Number(level.height) || level.cells.length || 1);
+    const cells = cloneCells(level.cells);
+
+    return {
+      cells,
+      exists: true,
+      fileName: levelId + ".txt",
+      filePath: "build-worlds/" + levelId + ".txt",
+      height,
+      hotbarTokens: savedHotbarTokens.slice(),
+      label: level.label || levelId,
+      levelId,
+      message: "Loaded locally.",
+      playUrl: playUrlForLevel(levelId),
+      previewUrl: localLevelThumbs.get(levelId) || level.previewUrl || null,
+      rawText: cells.map((row) => row.join(authorData.separator)).join("\n"),
+      width
+    };
+  }
+
   async function fetchAuthorLevelPayload(levelId) {
+    // Hosted pages already carry every saved room so the editor can render
+    // the whole world. Reuse that snapshot for room switching instead of
+    // spending an authenticated API read (and a rate-limit token) per click.
+    const cachedPayload = cachedAuthorLevelPayload(levelId);
+    if (cachedPayload) {
+      return cachedPayload;
+    }
+
     const response = await fetch(
       authorData.authorApiBaseUrl + "/" + encodeURIComponent(levelId),
       { headers: { Accept: "application/json" } }
