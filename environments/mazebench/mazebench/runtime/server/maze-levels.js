@@ -812,6 +812,7 @@ function createMazeLevelService({
         typeof game.parser?.rules?.block_adder === "string" && game.parser.rules.block_adder.length > 0
           ? game.parser.rules.block_adder
           : "+",
+      clientPreviewPersistence: true,
       defaultFloorToken: floorToken,
       defaultLevelId: worldMaps.defaultLevelIdForGame(game),
       defaultHeight: config.authorDefaultHeight,

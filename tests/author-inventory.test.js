@@ -287,6 +287,11 @@ assert.match(saveSection, /hotbarTokens: submittedHotbarTokens/);
 assert.match(saveSection, /const liveHotbarUnchanged = hotbarSignature\(\) === submittedHotbarSignature/);
 assert.match(saveSection, /applyPersistedHotbarTokens\(payload\.hotbarTokens, submittedHotbarTokens\)/);
 assert.match(saveSection, /rememberPersistedHotbarTokens\(payload\.hotbarTokens, submittedHotbarTokens\)/);
+assert.match(
+  saveSection,
+  /scheduleCurrentLevelThumbRefresh\(0, \{ persist: clientPreviewPersistence \}\)/,
+  "the host capability must prevent a hosted room save from issuing a duplicate preview mutation"
+);
 assert.match(saveSection, /New changes are still unsaved\./);
 
 const loadSection = sourceSection("function applyAuthorLevelPayload", "async function loadLevel");

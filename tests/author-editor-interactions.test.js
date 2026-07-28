@@ -622,6 +622,21 @@ const switchSection = sourceSection(
   "async function switchToNeighborLevel",
   "function formatSolverPath"
 );
+const backgroundThumbSection = sourceSection(
+  authorSource,
+  "async function primeLocalWorldThumbs",
+  "function createPalettePreviewPlayData"
+);
+assert.match(
+  backgroundThumbSection,
+  /persist:\s*clientPreviewPersistence\s*&&\s*!level\.previewUrl/,
+  "hosted editors must be able to keep editor-boot thumbnails local"
+);
+assert.match(
+  authorSource,
+  /const clientPreviewPersistence = authorData\.clientPreviewPersistence !== false/,
+  "preview persistence must default on for the local author server"
+);
 assert.match(switchSection, /cancelScheduledPointerMove\(\)/);
 assert.match(switchSection, /finishPainting\(/);
 assert.doesNotMatch(
@@ -645,6 +660,24 @@ assertBefore(
   "finishPainting(",
   "await saveLevel(",
   "an active stroke must finish before the asynchronous room switch begins"
+);
+assert.match(
+  switchSection,
+  /finishPainting\(\);\s*const outgoingWasDirty = state\.isDirty;/
+);
+assert.match(
+  switchSection,
+  /if \(outgoingWasDirty\) \{\s*const savedPayload = await saveLevel\(/
+);
+assert.match(
+  switchSection,
+  /\{ persist: clientPreviewPersistence \}/,
+  "host capability must control the post-save preview mutation"
+);
+assert.doesNotMatch(
+  switchSection,
+  /\{ persist: true \}/,
+  "ordinary room switching must not issue a second thumbnail mutation"
 );
 assert.match(
   switchSection,

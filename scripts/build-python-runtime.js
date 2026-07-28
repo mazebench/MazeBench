@@ -7,7 +7,7 @@
 //
 // The staged tree mirrors a minimal checkout:
 //   server.js, package.json, shared/, server/, public/, scripts/, games/maze/,
-//   vendor/ (the three.js files normally served from node_modules)
+//   vendor/ (the three.js files normally served from node_modules), licenses
 //
 // Node.js remains a runtime prerequisite on the user's machine (plus ffmpeg +
 // a Chromium-family browser for replay videos, and codex/claude for agents).
@@ -31,6 +31,8 @@ const COPY_DIRECTORIES = [
 ];
 
 const COPY_FILES = [
+  "LICENSE",
+  "THIRD_PARTY_NOTICES.md",
   "server.js",
   "package.json",
   "environments/mazebench/prime-harness-catalog.json",

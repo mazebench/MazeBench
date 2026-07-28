@@ -56,6 +56,15 @@ packages = ["mazebench_cli"]
 # gitignored, so it must be forced into the build as artifacts.
 artifacts = ["mazebench_cli/_runtime/**"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"THIRD_PARTY_NOTICES.md" = "mazebench_cli/THIRD_PARTY_NOTICES.md"
+
 [tool.hatch.build.targets.sdist]
-include = ["mazebench_cli/**", "README.md", "README_PYPI.md", "LICENSE"]
+include = [
+    "mazebench_cli/**",
+    "README.md",
+    "README_PYPI.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+]
 artifacts = ["mazebench_cli/_runtime/**"]

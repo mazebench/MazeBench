@@ -134,6 +134,11 @@ assert.deepEqual(catalogWeightless.demo, { layout: ["p $ ."], moves: "R" });
 assert.equal(authorPageData.palette.find((tool) => tool.token === "Sr#").styleKey, "wall");
 assert.equal(authorPageData.toolboxCatalog.format, 1);
 assert.equal(authorPageData.roomSwapApiUrl, "/api/world-map/maze/swap");
+assert.equal(
+  authorPageData.clientPreviewPersistence,
+  true,
+  "the local author server must retain its client-rendered preview uploads"
+);
 
 assert.deepEqual(editorState.cells[0].slice(0, 3), ["+", ".", "+++#"]);
 

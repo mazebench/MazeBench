@@ -7,6 +7,12 @@
     return;
   }
 
+  // The local MazeBench author API stores the rendered portrait sent by this
+  // client. Hosted deployments may keep portraits entirely browser-local, so
+  // they can opt out of preview mutations without changing the shared editor
+  // runtime.
+  const clientPreviewPersistence = authorData.clientPreviewPersistence !== false;
+
   const elements = {
     applyCellValue: document.getElementById("apply-cell-value"),
     boardHeight: document.getElementById("board-height"),
@@ -3955,9 +3961,13 @@
         continue;
       }
       await renderLevelThumbFromCells(level.id, cells, width, height, {
-        // Existing official-world portraits are already canonical. New or
-        // imported local rooms get their first persisted portrait here.
-        persist: !level.previewUrl && !(isCurrent && state.isDirty)
+        // Local authoring persists missing portraits. Hosted deployments can
+        // disable this capability and keep the same portraits browser-local,
+        // preventing a large world from fanning out background mutations.
+        persist:
+          clientPreviewPersistence &&
+          !level.previewUrl &&
+          !(isCurrent && state.isDirty)
       }).catch(() => {});
       await sleepMs(80);
     }
@@ -6237,7 +6247,10 @@
       // Persist exactly one portrait after a saved board change. Live paint
       // previews remain local, so editing never creates upload churn.
       if (refreshPreview && submittedBoardWasDirty && liveBoardUnchanged) {
-        scheduleCurrentLevelThumbRefresh(0, { persist: true });
+        // Hosted editors can keep this portrait browser-local. The local
+        // author server opts into receiving it because it does not render one
+        // itself.
+        scheduleCurrentLevelThumbRefresh(0, { persist: clientPreviewPersistence });
       }
 
       if (updateStatus) {
@@ -6341,33 +6354,40 @@
     currentLevelThumbTimer = 0;
     cancelScheduledPointerMove();
     finishPainting();
+    const outgoingWasDirty = state.isDirty;
     state.isLevelSwitching = true;
     clearEditorHoverTarget();
     syncUndoButtonState();
-    setStatus("Saving before switching rooms...", "warning");
+    setStatus(
+      outgoingWasDirty ? "Saving before switching rooms..." : "Switching rooms...",
+      "warning"
+    );
 
     let app = null;
     let outgoingPlayData = null;
 
     try {
-      const savedPayload = await saveLevel({
-        refreshPreview: false,
-        renderAfterSave: false,
-        throwOnError: true,
-        updateStatus: false
-      });
+      if (outgoingWasDirty) {
+        const savedPayload = await saveLevel({
+          refreshPreview: false,
+          renderAfterSave: false,
+          throwOnError: true,
+          updateStatus: false
+        });
 
-      // Refresh the outgoing room while state still points at it. Deferred
-      // thumbnail/cache timers must not accidentally snapshot the incoming
-      // room after the transition lands.
-      refreshEditorLevelNeighborState(savedPayload);
-      renderLevelThumbFromCells(
-        savedPayload.levelId,
-        savedPayload.cells,
-        savedPayload.width,
-        savedPayload.height,
-        { persist: true }
-      ).catch(() => {});
+        // Refresh the outgoing room while state still points at it. Hosted
+        // deployments can disable client preview persistence and keep this
+        // portrait browser-local; the local server receives the richer
+        // portrait it cannot render itself.
+        refreshEditorLevelNeighborState(savedPayload);
+        renderLevelThumbFromCells(
+          savedPayload.levelId,
+          savedPayload.cells,
+          savedPayload.width,
+          savedPayload.height,
+          { persist: clientPreviewPersistence }
+        ).catch(() => {});
+      }
 
       outgoingPlayData = buildEditorRenderPlayData();
       app = ensureEditorRenderApp(outgoingPlayData);
