@@ -749,15 +749,93 @@ const editorCameraSection = sourceSection(
   "function editorDiveIntoRoom",
   "// Post-boot choreography"
 );
-assert.match(editorCameraSection, /const worldFit = editorWorldFitOptions\(app\)/);
+assert.doesNotMatch(editorCameraSection, /worldFit|editorWorldFitOptions/);
+assert.match(editorCameraSection, /const roomWidth = Math\.max\(1, Number\(app\.state\?\.width\) \|\| 16\) \* unit/);
+assert.match(editorCameraSection, /const roomHeight = Math\.max\(1, Number\(app\.state\?\.height\) \|\| 16\) \* unit/);
+assert.match(editorCameraSection, /app\.cameraFlightFitOptions = \{ \.\.\.roomFit \}/);
 assert.match(editorCameraSection, /app\.cameraFlightFitOptions = null/);
 assert.match(editorCameraSection, /tilt: endTilt/);
 assert.match(editorCameraSection, /zoom: 1/);
 assert.match(
   rendererSource,
   /if \(app\.editorWorldView === true\) \{[\s\S]*normalizedCameraFitOptions\([\s\S]*app\.cameraFlightFitOptions,[\s\S]*stableCameraWorldHeight\(\)[\s\S]*return wholeWorldFit/,
-  "the editor camera dive must consume its supplied world-to-room bounds"
+  "the editor camera dive must consume its supplied fixed room bounds"
 );
+
+const bootCameraFrames = [];
+const bootCameraViews = [];
+const bootCameraCallbacks = [];
+let bootCameraDone = 0;
+const bootCameraApp = {
+  TILE_SIZE: 64,
+  cameraFlightFitOptions: null,
+  homeVectorTheme: true,
+  state: { height: 8, width: 12 },
+  threeRenderer: {
+    invalidateSceneCache() {},
+    setDebugCameraView(view) {
+      bootCameraViews.push({ ...view });
+    }
+  },
+  render(now) {
+    bootCameraFrames.push({
+      fit: this.cameraFlightFitOptions
+        ? { ...this.cameraFlightFitOptions }
+        : null,
+      now,
+      view: bootCameraViews.length
+        ? { ...bootCameraViews[bootCameraViews.length - 1] }
+        : null
+    });
+  }
+};
+const editorDiveIntoRoom = vm.runInNewContext(
+  `(${editorCameraSection.trim()})`,
+  {
+    Math,
+    Number,
+    performance: { now: () => 1000 },
+    window: {
+      matchMedia: () => ({ matches: false }),
+      requestAnimationFrame(callback) {
+        bootCameraCallbacks.push(callback);
+      }
+    }
+  }
+);
+editorDiveIntoRoom(bootCameraApp, () => {
+  bootCameraDone += 1;
+});
+assert.equal(bootCameraCallbacks.length, 1);
+bootCameraCallbacks.shift()(1000);
+bootCameraCallbacks.shift()(1450);
+bootCameraCallbacks.shift()(1900);
+
+const expectedBootRoomFit = {
+  centerX: 384,
+  centerZ: 256,
+  maxX: 768,
+  maxZ: 512,
+  minX: 0,
+  minZ: 0
+};
+const flightFrames = bootCameraFrames.filter((frame) => frame.fit);
+assert.equal(flightFrames.length, 3);
+flightFrames.forEach((frame) => {
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(frame.fit)),
+    expectedBootRoomFit,
+    "boot camera fit must never expand or shift away from the frame shown during the blue sweep"
+  );
+});
+assert.equal(flightFrames[0].view.zoom, 0.2);
+assert.equal(flightFrames[0].view.tilt, 1.3);
+assert.ok(flightFrames[1].view.zoom > flightFrames[0].view.zoom);
+assert.ok(flightFrames[2].view.zoom > flightFrames[1].view.zoom);
+assert.equal(bootCameraApp.cameraFlightFitOptions, null);
+assert.equal(bootCameraViews[bootCameraViews.length - 1].zoom, 1);
+assert.equal(bootCameraViews[bootCameraViews.length - 1].tilt, 0.22);
+assert.equal(bootCameraDone, 1);
 assert.match(
   authorSource,
   /editorDiveIntoRoom\(app, \(\) => \{[\s\S]*editorBootReveal\.state = "done"/,

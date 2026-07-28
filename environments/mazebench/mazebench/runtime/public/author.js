@@ -507,23 +507,34 @@
   const columnIndexByValue = new Map(worldColumns.map((letter, index) => [letter, index]));
   const rowIndexByValue = new Map(worldRows.map((letter, index) => [letter, index]));
   let renderStartRoomGrid = () => {};
-  const initialLevelCells = normalizeAuthoringCells(authorData.initialLevel.cells);
+  const initialHostedWorldLevel =
+    hostedWorldDraftMode && authorData.initialLevel?.exists === false
+      ? hostedWorldLevelRecord(
+          authorData.initialLevel.levelId,
+          authorData.initialLevel,
+          { synthesizeMissing: true }
+        )
+      : null;
+  const initialLevel = initialHostedWorldLevel
+    ? { ...authorData.initialLevel, ...initialHostedWorldLevel }
+    : authorData.initialLevel;
+  const initialLevelCells = normalizeAuthoringCells(initialLevel.cells);
   const state = {
     cells: cloneCells(initialLevelCells),
-    exists: authorData.initialLevel.exists,
-    fileName: authorData.initialLevel.fileName,
-    filePath: authorData.initialLevel.filePath,
-    height: authorData.initialLevel.height,
+    exists: initialLevel.exists,
+    fileName: initialLevel.fileName,
+    filePath: initialLevel.filePath,
+    height: initialLevel.height,
     isDirty: false,
     isLevelLoading: false,
     isLevelSwitching: false,
     isSolutionPlaying: false,
     isSolverBusy: false,
-    levelId: authorData.initialLevel.levelId,
-    message: authorData.initialLevel.exists
+    levelId: initialLevel.levelId,
+    message: initialLevel.exists
       ? "Loaded existing level."
       : "Fresh level. Paint something good.",
-    messageTone: authorData.initialLevel.exists ? "success" : "warning",
+    messageTone: initialLevel.exists ? "success" : "warning",
     lastPaintTargetKey: null,
     eraseGestureMode: null,
     hillClimbResults: [],
@@ -535,8 +546,8 @@
     paintStrokePaintedVoxelKeys: new Set(),
     paintStrokeToken: null,
     savedBoardSignature: boardSignature(
-      authorData.initialLevel.width,
-      authorData.initialLevel.height,
+      initialLevel.width,
+      initialLevel.height,
       initialLevelCells
     ),
     selectedCell: { x: 0, y: 0 },
@@ -551,7 +562,7 @@
     solverSolutionCellsKey: null,
     solverSolutionPath: null,
     undoStack: [],
-    width: authorData.initialLevel.width,
+    width: initialLevel.width,
     worldMapSwapBusy: false,
     worldMapSwapFirstLevelId: null,
     worldMapSwapMessage: "Choose Swap rooms, then select two built rooms.",
@@ -687,6 +698,61 @@
     return Array.from({ length: height }, () => Array.from({ length: width }, () => fillToken));
   }
 
+  // Keep sparse hosted worlds cheap in storage without making their untouched
+  // rooms invisible in the editor. This fallback intentionally mirrors
+  // shared/default-world-template.js; the focused parity test fails if the
+  // canonical room template ever changes without this client copy following.
+  function defaultHostedWorldLevel(levelId) {
+    const coordinates = parseLevelCoordinates(levelId) || { column: "A", row: "A" };
+    const canonicalDefaultLevel = window.MazeBenchDefaultWorldTemplate?.defaultLevel;
+    const worldWidth = Math.max(1, worldColumns.length);
+    const worldHeight = Math.max(1, worldRows.length);
+
+    if (typeof canonicalDefaultLevel === "function") {
+      return canonicalDefaultLevel({
+        column: coordinates.column,
+        row: coordinates.row,
+        worldHeight,
+        worldWidth
+      });
+    }
+
+    const width = 16;
+    const height = 16;
+    const columnIndex = coordinates.column.charCodeAt(0) - 65;
+    const rowIndex = coordinates.row.charCodeAt(0) - 65;
+    const openLeft = columnIndex > 0;
+    const openRight = columnIndex < worldWidth - 1;
+    const openTop = rowIndex > 0;
+    const openBottom = rowIndex < worldHeight - 1;
+    const openingSize = Math.max(0, Math.min(4, width - 2));
+    const openingStart = Math.floor((width - openingSize) / 2);
+    const openingEnd = openingStart + openingSize - 1;
+    const cells = Array.from({ length: height }, (_, y) =>
+      Array.from({ length: width }, (_, x) => {
+        const inHorizontalOpening = x >= openingStart && x <= openingEnd;
+        const inVerticalOpening = y >= openingStart && y <= openingEnd;
+
+        if (y === 0) return openTop && inHorizontalOpening ? "." : ".+#";
+        if (y === height - 1) return openBottom && inHorizontalOpening ? "." : ".+#";
+        if (x === 0) return openLeft && inVerticalOpening ? "." : ".+#";
+        if (x === width - 1) return openRight && inVerticalOpening ? "." : ".+#";
+        if (x === 7 && y === 7) return ".+p";
+        return ".";
+      })
+    );
+
+    return {
+      cells,
+      column: coordinates.column,
+      height,
+      id: levelId,
+      row: coordinates.row,
+      title: `${coordinates.column}x${coordinates.row}`,
+      width
+    };
+  }
+
   function boardSignature(width, height, cells) {
     return [
       width,
@@ -699,29 +765,48 @@
   const hostedSavedLevelSignatures = new Map();
   const hostedDirtyLevelIds = new Set();
 
-  function hostedWorldLevelRecord(levelId, source = null) {
+  function hostedWorldLevelRecord(levelId, source = null, options = {}) {
     const coordinates = parseLevelCoordinates(levelId) || { column: "A", row: "A" };
+    const synthesized =
+      options.synthesizeMissing === true && source?.exists === false
+        ? defaultHostedWorldLevel(levelId)
+        : null;
+    const levelSource = synthesized
+      ? {
+          ...source,
+          ...synthesized,
+          exists: false,
+          label: source?.label || synthesized.title,
+          title: source?.title || synthesized.title
+        }
+      : source;
     const width = Math.max(
       1,
-      Number(source?.width) || Number(authorData.initialLevel?.width) || Number(authorData.defaultWidth) || 16
+      Number(levelSource?.width) ||
+        Number(authorData.initialLevel?.width) ||
+        Number(authorData.defaultWidth) ||
+        16
     );
     const height = Math.max(
       1,
-      Number(source?.height) || Number(authorData.initialLevel?.height) || Number(authorData.defaultHeight) || 16
+      Number(levelSource?.height) ||
+        Number(authorData.initialLevel?.height) ||
+        Number(authorData.defaultHeight) ||
+        16
     );
     const cells =
-      Array.isArray(source?.cells) && source.cells.length > 0
-        ? normalizeAuthoringCells(source.cells)
+      Array.isArray(levelSource?.cells) && levelSource.cells.length > 0
+        ? normalizeAuthoringCells(levelSource.cells)
         : createBlankCells(width, height, authorData.defaultFloorToken);
     return {
       cells: cloneCells(cells),
       column: coordinates.column,
-      exists: source?.exists !== false,
+      exists: levelSource?.exists !== false,
       height,
       id: levelId,
-      label: source?.label || source?.title || levelId,
+      label: levelSource?.label || levelSource?.title || levelId,
       row: coordinates.row,
-      title: source?.title || source?.label || levelId.replace("level_", ""),
+      title: levelSource?.title || levelSource?.label || levelId.replace("level_", ""),
       width
     };
   }
@@ -744,7 +829,9 @@
                 exists: authorData.initialLevel.exists
               }
             : savedById.get(levelId) || { exists: false };
-        const record = hostedWorldLevelRecord(levelId, source);
+        const record = hostedWorldLevelRecord(levelId, source, {
+          synthesizeMissing: true
+        });
         hostedWorldDraftLevels.set(levelId, record);
         hostedSavedLevelSignatures.set(
           levelId,
@@ -4006,49 +4093,25 @@
     return primedStates;
   }
 
-  // World-fit rectangle in world units, relative to the current room's
-  // origin — the same shape play's camera flights feed the renderer.
-  function editorWorldFitOptions(app) {
-    const unit = app.TILE_SIZE || 64;
-    const roomSpan = 16 * unit;
-    const coordinates = parseLevelCoordinates(state.levelId) || { column: "A", row: "A" };
-    const columnIndex = Math.max(0, columnIndexByValue.get(coordinates.column) ?? 0);
-    const rowIndex = Math.max(0, rowIndexByValue.get(coordinates.row) ?? 0);
-    const minX = -columnIndex * roomSpan;
-    const maxX = (worldColumns.length - columnIndex) * roomSpan;
-    const minZ = -rowIndex * roomSpan;
-    const maxZ = (worldRows.length - rowIndex) * roomSpan;
-    return {
-      centerX: (minX + maxX) / 2,
-      centerZ: (minZ + maxZ) / 2,
-      maxX,
-      maxZ,
-      minX,
-      minZ
-    };
-  }
-
-  // The construction-then-dive every other surface plays: the camera starts
-  // far out over the world's center, the glow sweep traces the whole world
-  // in, then the camera dives down onto the room being edited while the
-  // vector look melts into editor colors.
+  // Keep the fit frame continuous with the blue sweep, then ease its pulled-
+  // back camera onto the room being edited while the vector look melts into
+  // editor colors. Neighbor rooms remain rendered around this fixed room fit.
   function editorDiveIntoRoom(app, onDone) {
     const rendererApi = app.threeRenderer;
     const unit = app.TILE_SIZE || 64;
-    const roomSpan = 16 * unit;
-    const worldFit = editorWorldFitOptions(app);
+    const roomWidth = Math.max(1, Number(app.state?.width) || 16) * unit;
+    const roomHeight = Math.max(1, Number(app.state?.height) || 16) * unit;
     const roomFit = {
-      centerX: roomSpan / 2,
-      centerZ: roomSpan / 2,
-      maxX: roomSpan,
-      maxZ: roomSpan,
+      centerX: roomWidth / 2,
+      centerZ: roomHeight / 2,
+      maxX: roomWidth,
+      maxZ: roomHeight,
       minX: 0,
       minZ: 0
     };
-    // Exactly the numbers the draft play route dives with (flyCameraToRoom
-    // from the world vista): 900ms cosine ease, tilt 1.3 -> 0.22, zoom
-    // 0.2 -> 1 interpolated in log space, glow melting alongside, and the
-    // brightness flip + 900ms world-shadow fade kicked at flight start.
+    // Preserve the existing 900ms cosine camera ease: tilt 1.3 -> 0.22,
+    // zoom 0.2 -> 1 in log space, glow melting alongside, and the brightness
+    // flip + world-shadow fade kicked at flight start.
     const durationMs = 900;
     const startedAt = performance.now();
     const startTilt = 1.3;
@@ -4085,14 +4148,10 @@
       const progress = raw < 0 ? 0 : raw > 1 ? 1 : raw;
       // Play's flight easing (cosine ease-in-out), not the quad variant.
       const eased = 0.5 - Math.cos(Math.PI * progress) / 2;
-      app.cameraFlightFitOptions = {
-        centerX: worldFit.centerX + (roomFit.centerX - worldFit.centerX) * eased,
-        centerZ: worldFit.centerZ + (roomFit.centerZ - worldFit.centerZ) * eased,
-        maxX: worldFit.maxX + (roomFit.maxX - worldFit.maxX) * eased,
-        maxZ: worldFit.maxZ + (roomFit.maxZ - worldFit.maxZ) * eased,
-        minX: worldFit.minX + (roomFit.minX - worldFit.minX) * eased,
-        minZ: worldFit.minZ + (roomFit.minZ - worldFit.minZ) * eased
-      };
+      // The preceding blue sweep already uses this exact current-room fit.
+      // Holding it fixed avoids a one-frame whole-world/double-zoom snap at
+      // progress zero while retaining the renderer's flight/shadow fast path.
+      app.cameraFlightFitOptions = { ...roomFit };
       rendererApi.setDebugCameraView({
         yaw: 0,
         tilt: startTilt + (endTilt - startTilt) * eased,
@@ -6508,7 +6567,11 @@
         if (hostedWorldDraftLevels.has(levelId)) {
           return;
         }
-        const record = hostedWorldLevelRecord(levelId, { exists: false });
+        const record = hostedWorldLevelRecord(
+          levelId,
+          { exists: false },
+          { synthesizeMissing: true }
+        );
         hostedWorldDraftLevels.set(levelId, record);
         hostedSavedLevelSignatures.set(
           levelId,
