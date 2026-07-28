@@ -740,12 +740,27 @@ const hostedCameraSection = sourceSection(
   "// The construction-then-dive"
 );
 assert.match(hostedCameraSection, /app\.cameraFlightFitOptions = editorWorldFitOptions\(app\)/);
-assert.match(hostedCameraSection, /tilt: 1\.3/);
-assert.match(hostedCameraSection, /zoom: 0\.2/);
+assert.match(hostedCameraSection, /tilt: 0\.42/);
+assert.match(hostedCameraSection, /zoom: 1/);
+assert.match(
+  rendererSource,
+  /if \(app\.editorWorldView === true\) \{[\s\S]*normalizedCameraFitOptions\([\s\S]*app\.cameraFlightFitOptions,[\s\S]*stableCameraWorldHeight\(\)[\s\S]*return wholeWorldFit/,
+  "hosted editor rendering must fit the supplied whole-world bounds instead of the current room"
+);
 assert.match(
   authorSource,
   /if \(landEditorOnWholeWorld\(app\)\) \{[\s\S]*revealEditorWorld\(\);[\s\S]*return;[\s\S]*editorDiveIntoRoom/,
   "hosted editor boot must stay on the whole-world fit instead of diving into one room"
+);
+const renderLoadedSection = sourceSection(
+  authorSource,
+  "function renderLoadedLevelWithoutScene",
+  "async function switchToNeighborLevel"
+);
+assert.match(
+  renderLoadedSection,
+  /window\.history\.replaceState\([\s\S]*authorUrlForLevel\(state\.levelId\)/,
+  "hosted room switches must keep the world-scoped editor URL"
 );
 const transitionStart = switchSection.indexOf("startLevelTransition(");
 const onComplete = switchSection.indexOf("onComplete:", transitionStart);

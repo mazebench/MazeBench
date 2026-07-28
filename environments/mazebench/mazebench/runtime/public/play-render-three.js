@@ -9466,13 +9466,7 @@
       camera.updateMatrixWorld(true);
     }
 
-    function cameraFlightFitOptions() {
-      if (app.isFlyoverMode || isEditorRenderMode()) {
-        return null;
-      }
-
-      const fit = app.cameraFlightFitOptions;
-
+    function normalizedCameraFitOptions(fit, fallbackStableHeight = oneLayerCameraWorldHeight()) {
       if (!fit) {
         return null;
       }
@@ -9501,8 +9495,16 @@
         centerZ: Number.isFinite(centerZ) ? centerZ : (minZ + maxZ) / 2,
         stableHeight: Number.isFinite(stableHeight) && stableHeight > 0
           ? stableHeight
-          : oneLayerCameraWorldHeight()
+          : fallbackStableHeight
       };
+    }
+
+    function cameraFlightFitOptions() {
+      if (app.isFlyoverMode || isEditorRenderMode()) {
+        return null;
+      }
+
+      return normalizedCameraFitOptions(app.cameraFlightFitOptions);
     }
 
     function fitCameraToScene(options = {}) {
@@ -9712,6 +9714,16 @@
     function editorSurroundingFitOptions() {
       if (!isEditorRenderMode() || isPalettePreviewRenderMode()) {
         return null;
+      }
+
+      if (app.editorWorldView === true) {
+        const wholeWorldFit = normalizedCameraFitOptions(
+          app.cameraFlightFitOptions,
+          stableCameraWorldHeight()
+        );
+        if (wholeWorldFit) {
+          return wholeWorldFit;
+        }
       }
 
       const currentWidth = Math.max(1, app.state.width) * unit;
