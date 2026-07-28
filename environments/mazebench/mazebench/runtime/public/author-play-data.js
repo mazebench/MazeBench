@@ -947,6 +947,8 @@
         levelId: options.levelId || "__editor__",
         levelLabel: options.levelLabel || options.levelId || "__editor__",
         editorRender: options.editorRender === true,
+        disableHorizontalNeighborFetches:
+          options.disableHorizontalNeighborFetches === true,
         sourceFileName: options.sourceFileName || "",
         width,
         height,

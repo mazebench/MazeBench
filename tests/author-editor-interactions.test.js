@@ -649,6 +649,11 @@ assert.match(
   /const clientPreviewPersistence = authorData\.clientPreviewPersistence !== false/,
   "preview persistence must default on for the local author server"
 );
+assert.match(
+  authorSource,
+  /disableHorizontalNeighborFetches: hostedWorldDraftMode/,
+  "hosted editors must render their complete local world without issuing neighbor API reads"
+);
 assert.match(switchSection, /cancelScheduledPointerMove\(\)/);
 assert.match(switchSection, /finishPainting\(/);
 assert.doesNotMatch(

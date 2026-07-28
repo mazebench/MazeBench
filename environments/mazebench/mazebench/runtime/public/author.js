@@ -2146,6 +2146,7 @@
         height: state.height
       },
       editorRender: true,
+      disableHorizontalNeighborFetches: hostedWorldDraftMode,
       levelId: state.levelId,
       levelLabel: state.levelId,
       worldColumns,
