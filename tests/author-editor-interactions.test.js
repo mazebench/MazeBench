@@ -614,7 +614,11 @@ assert.match(
 );
 
 assert.doesNotMatch(authorSource, /discardLabel|Use Saved Version|Leave Without Saving/);
-assert.match(authorSource, /message: "This room has unsaved changes\. Save before publishing\?"/);
+assert.match(
+  authorSource,
+  /\(hostedWorldDraftMode \? "This world" : "This room"\)[\s\S]*has unsaved changes\. Save before publishing\?/,
+  "hosted navigation guards should describe the complete unsaved world draft"
+);
 assert.match(authorSource, /if \(choice === "cancel"\) \{\s*return \{ cancelled: true, ok: false \};/);
 assert.match(authorSource, /installUnsavedNavigationGuards\(\)/);
 assert.match(authorSource, /if \(!state\.isDirty \|\| allowDirtyUnload\)/);
@@ -675,7 +679,17 @@ assert.match(
 );
 assert.match(
   switchSection,
-  /if \(outgoingWasDirty\) \{\s*const savedPayload = await saveLevel\(/
+  /if \(hostedWorldDraftMode\) \{[\s\S]*stageCurrentHostedWorldLevel\(\)/,
+  "hosted room switches must stage the outgoing room in the browser"
+);
+assert.match(
+  switchSection,
+  /if \(!hostedWorldDraftMode && outgoingWasDirty\) \{\s*const savedPayload = await saveLevel\(/
+);
+assert.doesNotMatch(
+  switchSection,
+  /Saved and switched/,
+  "room navigation must not imply that a hosted draft was persisted"
 );
 assert.match(
   switchSection,
@@ -690,6 +704,48 @@ assert.doesNotMatch(
 assert.match(
   switchSection,
   /const pendingPayload = await fetchAuthorLevelPayload\(nextLevelId\)/
+);
+assertBefore(
+  switchSection,
+  "stageCurrentHostedWorldLevel()",
+  "await fetchAuthorLevelPayload(nextLevelId)",
+  "the outgoing browser draft must be staged before loading the next room"
+);
+
+const hostedSaveSection = sourceSection(
+  authorSource,
+  "function hostedWorldEditorStateSnapshot",
+  "async function saveLevel"
+);
+assert.match(
+  hostedSaveSection,
+  /levels: hostedWorldLevelEntries\(\)[\s\S]*\.filter\(\(level\) => level\.exists \|\| hostedDirtyLevelIds\.has\(level\.id\)\)[\s\S]*\.map/,
+  "whole-world Save should include every saved or newly edited room without materializing untouched blanks"
+);
+assert.match(hostedSaveSection, /stageCurrentHostedWorldLevel\(\)/);
+assert.match(
+  hostedSaveSection,
+  /fetch\(authorData\.worldMeta\.apiUrl,[\s\S]*editor_state: editorState[\s\S]*method: "PATCH"/,
+  "the explicit hosted Save must persist one complete world snapshot"
+);
+assert.match(
+  authorSource,
+  /async function saveLevel\(options = \{\}\) \{\s*if \(hostedWorldDraftMode\) \{\s*return saveHostedWorldDraft\(options\);/,
+  "the Save button must dispatch to the whole-world hosted save"
+);
+
+const hostedCameraSection = sourceSection(
+  authorSource,
+  "function landEditorOnWholeWorld",
+  "// The construction-then-dive"
+);
+assert.match(hostedCameraSection, /app\.cameraFlightFitOptions = editorWorldFitOptions\(app\)/);
+assert.match(hostedCameraSection, /tilt: 1\.3/);
+assert.match(hostedCameraSection, /zoom: 0\.2/);
+assert.match(
+  authorSource,
+  /if \(landEditorOnWholeWorld\(app\)\) \{[\s\S]*revealEditorWorld\(\);[\s\S]*return;[\s\S]*editorDiveIntoRoom/,
+  "hosted editor boot must stay on the whole-world fit instead of diving into one room"
 );
 const transitionStart = switchSection.indexOf("startLevelTransition(");
 const onComplete = switchSection.indexOf("onComplete:", transitionStart);

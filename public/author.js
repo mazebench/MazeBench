@@ -12,6 +12,12 @@
   // they can opt out of preview mutations without changing the shared editor
   // runtime.
   const clientPreviewPersistence = authorData.clientPreviewPersistence !== false;
+  // MazeJam hosts the complete saved world in the author page. In that
+  // environment every room remains one browser-local draft until the builder
+  // deliberately presses Save; room navigation must never be a persistence
+  // event.
+  const hostedWorldDraftMode =
+    clientPreviewPersistence === false && Boolean(authorData.worldMeta?.apiUrl);
 
   const elements = {
     applyCellValue: document.getElementById("apply-cell-value"),
@@ -688,6 +694,73 @@
       cells.map((row) => row.join(authorData.separator)).join("\n")
     ].join("\n");
   }
+
+  const hostedWorldDraftLevels = new Map();
+  const hostedSavedLevelSignatures = new Map();
+  const hostedDirtyLevelIds = new Set();
+
+  function hostedWorldLevelRecord(levelId, source = null) {
+    const coordinates = parseLevelCoordinates(levelId) || { column: "A", row: "A" };
+    const width = Math.max(
+      1,
+      Number(source?.width) || Number(authorData.initialLevel?.width) || Number(authorData.defaultWidth) || 16
+    );
+    const height = Math.max(
+      1,
+      Number(source?.height) || Number(authorData.initialLevel?.height) || Number(authorData.defaultHeight) || 16
+    );
+    const cells =
+      Array.isArray(source?.cells) && source.cells.length > 0
+        ? normalizeAuthoringCells(source.cells)
+        : createBlankCells(width, height, authorData.defaultFloorToken);
+    return {
+      cells: cloneCells(cells),
+      column: coordinates.column,
+      exists: source?.exists !== false,
+      height,
+      id: levelId,
+      label: source?.label || source?.title || levelId,
+      row: coordinates.row,
+      title: source?.title || source?.label || levelId.replace("level_", ""),
+      width
+    };
+  }
+
+  function initializeHostedWorldDraft() {
+    if (!hostedWorldDraftMode) {
+      return;
+    }
+    const savedById = new Map(
+      (authorData.existingLevels || []).map((level) => [level.id, level])
+    );
+    worldRows.forEach((row) => {
+      worldColumns.forEach((column) => {
+        const levelId = "level_" + column + "x" + row;
+        const source =
+          levelId === state.levelId
+            ? {
+                ...savedById.get(levelId),
+                ...authorData.initialLevel,
+                exists: authorData.initialLevel.exists
+              }
+            : savedById.get(levelId) || { exists: false };
+        const record = hostedWorldLevelRecord(levelId, source);
+        hostedWorldDraftLevels.set(levelId, record);
+        hostedSavedLevelSignatures.set(
+          levelId,
+          boardSignature(record.width, record.height, record.cells)
+        );
+      });
+    });
+  }
+
+  function hostedWorldLevelEntries() {
+    return hostedWorldDraftMode
+      ? Array.from(hostedWorldDraftLevels.values())
+      : authorData.existingLevels;
+  }
+
+  initializeHostedWorldDraft();
 
   function parseLevelCoordinates(levelId) {
     const match = String(levelId || "").match(/^level_([A-Z])x([A-Z])$/);
@@ -2210,6 +2283,9 @@
       resetHistory: true,
       resetLevelEntry: true
     });
+    if (editorBootReveal.state === "done") {
+      landEditorOnWholeWorld(app, { render: false });
+    }
 
     if (shouldStartNoiseTicker) {
       app.syncNoiseTicker();
@@ -2258,6 +2334,10 @@
     const finishLook = () => {
       editorBootReveal.state = "done";
       timing.fallbackAtMs = Math.round(performance.now());
+      if (landEditorOnWholeWorld(app)) {
+        revealEditorWorld();
+        return;
+      }
       app.cameraFlightFitOptions = null;
       app.worldViewUniformBrightness = false;
       app.homeVectorTheme = false;
@@ -2327,6 +2407,12 @@
       renderer.beginHomeEdgeReveal({
         onComplete: () => {
           timing.sweepDoneAtMs = Math.round(performance.now());
+          if (landEditorOnWholeWorld(app)) {
+            editorBootReveal.state = "done";
+            timing.meltDoneAtMs = Math.round(performance.now());
+            revealEditorWorld();
+            return;
+          }
           // Dive from the world vista down onto the edited room while the
           // glow melts — the same construction-then-dive the play routes
           // land with.
@@ -2670,11 +2756,23 @@
   }
 
   function syncEditorDirtyState() {
-    const boardDirty =
-      boardSignature(state.width, state.height, state.cells) !== state.savedBoardSignature;
+    const currentBoardSignature = boardSignature(state.width, state.height, state.cells);
+    const savedBoardSignature = hostedWorldDraftMode
+      ? hostedSavedLevelSignatures.get(state.levelId) || state.savedBoardSignature
+      : state.savedBoardSignature;
+    const boardDirty = currentBoardSignature !== savedBoardSignature;
+    if (hostedWorldDraftMode) {
+      if (boardDirty) {
+        hostedDirtyLevelIds.add(state.levelId);
+      } else {
+        hostedDirtyLevelIds.delete(state.levelId);
+      }
+    }
     const hotbarDirty =
       hotbarPersistenceEnabled && hotbarSignature() !== savedHotbarSignature;
-    state.isDirty = boardDirty || hotbarDirty;
+    state.isDirty = hostedWorldDraftMode
+      ? hostedDirtyLevelIds.size > 0 || hotbarDirty
+      : boardDirty || hotbarDirty;
     return state.isDirty;
   }
 
@@ -3815,8 +3913,30 @@
     });
   }
 
+  function stageCurrentHostedWorldLevel() {
+    if (!hostedWorldDraftMode) {
+      return null;
+    }
+    const previous = hostedWorldDraftLevels.get(state.levelId);
+    const record = hostedWorldLevelRecord(state.levelId, {
+      ...previous,
+      cells: state.cells,
+      exists: state.exists || previous?.exists === true,
+      height: state.height,
+      label: previous?.label || state.levelId,
+      width: state.width
+    });
+    hostedWorldDraftLevels.set(state.levelId, record);
+    syncEditorDirtyState();
+    if (authorData.worldMeta) {
+      authorData.worldMeta.gemsByLevel[state.levelId] = gemCountForCells(record.cells);
+    }
+    return record;
+  }
+
   function refreshCurrentRoomNeighborState() {
     const app = editorRenderer.app;
+    const staged = stageCurrentHostedWorldLevel();
     if (
       !editorWorldNeighborsPrimed ||
       !app ||
@@ -3825,7 +3945,12 @@
       return;
     }
     app.rememberHorizontalNeighborLevelState(
-      neighborStateForLevel(state.levelId, state.cells, state.width, state.height)
+      neighborStateForLevel(
+        state.levelId,
+        staged?.cells || state.cells,
+        staged?.width || state.width,
+        staged?.height || state.height
+      )
     );
   }
 
@@ -3870,7 +3995,7 @@
       return [];
     }
     const primedStates = [];
-    authorData.existingLevels.forEach((level) => {
+    hostedWorldLevelEntries().forEach((level) => {
       if (!Array.isArray(level.cells) || !level.cells.length) {
         return;
       }
@@ -3911,6 +4036,28 @@
       minX,
       minZ
     };
+  }
+
+  function landEditorOnWholeWorld(app, options = {}) {
+    if (!hostedWorldDraftMode || !app) {
+      return false;
+    }
+    app.cameraFlightFitOptions = editorWorldFitOptions(app);
+    app.worldViewUniformBrightness = true;
+    app.homeVectorTheme = false;
+    app.vectorGlowAmount = 0;
+    app.threeRenderer?.setDebugCameraView?.({
+      yaw: 0,
+      tilt: 1.3,
+      zoom: 0.2,
+      mode: "perspective",
+      skipRender: true
+    });
+    app.threeRenderer?.invalidateSceneCache?.();
+    if (options.render !== false) {
+      app.render();
+    }
+    return true;
   }
 
   // The construction-then-dive every other surface plays: the camera starts
@@ -4045,7 +4192,7 @@
   }
 
   async function primeLocalWorldThumbs() {
-    for (const level of authorData.existingLevels) {
+    for (const level of hostedWorldLevelEntries()) {
       if (localLevelThumbs.has(level.id)) {
         continue;
       }
@@ -4668,6 +4815,9 @@
     }
 
     const levelsById = new Map(authorData.existingLevels.map((level) => [level.id, level]));
+    const draftLevelsById = new Map(
+      hostedWorldLevelEntries().map((level) => [level.id, level])
+    );
 
     if (state.exists && !levelsById.has(state.levelId)) {
       const created = {
@@ -4693,7 +4843,7 @@
       if (local) {
         return local;
       }
-      const level = levelsById.get(levelId);
+      const level = draftLevelsById.get(levelId) || levelsById.get(levelId);
       const cells = levelId === state.levelId ? state.cells : level?.cells;
       const width = levelId === state.levelId ? state.width : level?.width;
       const height = levelId === state.levelId ? state.height : level?.height;
@@ -4866,6 +5016,7 @@
   function renderAll(options = {}) {
     const renderScene = options.renderScene !== false;
 
+    syncEditorDirtyState();
     renderStatus();
     renderMeta();
     renderNeighborButtons();
@@ -4955,7 +5106,7 @@
   function markDirty() {
     clearSolverSolution();
     clearHillClimbResults();
-    state.isDirty = true;
+    syncEditorDirtyState();
     renderStatus();
     // Keep the world-map tile for this room live while painting.
     scheduleCurrentLevelThumbRefresh();
@@ -6048,7 +6199,10 @@
     ensureUnsavedChangesPromptListeners();
     if (unsavedPromptResolve) closeUnsavedChangesPrompt("cancel");
     elements.unsavedMessage.textContent =
-      options.message || "This room has unsaved changes. Save before continuing?";
+      options.message ||
+      (hostedWorldDraftMode
+        ? "This world has unsaved changes. Save before continuing?"
+        : "This room has unsaved changes. Save before continuing?");
     elements.unsavedSave.textContent = options.saveLabel || "Save & Continue";
     elements.unsavedModal.classList.add("open");
     window.setTimeout(() => elements.unsavedSave.focus(), 0);
@@ -6171,7 +6325,11 @@
   async function navigateFromEditor(link) {
     const destination = String(link.textContent || "that page").trim();
     const choice = await promptForUnsavedChanges({
-      message: "This room has unsaved changes. Save before opening " + destination + "?",
+      message:
+        (hostedWorldDraftMode ? "This world" : "This room") +
+        " has unsaved changes. Save before opening " +
+        destination +
+        "?",
       saveLabel: "Save & Continue"
     });
     if (choice === "cancel") return false;
@@ -6195,13 +6353,11 @@
   }
 
   function cachedAuthorLevelPayload(levelId) {
-    if (clientPreviewPersistence) {
+    if (!hostedWorldDraftMode) {
       return null;
     }
 
-    const level = authorData.existingLevels.find(
-      (entry) => entry.id === levelId
-    );
+    const level = hostedWorldDraftLevels.get(levelId);
 
     if (!level || !Array.isArray(level.cells) || level.cells.length === 0) {
       return null;
@@ -6213,11 +6369,11 @@
 
     return {
       cells,
-      exists: true,
+      exists: level.exists === true,
       fileName: levelId + ".txt",
       filePath: "build-worlds/" + levelId + ".txt",
       height,
-      hotbarTokens: savedHotbarTokens.slice(),
+      hotbarTokens: hotbarTokens(),
       label: level.label || levelId,
       levelId,
       message: "Loaded locally.",
@@ -6251,7 +6407,9 @@
   }
 
   function applyAuthorLevelPayload(payload, options = {}) {
-    applyPersistedHotbarTokens(payload.hotbarTokens, savedHotbarTokens);
+    if (!hostedWorldDraftMode) {
+      applyPersistedHotbarTokens(payload.hotbarTokens, savedHotbarTokens);
+    }
     const normalizedCells = normalizeAuthoringCells(payload.cells);
     state.cells = cloneCells(normalizedCells);
     state.exists = payload.exists;
@@ -6264,7 +6422,10 @@
       (payload.exists ? "Loaded existing level." : "Fresh level. Paint something good.");
     state.messageTone =
       options.messageTone || (payload.exists ? "success" : "warning");
-    state.savedBoardSignature = boardSignature(payload.width, payload.height, normalizedCells);
+    state.savedBoardSignature = hostedWorldDraftMode
+      ? hostedSavedLevelSignatures.get(payload.levelId) ||
+        boardSignature(payload.width, payload.height, normalizedCells)
+      : boardSignature(payload.width, payload.height, normalizedCells);
     state.selectedCell = { x: 0, y: 0 };
     clearSolverSolution();
     clearUndoHistory();
@@ -6278,7 +6439,7 @@
       return false;
     }
 
-    if (!shouldDiscardUnsavedChanges()) {
+    if (!hostedWorldDraftMode && !shouldDiscardUnsavedChanges()) {
       syncLevelSelectors();
       return false;
     }
@@ -6287,6 +6448,9 @@
     currentLevelThumbTimer = 0;
     cancelScheduledPointerMove();
     finishPainting();
+    if (hostedWorldDraftMode) {
+      stageCurrentHostedWorldLevel();
+    }
     state.isLevelLoading = true;
     clearEditorHoverTarget();
     syncUndoButtonState();
@@ -6312,7 +6476,163 @@
     }
   }
 
+  function hostedWorldEditorStateSnapshot() {
+    stageCurrentHostedWorldLevel();
+    const meta = authorData.worldMeta || {};
+    return {
+      hotbar_tokens: hotbarTokens(),
+      levels: hostedWorldLevelEntries()
+        .filter((level) => level.exists || hostedDirtyLevelIds.has(level.id))
+        .map((level) => ({
+          cells: cloneCells(level.cells),
+          column: level.column,
+          height: level.height,
+          id: level.id,
+          row: level.row,
+          title: level.title || level.label || level.id.replace("level_", ""),
+          width: level.width
+        })),
+      start_level_id:
+        meta.startLevelId || authorData.initialLevel?.levelId || hostedWorldLevelEntries()[0]?.id,
+      title: meta.title || authorData.game?.name || "Untitled World",
+      version: 1,
+      world: {
+        height: worldRows.length,
+        width: worldColumns.length
+      }
+    };
+  }
+
+  function applyHostedWorldSavePayload(payload, submittedHotbarTokens) {
+    const persistedState = payload?.world?.editor_state;
+    if (!persistedState || !Array.isArray(persistedState.levels)) {
+      throw new Error("The saved world response was incomplete.");
+    }
+    hostedWorldDraftLevels.clear();
+    hostedSavedLevelSignatures.clear();
+    hostedDirtyLevelIds.clear();
+    const persistedAuthorLevels = [];
+    persistedState.levels.forEach((level) => {
+      const record = hostedWorldLevelRecord(level.id, {
+        ...level,
+        exists: true,
+        label: level.title
+      });
+      hostedWorldDraftLevels.set(record.id, record);
+      hostedSavedLevelSignatures.set(
+        record.id,
+        boardSignature(record.width, record.height, record.cells)
+      );
+      persistedAuthorLevels.push({
+        authorUrl: authorUrlForLevel(record.id),
+        cells: cloneCells(record.cells),
+        height: record.height,
+        id: record.id,
+        label: record.title,
+        playUrl: playUrlForLevel(record.id),
+        previewUrl: localLevelThumbs.get(record.id) || null,
+        width: record.width
+      });
+    });
+    worldRows.forEach((row) => {
+      worldColumns.forEach((column) => {
+        const levelId = "level_" + column + "x" + row;
+        if (hostedWorldDraftLevels.has(levelId)) {
+          return;
+        }
+        const record = hostedWorldLevelRecord(levelId, { exists: false });
+        hostedWorldDraftLevels.set(levelId, record);
+        hostedSavedLevelSignatures.set(
+          levelId,
+          boardSignature(record.width, record.height, record.cells)
+        );
+      });
+    });
+    authorData.existingLevels.splice(
+      0,
+      authorData.existingLevels.length,
+      ...persistedAuthorLevels
+    );
+    applyPersistedHotbarTokens(persistedState.hotbar_tokens, submittedHotbarTokens);
+    const current = hostedWorldDraftLevels.get(state.levelId);
+    if (current) {
+      state.cells = cloneCells(current.cells);
+      state.exists = current.exists === true;
+      state.height = current.height;
+      state.width = current.width;
+      state.savedBoardSignature = hostedSavedLevelSignatures.get(state.levelId);
+    }
+    if (authorData.worldMeta) {
+      authorData.worldMeta.gemsByLevel = Object.fromEntries(
+        persistedAuthorLevels.map((level) => [
+          level.id,
+          gemCountForCells(level.cells)
+        ])
+      );
+      authorData.worldMeta.savedThisSession = true;
+      authorData.worldMeta.updatedAt = payload.world?.updated_at || authorData.worldMeta.updatedAt;
+      authorData.worldMeta.walkthroughVerified = false;
+    }
+    syncEditorDirtyState();
+    primeEditorWorldNeighbors();
+    scheduleCurrentLevelThumbRefresh(0, { persist: false });
+  }
+
+  async function saveHostedWorldDraft(options = {}) {
+    const renderAfterSave = options.renderAfterSave !== false;
+    const updateStatus = options.updateStatus !== false;
+    const throwOnError = options.throwOnError === true;
+    const editorState = hostedWorldEditorStateSnapshot();
+    const submittedHotbarTokens = hotbarTokens();
+    state.isLevelLoading = true;
+    if (updateStatus) {
+      setStatus("Saving the whole world...", "warning");
+    } else {
+      renderStatus();
+    }
+    try {
+      const response = await fetch(authorData.worldMeta.apiUrl, {
+        body: JSON.stringify({
+          editor_state: editorState,
+          title: editorState.title,
+          world_height: editorState.world.height,
+          world_width: editorState.world.width
+        }),
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json"
+        },
+        method: "PATCH"
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.error || "Could not save that world.");
+      }
+      applyHostedWorldSavePayload(payload, submittedHotbarTokens);
+      state.message = "World saved.";
+      state.messageTone = "success";
+      state.isLevelLoading = false;
+      syncLevelSelectors();
+      if (renderAfterSave) {
+        renderAll();
+      } else {
+        renderStatus();
+      }
+      return payload;
+    } catch (error) {
+      state.isLevelLoading = false;
+      setStatus(error instanceof Error ? error.message : "Could not save that world.", "error");
+      if (throwOnError) {
+        throw error;
+      }
+      return null;
+    }
+  }
+
   async function saveLevel(options = {}) {
+    if (hostedWorldDraftMode) {
+      return saveHostedWorldDraft(options);
+    }
     const renderAfterSave = options.renderAfterSave !== false;
     const refreshPreview = options.refreshPreview !== false;
     const updateStatus = options.updateStatus !== false;
@@ -6481,6 +6801,7 @@
       "/author/" + encodeURIComponent(authorData.game.id) + "/" + encodeURIComponent(state.levelId)
     );
     renderAll({ renderScene: false });
+    landEditorOnWholeWorld(editorRenderer.app);
   }
 
   async function switchToNeighborLevel(target) {
@@ -6505,11 +6826,25 @@
     cancelScheduledPointerMove();
     finishPainting();
     const outgoingWasDirty = state.isDirty;
+    if (hostedWorldDraftMode) {
+      const stagedLevel = stageCurrentHostedWorldLevel();
+      if (stagedLevel) {
+        renderLevelThumbFromCells(
+          stagedLevel.id,
+          stagedLevel.cells,
+          stagedLevel.width,
+          stagedLevel.height,
+          { persist: false }
+        ).catch(() => {});
+      }
+    }
     state.isLevelSwitching = true;
     clearEditorHoverTarget();
     syncUndoButtonState();
     setStatus(
-      outgoingWasDirty ? "Saving before switching rooms..." : "Switching rooms...",
+      !hostedWorldDraftMode && outgoingWasDirty
+        ? "Saving before switching rooms..."
+        : "Switching rooms...",
       "warning"
     );
 
@@ -6517,7 +6852,7 @@
     let outgoingPlayData = null;
 
     try {
-      if (outgoingWasDirty) {
+      if (!hostedWorldDraftMode && outgoingWasDirty) {
         const savedPayload = await saveLevel({
           refreshPreview: false,
           renderAfterSave: false,
@@ -6549,8 +6884,8 @@
         !app.renderCompositor?.startLevelTransition
       ) {
         renderLoadedLevelWithoutScene(pendingPayload, {
-          message: "Saved and switched to " + nextLevelId.replace("level_", "") + ".",
-          messageTone: pendingPayload.exists ? "success" : "warning"
+          message: "Switched to " + nextLevelId.replace("level_", "") + ".",
+          messageTone: state.isDirty ? "warning" : "success"
         });
         state.isLevelSwitching = false;
         renderStatus();
@@ -6589,8 +6924,8 @@
         onComplete: () => {
           try {
             renderLoadedLevelWithoutScene(pendingPayload, {
-              message: "Saved and switched to " + nextLevelId.replace("level_", "") + ".",
-              messageTone: pendingPayload.exists ? "success" : "warning"
+              message: "Switched to " + nextLevelId.replace("level_", "") + ".",
+              messageTone: state.isDirty ? "warning" : "success"
             });
           } catch (error) {
             setStatus(
@@ -8786,7 +9121,9 @@
     window.__MAZEBENCH_AUTHOR_PUBLISH_CHECKS__ = async () => {
       if (state.isDirty) {
         const choice = await promptForUnsavedChanges({
-          message: "This room has unsaved changes. Save before publishing?",
+          message:
+            (hostedWorldDraftMode ? "This world" : "This room") +
+            " has unsaved changes. Save before publishing?",
           saveLabel: "Save & Continue"
         });
         if (choice === "cancel") {
