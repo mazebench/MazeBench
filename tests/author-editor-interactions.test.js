@@ -604,6 +604,14 @@ assert.match(unsavedPromptSection, /function installUnsavedNavigationGuards\(\)/
 assert.match(unsavedPromptSection, /\.author-nav a, \.build-mobile-blocker__actions a/);
 assert.match(unsavedPromptSection, /await saveLevel\(\{ refreshPreview: false \}\)/);
 assert.match(unsavedPromptSection, /window\.location\.assign\(link\.href\)/);
+assert.match(
+  unsavedPromptSection,
+  /function cachedAuthorLevelPayload\(levelId\)/
+);
+assert.match(
+  authorSource,
+  /const cachedPayload = cachedAuthorLevelPayload\(levelId\);\s*if \(cachedPayload\) \{\s*return cachedPayload;/
+);
 
 assert.doesNotMatch(authorSource, /discardLabel|Use Saved Version|Leave Without Saving/);
 assert.match(authorSource, /message: "This room has unsaved changes\. Save before publishing\?"/);

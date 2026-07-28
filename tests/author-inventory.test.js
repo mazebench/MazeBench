@@ -56,6 +56,14 @@ const thumbnailSection = sourceSection(
   "async function renderLevelThumbFromCells",
   "function scheduleCurrentLevelThumbRefresh"
 );
+assert.match(
+  source,
+  /function renderSimpleLevelThumbFromCells\(levelId, cells, width, height\)/
+);
+assert.match(
+  source,
+  /if \(!clientPreviewPersistence\) \{\s*return renderSimpleLevelThumbFromCells\(/
+);
 assert.match(thumbnailSection, /levelId: "__author_thumbnail_"/);
 assert.match(thumbnailSection, /options\.persist === true/);
 assert.match(thumbnailSection, /await persistLevelThumb\(levelId, url\)/);
@@ -73,6 +81,10 @@ const levelMapSection = sourceSection(
 );
 assert.match(levelMapSection, /preview[\s\S]*?author-level-pill__thumb/);
 assert.match(levelMapSection, /: '<span class="author-level-pill__label">'/);
+assert.match(
+  levelMapSection,
+  /!clientPreviewPersistence[\s\S]*renderSimpleLevelThumbFromCells\(levelId, cells, width, height\)/
+);
 assert.match(levelMapSection, /renderStartRoomGrid\(\)/);
 
 const startRoomSection = sourceSection(
