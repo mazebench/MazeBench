@@ -4048,8 +4048,10 @@
     app.vectorGlowAmount = 0;
     app.threeRenderer?.setDebugCameraView?.({
       yaw: 0,
-      tilt: 1.3,
-      zoom: 0.2,
+      // Keep enough perspective to read the 3D pieces while staying
+      // overhead enough that rows do not hide behind one another.
+      tilt: 0.42,
+      zoom: 1,
       mode: "perspective",
       skipRender: true
     });
@@ -6798,7 +6800,7 @@
     window.history.replaceState(
       null,
       "",
-      "/author/" + encodeURIComponent(authorData.game.id) + "/" + encodeURIComponent(state.levelId)
+      authorUrlForLevel(state.levelId)
     );
     renderAll({ renderScene: false });
     landEditorOnWholeWorld(editorRenderer.app);
