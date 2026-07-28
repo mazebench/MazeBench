@@ -507,23 +507,34 @@
   const columnIndexByValue = new Map(worldColumns.map((letter, index) => [letter, index]));
   const rowIndexByValue = new Map(worldRows.map((letter, index) => [letter, index]));
   let renderStartRoomGrid = () => {};
-  const initialLevelCells = normalizeAuthoringCells(authorData.initialLevel.cells);
+  const initialHostedWorldLevel =
+    hostedWorldDraftMode && authorData.initialLevel?.exists === false
+      ? hostedWorldLevelRecord(
+          authorData.initialLevel.levelId,
+          authorData.initialLevel,
+          { synthesizeMissing: true }
+        )
+      : null;
+  const initialLevel = initialHostedWorldLevel
+    ? { ...authorData.initialLevel, ...initialHostedWorldLevel }
+    : authorData.initialLevel;
+  const initialLevelCells = normalizeAuthoringCells(initialLevel.cells);
   const state = {
     cells: cloneCells(initialLevelCells),
-    exists: authorData.initialLevel.exists,
-    fileName: authorData.initialLevel.fileName,
-    filePath: authorData.initialLevel.filePath,
-    height: authorData.initialLevel.height,
+    exists: initialLevel.exists,
+    fileName: initialLevel.fileName,
+    filePath: initialLevel.filePath,
+    height: initialLevel.height,
     isDirty: false,
     isLevelLoading: false,
     isLevelSwitching: false,
     isSolutionPlaying: false,
     isSolverBusy: false,
-    levelId: authorData.initialLevel.levelId,
-    message: authorData.initialLevel.exists
+    levelId: initialLevel.levelId,
+    message: initialLevel.exists
       ? "Loaded existing level."
       : "Fresh level. Paint something good.",
-    messageTone: authorData.initialLevel.exists ? "success" : "warning",
+    messageTone: initialLevel.exists ? "success" : "warning",
     lastPaintTargetKey: null,
     eraseGestureMode: null,
     hillClimbResults: [],
@@ -535,8 +546,8 @@
     paintStrokePaintedVoxelKeys: new Set(),
     paintStrokeToken: null,
     savedBoardSignature: boardSignature(
-      authorData.initialLevel.width,
-      authorData.initialLevel.height,
+      initialLevel.width,
+      initialLevel.height,
       initialLevelCells
     ),
     selectedCell: { x: 0, y: 0 },
@@ -551,7 +562,7 @@
     solverSolutionCellsKey: null,
     solverSolutionPath: null,
     undoStack: [],
-    width: authorData.initialLevel.width,
+    width: initialLevel.width,
     worldMapSwapBusy: false,
     worldMapSwapFirstLevelId: null,
     worldMapSwapMessage: "Choose Swap rooms, then select two built rooms.",
@@ -687,6 +698,61 @@
     return Array.from({ length: height }, () => Array.from({ length: width }, () => fillToken));
   }
 
+  // Keep sparse hosted worlds cheap in storage without making their untouched
+  // rooms invisible in the editor. This fallback intentionally mirrors
+  // shared/default-world-template.js; the focused parity test fails if the
+  // canonical room template ever changes without this client copy following.
+  function defaultHostedWorldLevel(levelId) {
+    const coordinates = parseLevelCoordinates(levelId) || { column: "A", row: "A" };
+    const canonicalDefaultLevel = window.MazeBenchDefaultWorldTemplate?.defaultLevel;
+    const worldWidth = Math.max(1, worldColumns.length);
+    const worldHeight = Math.max(1, worldRows.length);
+
+    if (typeof canonicalDefaultLevel === "function") {
+      return canonicalDefaultLevel({
+        column: coordinates.column,
+        row: coordinates.row,
+        worldHeight,
+        worldWidth
+      });
+    }
+
+    const width = 16;
+    const height = 16;
+    const columnIndex = coordinates.column.charCodeAt(0) - 65;
+    const rowIndex = coordinates.row.charCodeAt(0) - 65;
+    const openLeft = columnIndex > 0;
+    const openRight = columnIndex < worldWidth - 1;
+    const openTop = rowIndex > 0;
+    const openBottom = rowIndex < worldHeight - 1;
+    const openingSize = Math.max(0, Math.min(4, width - 2));
+    const openingStart = Math.floor((width - openingSize) / 2);
+    const openingEnd = openingStart + openingSize - 1;
+    const cells = Array.from({ length: height }, (_, y) =>
+      Array.from({ length: width }, (_, x) => {
+        const inHorizontalOpening = x >= openingStart && x <= openingEnd;
+        const inVerticalOpening = y >= openingStart && y <= openingEnd;
+
+        if (y === 0) return openTop && inHorizontalOpening ? "." : ".+#";
+        if (y === height - 1) return openBottom && inHorizontalOpening ? "." : ".+#";
+        if (x === 0) return openLeft && inVerticalOpening ? "." : ".+#";
+        if (x === width - 1) return openRight && inVerticalOpening ? "." : ".+#";
+        if (x === 7 && y === 7) return ".+p";
+        return ".";
+      })
+    );
+
+    return {
+      cells,
+      column: coordinates.column,
+      height,
+      id: levelId,
+      row: coordinates.row,
+      title: `${coordinates.column}x${coordinates.row}`,
+      width
+    };
+  }
+
   function boardSignature(width, height, cells) {
     return [
       width,
@@ -699,29 +765,48 @@
   const hostedSavedLevelSignatures = new Map();
   const hostedDirtyLevelIds = new Set();
 
-  function hostedWorldLevelRecord(levelId, source = null) {
+  function hostedWorldLevelRecord(levelId, source = null, options = {}) {
     const coordinates = parseLevelCoordinates(levelId) || { column: "A", row: "A" };
+    const synthesized =
+      options.synthesizeMissing === true && source?.exists === false
+        ? defaultHostedWorldLevel(levelId)
+        : null;
+    const levelSource = synthesized
+      ? {
+          ...source,
+          ...synthesized,
+          exists: false,
+          label: source?.label || synthesized.title,
+          title: source?.title || synthesized.title
+        }
+      : source;
     const width = Math.max(
       1,
-      Number(source?.width) || Number(authorData.initialLevel?.width) || Number(authorData.defaultWidth) || 16
+      Number(levelSource?.width) ||
+        Number(authorData.initialLevel?.width) ||
+        Number(authorData.defaultWidth) ||
+        16
     );
     const height = Math.max(
       1,
-      Number(source?.height) || Number(authorData.initialLevel?.height) || Number(authorData.defaultHeight) || 16
+      Number(levelSource?.height) ||
+        Number(authorData.initialLevel?.height) ||
+        Number(authorData.defaultHeight) ||
+        16
     );
     const cells =
-      Array.isArray(source?.cells) && source.cells.length > 0
-        ? normalizeAuthoringCells(source.cells)
+      Array.isArray(levelSource?.cells) && levelSource.cells.length > 0
+        ? normalizeAuthoringCells(levelSource.cells)
         : createBlankCells(width, height, authorData.defaultFloorToken);
     return {
       cells: cloneCells(cells),
       column: coordinates.column,
-      exists: source?.exists !== false,
+      exists: levelSource?.exists !== false,
       height,
       id: levelId,
-      label: source?.label || source?.title || levelId,
+      label: levelSource?.label || levelSource?.title || levelId,
       row: coordinates.row,
-      title: source?.title || source?.label || levelId.replace("level_", ""),
+      title: levelSource?.title || levelSource?.label || levelId.replace("level_", ""),
       width
     };
   }
@@ -744,7 +829,9 @@
                 exists: authorData.initialLevel.exists
               }
             : savedById.get(levelId) || { exists: false };
-        const record = hostedWorldLevelRecord(levelId, source);
+        const record = hostedWorldLevelRecord(levelId, source, {
+          synthesizeMissing: true
+        });
         hostedWorldDraftLevels.set(levelId, record);
         hostedSavedLevelSignatures.set(
           levelId,
@@ -6508,7 +6595,11 @@
         if (hostedWorldDraftLevels.has(levelId)) {
           return;
         }
-        const record = hostedWorldLevelRecord(levelId, { exists: false });
+        const record = hostedWorldLevelRecord(
+          levelId,
+          { exists: false },
+          { synthesizeMissing: true }
+        );
         hostedWorldDraftLevels.set(levelId, record);
         hostedSavedLevelSignatures.set(
           levelId,
