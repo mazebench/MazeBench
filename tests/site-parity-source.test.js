@@ -194,6 +194,64 @@ assert.match(playScript, /const visitedPlayRoomIds = new Set\(\)/);
 assert.match(playScript, /if \(playData\.hostOwnsPlayHud === true\) return/);
 assert.match(playScript, /visitedPlayRoomIds\.add\(currentLevelId\)/);
 assert.match(playScript, /roomTarget\.setAttribute\("aria-label", `\$\{roomCount\} room/);
+
+const cameraDirectionStart = playScript.indexOf("function cameraDirectionForKey(event)");
+const cameraDirectionEnd = playScript.indexOf(
+  'window.addEventListener("keydown"',
+  cameraDirectionStart
+);
+assert.notEqual(cameraDirectionStart, -1, "missing keyboard camera resolver");
+assert.notEqual(cameraDirectionEnd, -1, "missing keyboard camera listener");
+const cameraDirectionSource = playScript
+  .slice(cameraDirectionStart, cameraDirectionEnd)
+  .trim();
+const configuredCameraDirection = vm.runInNewContext(`(${cameraDirectionSource})`, {
+  window: {
+    __MAZEBENCH_CONTROLS__: {
+      keys: {
+        moveUp: ["KeyW"],
+        moveDown: ["KeyS"],
+        moveLeft: ["KeyA"],
+        moveRight: ["KeyD"],
+        cameraUp: ["ArrowUp"],
+        cameraDown: ["ArrowDown"],
+        cameraLeft: ["ArrowLeft"],
+        cameraRight: ["ArrowRight"]
+      }
+    }
+  }
+});
+assert.equal(
+  configuredCameraDirection({ code: "KeyW" }),
+  "",
+  "configured movement keys must not be intercepted by the camera"
+);
+assert.equal(configuredCameraDirection({ code: "ArrowUp" }), "up");
+assert.equal(configuredCameraDirection({ code: "ArrowRight" }), "right");
+const customCameraDirection = vm.runInNewContext(`(${cameraDirectionSource})`, {
+  window: {
+    __MAZEBENCH_CONTROLS__: {
+      keys: {
+        cameraUp: ["KeyI"],
+        cameraDown: ["KeyK"],
+        cameraLeft: ["KeyJ"],
+        cameraRight: ["KeyL"]
+      }
+    }
+  }
+});
+assert.equal(customCameraDirection({ code: "KeyI" }), "up");
+assert.equal(customCameraDirection({ code: "KeyW" }), "");
+const standaloneCameraDirection = vm.runInNewContext(`(${cameraDirectionSource})`, {
+  window: {}
+});
+assert.equal(
+  standaloneCameraDirection({ code: "KeyW" }),
+  "up",
+  "standalone play must retain the default WASD camera controls"
+);
+assert.equal(standaloneCameraDirection({ code: "ArrowUp" }), "");
+
 assert.match(playTheme, /\.play-hud \{[\s\S]*?left: 50%[\s\S]*?position: absolute[\s\S]*?transform: translateX\(-50%\)/);
 assert.match(playTheme, /\.play-hud-stat--gems/);
 assert.match(playTheme, /\.play-hud-stat svg/);
