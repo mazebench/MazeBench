@@ -927,6 +927,24 @@
     });
 
     function cameraDirectionForKey(event) {
+      const configuredKeys = window.__MAZEBENCH_CONTROLS__?.keys;
+
+      if (configuredKeys && typeof configuredKeys === "object") {
+        const configuredCameraDirections = [
+          ["cameraUp", "up"],
+          ["cameraDown", "down"],
+          ["cameraLeft", "left"],
+          ["cameraRight", "right"]
+        ];
+
+        for (const [action, direction] of configuredCameraDirections) {
+          if (Array.isArray(configuredKeys[action]) && configuredKeys[action].includes(event.code)) {
+            return direction;
+          }
+        }
+        return "";
+      }
+
       if (event.code === "KeyW") return "up";
       if (event.code === "KeyS") return "down";
       if (event.code === "KeyA") return "left";
