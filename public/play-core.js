@@ -130,6 +130,10 @@
     const app = {
       playData,
       isEditorRenderApp: playData?.editorRender === true,
+      // One-off render hosts can opt out of the player's persistent gem
+      // history without inheriting the editor's different gameplay visuals.
+      // This is immutable across room transitions for the lifetime of the app.
+      ignoreSavedGemProgress: playData?.ignoreSavedGemProgress === true,
       currentGameId,
       // Base URL for level-state fetches; keeps custom worlds (editor and
       // play) from falling back to the main game's /api/play endpoint.
@@ -624,7 +628,7 @@
     }
 
     function loadCollectedGemIds() {
-      if (app.isEditorRenderApp) {
+      if (app.isEditorRenderApp || app.ignoreSavedGemProgress) {
         return new Set();
       }
 
@@ -644,7 +648,7 @@
     }
 
     function saveCollectedGemIds() {
-      if (app.isEditorRenderApp) {
+      if (app.isEditorRenderApp || app.ignoreSavedGemProgress) {
         return;
       }
 
@@ -748,7 +752,7 @@
     }
 
     function applyCollectedGemProgressToActors(actors = app.state.actors, levelId = app.currentLevelId) {
-      if (app.isEditorRenderApp) {
+      if (app.isEditorRenderApp || app.ignoreSavedGemProgress) {
         return;
       }
 
@@ -859,14 +863,18 @@
 
     function createRuntimeActor(actor, index = 0, levelId = app.currentLevelId) {
       const collectionId = gemCollectionId(actor, index, levelId);
-      const collected = !app.isEditorRenderApp && collectionId ? app.collectedGemIds.has(collectionId) : false;
+      const usesSavedGemProgress = !app.isEditorRenderApp && !app.ignoreSavedGemProgress;
+      const collected = usesSavedGemProgress && collectionId
+        ? app.collectedGemIds.has(collectionId)
+        : false;
       const removed = Boolean(actor?.removed) || collected;
       const elevation = actor?.elevation ?? 0;
       const runtimeActor = {
         ...actor,
         collectionId: collectionId || actor?.collectionId || null,
-        collected: app.isEditorRenderApp ? false : actor?.collected === true || collected,
-        showCollectedGhost: app.isEditorRenderApp ? false : actor?.showCollectedGhost === true || collected,
+        collected: usesSavedGemProgress ? actor?.collected === true || collected : false,
+        showCollectedGhost:
+          usesSavedGemProgress ? actor?.showCollectedGhost === true || collected : false,
         hoverSeed: actor?.hoverSeed ?? hoverSeedForActor(actor),
         renderX: actor?.renderX ?? actor.x,
         renderY: actor?.renderY ?? actor.y,

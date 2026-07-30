@@ -11402,26 +11402,38 @@
       return objects;
     }
 
+    function collectModelNodeUrls(node, urls, visited) {
+      if (!node || typeof node !== "object" || visited.has(node)) {
+        return;
+      }
+
+      visited.add(node);
+
+      if (typeof node.modelUrl === "string" && node.modelUrl.trim()) {
+        urls.add(node.modelUrl.trim());
+      }
+
+      collectModelNodeUrls(node.underlay, urls, visited);
+
+      if (Array.isArray(node.layers)) {
+        node.layers.forEach((layer) => {
+          collectModelNodeUrls(layer, urls, visited);
+        });
+      }
+    }
+
     function collectLevelStateModelUrls(levelState, urls) {
+      const visited = new Set();
+
       (levelState?.terrain || []).forEach((row) => {
         (row || []).forEach((cell) => {
-          for (let node = cell; node; node = node.underlay) {
-            if (node.modelUrl) {
-              urls.add(node.modelUrl);
-            }
-
-            (node.layers || []).forEach((layer) => {
-              if (layer?.modelUrl) {
-                urls.add(layer.modelUrl);
-              }
-            });
-          }
+          collectModelNodeUrls(cell, urls, visited);
         });
       });
 
       (levelState?.actors || []).forEach((actor) => {
-        if (actor?.modelUrl) {
-          urls.add(actor.modelUrl);
+        if (typeof actor?.modelUrl === "string" && actor.modelUrl.trim()) {
+          urls.add(actor.modelUrl.trim());
         }
       });
     }
@@ -11455,6 +11467,115 @@
       const urls = new Set();
       collectLevelStateModelUrls(levelState, urls);
       return preloadModelAssets(urls);
+    }
+
+    function resetFailedModelAssets(urls) {
+      (urls || []).forEach((url) => {
+        modelAssetCache.delete(url);
+        app.modelTextCache?.delete?.(url);
+      });
+
+      // ensureGltfLoaderClass intentionally converts an import rejection into
+      // null for permissive gameplay. Strict one-off renders must be able to
+      // retry a transient loader-module failure instead of reusing that
+      // already-resolved null promise forever.
+      if (!GLTFLoaderClass) {
+        gltfLoaderClassPromise = null;
+      }
+    }
+
+    function waitForModelRetry(delayMs) {
+      if (!(delayMs > 0)) {
+        return Promise.resolve();
+      }
+
+      return new Promise((resolve) => {
+        window.setTimeout(resolve, delayMs);
+      });
+    }
+
+    async function awaitRequiredModelUrls(urls) {
+      const pending = [];
+
+      urls.forEach((url) => {
+        requestModelAsset(url);
+        const cached = modelAssetCache.get(url);
+
+        if (cached?.status === "loading" && cached.promise) {
+          pending.push(Promise.resolve(cached.promise));
+        }
+      });
+
+      await Promise.allSettled(pending);
+      return urls.filter((url) => modelAssetCache.get(url)?.status !== "ready");
+    }
+
+    // Strict counterpart to whenLevelStateModelsReady for durable captures.
+    // Unlike the permissive API used during play, this rejects instead of
+    // accepting fallback primitives when any referenced GLB cannot load.
+    async function requireLevelStatesModelsReady(
+      levelStates,
+      { retries = 1, retryDelayMs = 250 } = {}
+    ) {
+      const states =
+        levelStates instanceof Map
+          ? Array.from(levelStates.values())
+          : Array.isArray(levelStates)
+            ? levelStates
+            : levelStates
+              ? [levelStates]
+              : [];
+      const urls = new Set();
+
+      states.forEach((levelState) => {
+        collectLevelStateModelUrls(levelState, urls);
+      });
+
+      if (urls.size === 0) {
+        return;
+      }
+
+      await Promise.resolve(app.threeRendererReady);
+
+      const requiredUrls = Array.from(urls);
+      const retryCountValue = Number(retries);
+      const retryCount = Number.isFinite(retryCountValue)
+        ? Math.max(0, Math.floor(retryCountValue))
+        : 1;
+      const retryDelayValue = Number(retryDelayMs);
+      const delayMs = Number.isFinite(retryDelayValue)
+        ? Math.max(0, retryDelayValue)
+        : 250;
+      const alreadyFailed = requiredUrls.filter(
+        (url) => modelAssetCache.get(url)?.status === "failed"
+      );
+
+      if (alreadyFailed.length > 0) {
+        resetFailedModelAssets(alreadyFailed);
+      }
+
+      let failedUrls = requiredUrls;
+
+      for (let attempt = 0; attempt <= retryCount; attempt += 1) {
+        failedUrls = await awaitRequiredModelUrls(failedUrls);
+
+        if (failedUrls.length === 0) {
+          return;
+        }
+
+        if (attempt < retryCount) {
+          resetFailedModelAssets(failedUrls);
+          await waitForModelRetry(delayMs);
+        }
+      }
+
+      failedUrls.sort();
+      const error = new Error(
+        `Required 3D model assets failed to load: ${failedUrls.join(", ")}`
+      );
+      error.name = "ModelAssetLoadError";
+      error.modelUrls = failedUrls;
+      throw error;
     }
 
     let warmupModelUrls = null;
@@ -13278,6 +13399,7 @@
       warmWorldViewRoomGroups,
       preloadModelAssets,
       whenLevelStateModelsReady,
+      requireLevelStatesModelsReady,
       prewarmPlayLookShaders,
       primeHomeEdgeReveal,
       beginHomeEdgeReveal,
