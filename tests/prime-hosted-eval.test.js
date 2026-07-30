@@ -320,6 +320,18 @@ print("chat blank retry ready")`
     }]
   })}\n`);
   assert.equal(localRolloutError(failedResults), "InternalServerError: 500 Internal Server Error");
+
+  const zeroActionResults = path.join(outDir, "zero-action-results.jsonl");
+  fs.writeFileSync(zeroActionResults, `${JSON.stringify({
+    stop_condition: "agent_completed",
+    errors: [],
+    info: { maze_actions: [] }
+  })}\n`);
+  assert.equal(
+    localRolloutError(zeroActionResults),
+    "The agent exited before issuing its first MazeBench action. " +
+      "This is an invalid zero-action rollout, not a successful task completion."
+  );
 } finally {
   fs.rmSync(outDir, { recursive: true, force: true });
 }

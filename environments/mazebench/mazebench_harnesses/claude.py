@@ -14,6 +14,45 @@ from verifiers.v1.runtimes import ProgramResult, Runtime
 from verifiers.v1.trace import Trace
 
 
+CLAUDE_RESTRICTED_BUILTIN_TOOLS = (
+    "Agent",
+    "Bash",
+    "CronCreate",
+    "CronDelete",
+    "CronList",
+    "CreateGoal",
+    "DesignSync",
+    "Edit",
+    "EnterWorktree",
+    "ExitWorktree",
+    "Glob",
+    "Grep",
+    "GetGoal",
+    "Monitor",
+    "NotebookEdit",
+    "PushNotification",
+    "Read",
+    "RemoteTrigger",
+    "ReportFindings",
+    "ScheduleWakeup",
+    "SendMessage",
+    "Skill",
+    "SetGoalBudget",
+    "Task",
+    "TaskCreate",
+    "TaskGet",
+    "TaskList",
+    "TaskOutput",
+    "TaskStop",
+    "TaskUpdate",
+    "ToolSearch",
+    "WebFetch",
+    "WebSearch",
+    "Workflow",
+    "Write",
+)
+
+
 class MazeBenchClaudeCodeHarness(ClaudeCodeHarness):
     """Run Claude Code with built-ins disabled and only evaluator-owned MCP."""
 
@@ -35,19 +74,33 @@ class MazeBenchClaudeCodeHarness(ClaudeCodeHarness):
             "ANTHROPIC_API_KEY": secret,
             "CLAUDE_CONFIG_DIR": CLAUDE_CONFIG_DIR,
             "DISABLE_AUTOUPDATER": "1",
+            # A custom provider URL disables Claude's deferred tool search.
+            # Load the small evaluator-owned MCP surface synchronously instead.
+            "ENABLE_TOOL_SEARCH": "false",
             "IS_SANDBOX": "1",
+            "MCP_CONNECTION_NONBLOCKING": "false",
+            "MCP_TIMEOUT": "30000",
         }
+        allowed_tools = ",".join(
+            f"mcp__{name}__*" for name in sorted(mcp_urls)
+        )
         argv = [
             CLAUDE_BIN.format(version=self.config.version),
             "--print",
             "--bare",
             "--disable-slash-commands",
-            "--dangerously-skip-permissions",
             "--no-session-persistence",
-            # An empty --tools value removes every built-in tool. The explicit
-            # strict MCP file below remains available to the evaluated model.
+            "--permission-mode",
+            "dontAsk",
+            # Claude's default registry must be enabled for dynamic MCP
+            # discovery. Every built-in remains explicitly denied, while the
+            # exact evaluator-owned MCP server is the only allowed namespace.
             "--tools",
-            "",
+            "default",
+            "--allowedTools",
+            allowed_tools,
+            "--disallowedTools",
+            ",".join(CLAUDE_RESTRICTED_BUILTIN_TOOLS),
             "--model",
             ctx.model,
         ]
@@ -55,7 +108,8 @@ class MazeBenchClaudeCodeHarness(ClaudeCodeHarness):
             argv += ["--append-system-prompt", system_prompt]
         mcp = {
             "mcpServers": {
-                name: {"type": "http", "url": url} for name, url in mcp_urls.items()
+                name: {"type": "http", "url": url, "alwaysLoad": True}
+                for name, url in mcp_urls.items()
             }
         }
         mcp_path = f"{CLAUDE_CONFIG_DIR}/mcp.json"
