@@ -2409,24 +2409,23 @@ function syntheticFloor(width, height) {
 }
 
 {
-  const [firstMove, secondMove, thirdMove, collectedOne] = runBridge(
-    [
-      { command: "move", direction: "up" },
-      { command: "move", direction: "right" },
-      { command: "move", direction: "right" },
-      { command: "move", direction: "left" }
-    ],
-    ["--level", "level_HxC", "--view", "top", "--game-won-gem-count", "1"]
+  // Keep this integration check independent of level_IxC's authored gem
+  // placement. The fixed 100-gem target must ignore a legacy threshold of 1
+  // even after collecting a real gem elsewhere in the world.
+  const responses = runBridge(
+    ["up", "up", "up", "up", "up", "up", "left", "left", "left"]
+      .map((direction) => ({ command: "move", direction })),
+    ["--level", "level_PxA", "--view", "top", "--game-won-gem-count", "1"]
   );
+  const collectedOne = responses.at(-1);
 
-  assert.equal(firstMove.game_won, undefined);
-  assert.equal(secondMove.game_won, undefined);
-  assert.equal(thirdMove.game_won, undefined);
+  for (const response of responses) {
+    assert.equal(response.game_won, undefined);
+  }
   assert.equal(collectedOne.gem_count, 1);
-  assert.equal(collectedOne.game_won, undefined);
   assert.equal(collectedOne.scorecard, undefined);
-  assert.equal(collectedOne.current_room, "level_IxC");
-  for (const response of [firstMove, secondMove, thirdMove, collectedOne]) {
+  assert.equal(collectedOne.current_room, "level_PxA");
+  for (const response of responses) {
     assert.equal(Object.prototype.hasOwnProperty.call(response, "solved"), false);
   }
 }
