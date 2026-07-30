@@ -36,6 +36,20 @@ jobs:
       - name: Core PR smoke suite
         run: npm run test:pr
 
+  game-isolation:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: environments/mazebench/uv.lock
+
+      - name: Verify isolated game runtime
+        run: uv run --locked --project environments/mazebench python3 -m unittest tests/test_game_runtime_isolation.py
+
   test:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest

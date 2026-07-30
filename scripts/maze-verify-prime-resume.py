@@ -48,7 +48,9 @@ def config_for_checkpoint(path: Path) -> MazeBenchConfig:
 
 async def verify(path: Path) -> dict:
     checkpoint = load_prime_resume_checkpoint(str(path))
-    taskset = MazeBenchTaskset(config=config_for_checkpoint(path))
+    taskset = MazeBenchTaskset(
+        config=config_for_checkpoint(path), _trusted_task_generation=True
+    )
     task = taskset.load()[0]
     user = task.user_server()
     if user is None:

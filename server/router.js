@@ -281,13 +281,6 @@ function createRequestRouter({
         return;
       }
 
-      if (segments[4] === "summary" && request.method === "POST") {
-        const payload = await readJsonBody(request);
-        const review = agentRuns.generateRunReview(runId, payload || {});
-        sendJson(response, 202, { review, message: "Run review started." });
-        return;
-      }
-
       if (segments[4] === "notes" && request.method === "GET") {
         sendJson(response, 200, { notes: agentRuns.getRunNotes(runId) });
         return;

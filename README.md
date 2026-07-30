@@ -1,7 +1,7 @@
 # MazeBench
 
 MazeBench is a local browser app for building and playing persistent 3D puzzle
-worlds, then evaluating coding agents in the same JavaScript engine.
+worlds, then evaluating models in the same JavaScript engine.
 
 ## Quick start
 
@@ -25,25 +25,16 @@ The site opens at `http://localhost:3000`.
 
 - **Play** — explore the main world or a local world.
 - **Build** — create and edit worlds stored on your machine.
-- **Agent** — run coding agents or Prime Intellect Verifiers against a world.
+- **Agent** — run isolated Prime Intellect Verifiers agents against the maze.
 
 ## Agent runs
 
-Local coding-agent runs use Docker by default so the evaluated agent receives
-only the game controls, not the repository or host filesystem.
-
-```bash
-mazebench build
-mazebench model=codex moves=10
-mazebench model=claude moves=10
-mazebench model=kimi moves=10
-```
-
-Codex runs require the Codex CLI; Claude runs require Claude Code; Kimi runs
-require Kimi Code CLI. The Agent page launches each from an empty workspace and
-exposes only isolated game controls, plus isolated Python when Tools is selected.
-Replay video also requires a Chromium-family browser and `ffmpeg`. Run
-`mazebench --help` for commands and options.
+The Agent page sends model turns through a fixed evaluator-side relay that
+advertises exactly four game-control tools. The authoritative game and its MCP
+server run in a separate, networkless Docker sandbox with no host mounts. The
+model receives no shell, filesystem, subprocess, network, repository, hidden
+state, or scoring capability. Replay video also requires a Chromium-family
+browser and `ffmpeg`. Run `mazebench --help` for commands and options.
 
 For Prime Intellect Verifiers:
 

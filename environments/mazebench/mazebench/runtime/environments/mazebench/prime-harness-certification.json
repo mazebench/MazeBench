@@ -1,137 +1,36 @@
 {
   "schema_version": 1,
-  "catalog_fingerprint": "745525d2953b094a531a6487957beb2a159081451cece7330bf215e7562e1a30",
+  "catalog_fingerprint": "1af566e20050655337fc1d4d5653b3728f51807361502717a905683e6be1bfa8",
   "verifiers_version": "0.2.1.dev62",
   "verifiers_revision": "653bb14003b87e39588bde308fa8626d1038ce15",
   "boundary": {
-    "harness_runtime": "disposable-prime-sandbox",
-    "game_runtime": "evaluator-owned-external-tool-server",
+    "model_runtime": "trusted-evaluator-relay",
+    "game_runtime": "networkless-evaluator-owned-docker-tool-server",
     "allowed_controls": [
-      "start",
-      "observe",
-      "action",
-      "action_sequence"
+      "game_action",
+      "game_action_sequence",
+      "game_observe",
+      "game_start"
     ],
-    "forbidden_task_fields": [
-      "repo_root",
-      "resume_checkpoint_path",
-      "raw_observation",
-      "scorecard"
+    "forbidden_capabilities": [
+      "filesystem",
+      "host-shell",
+      "network-tool",
+      "repository",
+      "subprocess"
     ]
   },
   "harnesses": [
     {
-      "id": "bash",
-      "adapter": "native_mcp",
-      "runtime_harness_id": "bash",
-      "checks": [
-        "upstream-load",
-        "effective-mcp-pairing",
-        "external-task-boundary",
-        "config-validation"
-      ],
-      "status": "certified"
-    },
-    {
-      "id": "claude_code",
-      "adapter": "claude_mcp",
-      "runtime_harness_id": "mazebench_claude_harness",
-      "checks": [
-        "upstream-load",
-        "effective-mcp-pairing",
-        "external-task-boundary",
-        "config-validation",
-        "claude-mcp-argv"
-      ],
-      "status": "certified"
-    },
-    {
-      "id": "codex",
-      "adapter": "codex_mcp",
+      "id": "null",
+      "adapter": "trusted_model_relay",
       "runtime_harness_id": "mazebench_codex_harness",
       "checks": [
-        "upstream-load",
-        "effective-mcp-pairing",
-        "external-task-boundary",
-        "config-validation",
-        "codex-mcp-argv",
-        "isolated-python-tool"
-      ],
-      "status": "certified"
-    },
-    {
-      "id": "kimi_code",
-      "adapter": "kimi_mcp",
-      "runtime_harness_id": "mazebench_kimi_harness",
-      "checks": [
-        "upstream-load",
-        "effective-mcp-pairing",
-        "external-task-boundary",
-        "config-validation",
-        "kimi-image-capability"
-      ],
-      "status": "certified"
-    },
-    {
-      "id": "mini_swe_agent",
-      "adapter": "cli_gateway",
-      "runtime_harness_id": "mazebench_cli_harness",
-      "checks": [
-        "upstream-load",
-        "effective-mcp-pairing",
-        "external-task-boundary",
-        "config-validation",
-        "capability-cli-protocol"
-      ],
-      "status": "certified"
-    },
-    {
-      "id": "null",
-      "adapter": "native_mcp",
-      "runtime_harness_id": "null",
-      "checks": [
-        "upstream-load",
-        "effective-mcp-pairing",
-        "external-task-boundary",
-        "config-validation"
-      ],
-      "status": "certified"
-    },
-    {
-      "id": "pi",
-      "adapter": "cli_gateway",
-      "runtime_harness_id": "mazebench_cli_harness",
-      "checks": [
-        "upstream-load",
-        "effective-mcp-pairing",
-        "external-task-boundary",
-        "config-validation",
-        "capability-cli-protocol"
-      ],
-      "status": "certified"
-    },
-    {
-      "id": "rlm",
-      "adapter": "native_mcp",
-      "runtime_harness_id": "rlm",
-      "checks": [
-        "upstream-load",
-        "effective-mcp-pairing",
-        "external-task-boundary",
-        "config-validation"
-      ],
-      "status": "certified"
-    },
-    {
-      "id": "terminus_2",
-      "adapter": "cli_gateway",
-      "runtime_harness_id": "mazebench_cli_harness",
-      "checks": [
-        "upstream-load",
-        "effective-mcp-pairing",
-        "external-task-boundary",
-        "config-validation",
-        "capability-cli-protocol"
+        "exact-taskset-binding",
+        "fixed-local-relay-runtime",
+        "four-game-tools-only",
+        "retired-coding-adapters",
+        "evaluator-owned-tool-server"
       ],
       "status": "certified"
     }

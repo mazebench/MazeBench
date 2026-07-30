@@ -18,6 +18,7 @@ const {
 } = require("../scripts/maze-prime-run");
 
 const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "mazebench-hosted-eval-"));
+const environmentDir = path.join(__dirname, "..", "environments", "mazebench");
 
 try {
   for (const modelFacingSource of [
@@ -123,8 +124,13 @@ print("chat blank retry ready")`
     "Provider fallback"
   );
 
+  assert.throws(
+    () => parseArgs(["--hosted", "--env-dir", environmentDir, "--out", outDir]),
+    /Hosted agent evaluations cannot provide the separate game sandbox/
+  );
   const options = parseArgs([
-    "--hosted",
+    "--env-dir",
+    environmentDir,
     "--out",
     outDir,
     "--run-id",
@@ -142,7 +148,7 @@ print("chat blank retry ready")`
     "--no-quit",
     "--no-video"
   ]);
-  assert.equal(options.hosted, true);
+  assert.equal(options.hosted, false);
   assert.equal(options.maxTurns, 750);
   assert.equal(options.unlimited, false);
   assert.equal(options.allowQuit, false);
@@ -159,14 +165,14 @@ print("chat blank retry ready")`
   assert.equal(resumeOptions.resumeCheckpoint, checkpointPath);
 
   const legacyReasoningOptions = parseArgs([
-    "--hosted",
+    "--env-dir", environmentDir,
     "--out", outDir,
     "--reasoning", "max"
   ]);
   assert.equal(legacyReasoningOptions.reasoning, "");
 
   const unsupportedReasoningOptions = parseArgs([
-    "--hosted",
+    "--env-dir", environmentDir,
     "--out", outDir,
     "--model", "openai/gpt-5.6-sol",
     "--reasoning", "high"
@@ -198,7 +204,7 @@ print("chat blank retry ready")`
   ]);
 
   const unlimitedOptions = parseArgs([
-    "--hosted",
+    "--env-dir", environmentDir,
     "--out", outDir,
     "--unlimited"
   ]);
@@ -213,7 +219,7 @@ print("chat blank retry ready")`
   assert.equal(unlimitedArgv[unlimitedArgv.indexOf("--timeout-minutes") + 1], "1440");
 
   const autoQuitOptions = parseArgs([
-    "--hosted",
+    "--env-dir", environmentDir,
     "--out", outDir,
     "--auto-quit",
     "--auto-quit-threshold", "7.5",
@@ -229,7 +235,7 @@ print("chat blank retry ready")`
   assert(autoQuitArgv[autoQuitArgv.indexOf("--state-columns") + 1].includes("maze_auto_quit"));
 
   const hiddenAsciiOptions = parseArgs([
-    "--hosted",
+    "--env-dir", environmentDir,
     "--out", outDir,
     "--observation-mode", "ascii",
     "--hide-names",
@@ -246,7 +252,7 @@ print("chat blank retry ready")`
   assert.equal(hiddenAsciiReplayArgs[hiddenAsciiReplayArgs.indexOf("--height") + 1], "720");
 
   const jsonOptions = parseArgs([
-    "--hosted",
+    "--env-dir", environmentDir,
     "--out", outDir,
     "--observation-mode", "json",
     "--omniscient",

@@ -1,23 +1,16 @@
 """mazebench: one command to run the MazeBench game locally or through Prime.
 
-This is a thin launcher. The maze engine, the local-agent runner, and the
-replay/video renderer are all Node scripts in the repo; the Prime Intellect
-path shells out to the `prime` / `uv` CLIs. The CLI's job is to find the repo
-root, translate friendly `key=value` arguments, and exec the right tool.
+This is a thin launcher. The maze engine and replay/video renderer are Node
+scripts in the repo; evaluated agents run through the isolated Prime path.
 
 Examples
 --------
-    mazebench model=codex moves=10
-    mazebench model=claude moves=10 level=HxI video=off
-    mazebench model=kimi moves=10 container=false
-    mazebench codex moves=10            # shorthand for model=codex
     mazebench replay outputs/maze-local/codex/<run>/    # (re)make the video
     mazebench ascii --level CxD         # interactive ASCII game
     mazebench json --level CxD          # model-facing structured observation
     mazebench play                      # interactive human REPL
     mazebench prime install             # prime env install mazebench
     mazebench prime eval model=openai/gpt-5-nano n=1 r=1
-    mazebench prime codex model=openai/gpt-5-codex max_actions=100
     mazebench prime vision model=openai/gpt-4.1-mini
 """
 
@@ -50,27 +43,10 @@ Launch the website (Play / Build / Agent modes in your browser):
   to the next free port if that one is busy, so a launch never fails on a port
   clash. The live URL is printed and saved so stop/status/restart just work.
 
-Interactive setup (pick options with arrow keys):
-  mazebench wizard
-
-Local coding agent (uses YOUR Codex/Claude/Kimi account, no Prime):
-  mazebench model=codex moves=10 [tools=false mode=text|vision level=HxI gems=100 video=on]
-  mazebench model=claude moves=10 [tools=true mode=vision vision_width=512 model_name=<llm>]
-  mazebench model=kimi moves=10 [tools=true mode=text model_name=kimi/k3]
-  mazebench codex moves=10                 shorthand for model=codex
-  mazebench claude moves=10 mode=vision    shorthand for model=claude
-  mazebench kimi moves=10                  shorthand for model=kimi
-
-  tools=false (default) sandboxes the agent to the maze only — no reading your
-  files, no writing, no network. tools=true adds isolated Python computation;
-  host files, shell commands, and web tools remain unavailable.
-
-  Local runs execute inside a container by default (host filesystem isolated;
-  only the output dir is mounted). Build the image once with `mazebench build`.
-  Use container=false to run on the host with just the CLI sandbox.
-
-Build the container image (one-time):
-  mazebench build [image=mazebench-agent]
+Evaluated game agents:
+  Launch the Game agent from the Agent page. A fixed trusted relay gives the
+  model four game tools; the game server runs in a separate networkless Docker
+  sandbox with no host mounts.
 
 Replay / video from a finished run or a Prime eval dir:
   mazebench replay <session-dir | session.json | results.jsonl> [video=on fast=on]
@@ -87,10 +63,7 @@ Interactive command REPL:
 Prime Intellect Verifiers:
   mazebench prime install
   mazebench prime eval   [model=openai/gpt-5-nano n=1 r=1 max_turns=8]
-  mazebench prime codex  [model=openai/gpt-5-codex n=1 r=1 max_actions=100 max_turns=40]
   mazebench prime vision [model=openai/gpt-4.1-mini width=512 height=512 max_turns=8]
-
-Pass dry_run=on to any local run to print the command without executing it.
 Repo root is auto-detected; override with MAZEBENCH_REPO_ROOT.
 """
 
@@ -99,8 +72,17 @@ class CliError(RuntimeError):
     pass
 
 
+RETIRED_LOCAL_AGENT_MESSAGE = (
+    "Local coding-agent launches are retired because they can expose repository or "
+    "host capabilities. Use the Agent page, which launches maze-prime-run.js with "
+    "the mazebench-tools taskset."
+)
+
+
 def _is_repo_root(path: Path) -> bool:
-    return (path / "package.json").is_file() and (path / "scripts" / "maze-bridge.js").is_file()
+    return (path / "package.json").is_file() and (
+        path / "scripts" / "maze-bridge.js"
+    ).is_file()
 
 
 def find_repo_root() -> Path:
@@ -148,7 +130,11 @@ def _materialize_workspace(runtime: Path) -> Path:
     """
     workspace = _workspace_dir()
     version_file = workspace / ".runtime-version"
-    packaged_version = (runtime / ".runtime-version").read_text().strip() if (runtime / ".runtime-version").is_file() else __version__
+    packaged_version = (
+        (runtime / ".runtime-version").read_text().strip()
+        if (runtime / ".runtime-version").is_file()
+        else __version__
+    )
     current_version = version_file.read_text().strip() if version_file.is_file() else ""
 
     if current_version != packaged_version or not _is_repo_root(workspace):
@@ -223,19 +209,18 @@ def _pairs_to_kv(pairs: dict[str, str]) -> list[str]:
 
 
 def run_local(root: Path, model: str, pairs: dict[str, str], flags: list[str]) -> int:
-    _require(_node_bin(), "Install Node.js (the maze engine runs on Node).")
-    if model == "kimi":
-        pairs = {"container": "false", **pairs}
-    pairs = {"model": model, **{k: v for k, v in pairs.items() if k != "model"}}
-    cmd = [_node_bin(), str(root / "scripts" / "maze-agent-local.js"), *_pairs_to_kv(pairs), *flags]
-    return _run(cmd, root)
+    raise CliError(RETIRED_LOCAL_AGENT_MESSAGE)
 
 
-def run_replay(root: Path, words: list[str], pairs: dict[str, str], flags: list[str]) -> int:
+def run_replay(
+    root: Path, words: list[str], pairs: dict[str, str], flags: list[str]
+) -> int:
     _require(_node_bin(), "Install Node.js.")
     target = words[0] if words else pairs.get("path") or pairs.get("dir")
     if not target:
-        raise CliError("replay needs a path: mazebench replay <session-dir|results.jsonl>")
+        raise CliError(
+            "replay needs a path: mazebench replay <session-dir|results.jsonl>"
+        )
     cmd = [_node_bin(), str(root / "scripts" / "maze-export-replay.js"), target]
     if pairs.get("video", "on").lower() in ("off", "false", "0", "no"):
         cmd.append("--no-video")
@@ -389,7 +374,9 @@ def _is_on(value: str) -> bool:
     return value.strip().lower() in ("1", "true", "on", "yes", "bg")
 
 
-def run_launch(root: Path, words: list[str], pairs: dict[str, str], flags: list[str]) -> int:
+def run_launch(
+    root: Path, words: list[str], pairs: dict[str, str], flags: list[str]
+) -> int:
     """Serve the website (Play / Build / Agent modes) from `root`."""
     _require(_node_bin(), "Install Node.js (the site and maze engine run on Node).")
 
@@ -401,8 +388,14 @@ def run_launch(root: Path, words: list[str], pairs: dict[str, str], flags: list[
     existing = _read_state()
     if existing:
         url = existing.get("url", "")
-        print(f"mazebench: already running at {url} (pid {existing.get('pid')}).", file=sys.stderr)
-        print("  Use `mazebench stop` to shut it down, or `mazebench restart` for a fresh one.", file=sys.stderr)
+        print(
+            f"mazebench: already running at {url} (pid {existing.get('pid')}).",
+            file=sys.stderr,
+        )
+        print(
+            "  Use `mazebench stop` to shut it down, or `mazebench restart` for a fresh one.",
+            file=sys.stderr,
+        )
         if open_browser and url:
             webbrowser.open(url)
         return 0
@@ -413,12 +406,17 @@ def run_launch(root: Path, words: list[str], pairs: dict[str, str], flags: list[
         preferred = 3000
     port = _find_free_port(host, preferred)
     if port != preferred:
-        print(f"mazebench: port {preferred} is busy — using {port} instead.", file=sys.stderr)
+        print(
+            f"mazebench: port {preferred} is busy — using {port} instead.",
+            file=sys.stderr,
+        )
 
     state_file = _state_file()
     state_file.parent.mkdir(parents=True, exist_ok=True)
     _clear_state()
-    env = dict(os.environ, PORT=str(port), HOST=host, MAZEBENCH_STATE_FILE=str(state_file))
+    env = dict(
+        os.environ, PORT=str(port), HOST=host, MAZEBENCH_STATE_FILE=str(state_file)
+    )
     display_host = "localhost" if host in ("0.0.0.0", "::") else host
     url = f"http://{display_host}:{port}"
     cmd = [_node_bin(), str(root / "server.js"), *flags]
@@ -426,21 +424,42 @@ def run_launch(root: Path, words: list[str], pairs: dict[str, str], flags: list[
     if background:
         log_path = _server_log()
         with open(log_path, "ab") as log:
-            proc = subprocess.Popen(cmd, cwd=str(root), env=env, stdout=log, stderr=log, start_new_session=True)
+            proc = subprocess.Popen(
+                cmd,
+                cwd=str(root),
+                env=env,
+                stdout=log,
+                stderr=log,
+                start_new_session=True,
+            )
         state = _wait_for_state(proc.pid)
         if state is None:
-            print(f"mazebench: the server did not come up — see {log_path}", file=sys.stderr)
+            print(
+                f"mazebench: the server did not come up — see {log_path}",
+                file=sys.stderr,
+            )
             return 1
-        print(f"mazebench: running in the background at {state['url']} (pid {state['pid']}).", file=sys.stderr)
-        print("  Stop it with `mazebench stop`; check it with `mazebench status`.", file=sys.stderr)
+        print(
+            f"mazebench: running in the background at {state['url']} (pid {state['pid']}).",
+            file=sys.stderr,
+        )
+        print(
+            "  Stop it with `mazebench stop`; check it with `mazebench status`.",
+            file=sys.stderr,
+        )
         if open_browser:
             webbrowser.open(state["url"])
         return 0
 
-    print(f"mazebench: serving {url}  (Ctrl-C to stop; or `mazebench stop` elsewhere)", file=sys.stderr)
+    print(
+        f"mazebench: serving {url}  (Ctrl-C to stop; or `mazebench stop` elsewhere)",
+        file=sys.stderr,
+    )
     proc = subprocess.Popen(cmd, cwd=str(root), env=env)
     if open_browser:
-        threading.Thread(target=_open_when_ready, args=(proc.pid, url), daemon=True).start()
+        threading.Thread(
+            target=_open_when_ready, args=(proc.pid, url), daemon=True
+        ).start()
 
     try:
         return proc.wait()
@@ -467,7 +486,9 @@ def run_stop(root: Path, pairs: dict[str, str]) -> int:
         os.kill(pid, signal.SIGTERM)
     except OSError:
         _clear_state()
-        print("mazebench: the site was already gone; cleared its record.", file=sys.stderr)
+        print(
+            "mazebench: the site was already gone; cleared its record.", file=sys.stderr
+        )
         return 0
 
     for _ in range(50):  # up to ~5s for a clean shutdown
@@ -497,7 +518,9 @@ def run_status(root: Path) -> int:
     return 0
 
 
-def run_restart(root: Path, words: list[str], pairs: dict[str, str], flags: list[str]) -> int:
+def run_restart(
+    root: Path, words: list[str], pairs: dict[str, str], flags: list[str]
+) -> int:
     old = _read_state()
     # Keep the same port on restart unless the user asked for a different one.
     if old and "port" not in pairs and old.get("port"):
@@ -508,18 +531,16 @@ def run_restart(root: Path, words: list[str], pairs: dict[str, str], flags: list
 
 
 def run_wizard(root: Path) -> int:
-    _require(_node_bin(), "Install Node.js (the maze engine runs on Node).")
-    return _run([_node_bin(), str(root / "scripts" / "maze-agent-local.js"), "wizard"], root)
+    raise CliError(RETIRED_LOCAL_AGENT_MESSAGE)
 
 
 def run_build(root: Path, pairs: dict[str, str], flags: list[str]) -> int:
-    docker = pairs.get("docker_bin", "docker")
-    _require(docker, "Install Docker: https://docs.docker.com/get-docker/")
-    image = pairs.get("image", "mazebench-agent")
-    return _run([docker, "build", "-t", image, ".", *flags], root)
+    raise CliError(RETIRED_LOCAL_AGENT_MESSAGE)
 
 
-def run_prime(root: Path, words: list[str], pairs: dict[str, str], flags: list[str]) -> int:
+def run_prime(
+    root: Path, words: list[str], pairs: dict[str, str], flags: list[str]
+) -> int:
     action = (words[0] if words else pairs.get("action") or "help").lower()
     env_dir = root / "environments" / "mazebench"
 
@@ -527,61 +548,72 @@ def run_prime(root: Path, words: list[str], pairs: dict[str, str], flags: list[s
         _require("prime", "Install the Prime CLI: https://docs.primeintellect.ai")
         return _run(["prime", "env", "install", "mazebench"], root)
 
-    if action == "eval":
-        # mazebench is a Verifiers v1 taskset — run it with the v1 `eval` CLI via
-        # uv (not `prime eval run`, the legacy env-module loader, which cannot
-        # load a v1 taskset). `--max-turns` is the per-rollout move budget.
+    if action in {"eval", "vision"}:
         _require("uv", "Install uv: https://docs.astral.sh/uv/")
-        model = pairs.get("model", "openai/gpt-5-nano")
+        if flags:
+            raise CliError(
+                "Raw eval flags are unavailable because they could replace the "
+                "certified game-only harness."
+            )
+        try:
+            moves = int(pairs.get("max_turns", "8" if action == "vision" else "20"))
+        except ValueError as error:
+            raise CliError("max_turns must be a positive integer") from error
+        if moves < 1:
+            raise CliError("max_turns must be a positive integer")
+        model = pairs.get(
+            "model",
+            "openai/gpt-4.1-mini" if action == "vision" else "openai/gpt-5-nano",
+        )
         cmd = [
-            "uv", "run", "eval", "mazebench",
-            "-m", model,
-            "-n", pairs.get("n", "1"),
-            "-r", pairs.get("r", "1"),
-            "--max-turns", pairs.get("max_turns", "20"),
-            "--rich", "false",
-            *flags,
+            "uv",
+            "run",
+            "eval",
+            "mazebench-tools",
+            "-m",
+            model,
+            "-n",
+            pairs.get("n", "1"),
+            "-r",
+            pairs.get("r", "1"),
+            "--taskset.max-actions",
+            str(moves),
+            "--max-turns",
+            str(max(moves + 16, moves * 4)),
+            "--harness.id",
+            "mazebench_codex_harness",
+            "--harness.runtime.type",
+            "subprocess",
+            "--taskset.tools.colocated",
+            "false",
+            "--taskset.python-tools",
+            "false",
+            "--push",
+            "false",
+            "--rich",
+            "false",
         ]
+        if action == "vision":
+            cmd.extend(
+                [
+                    "--taskset.observation-mode",
+                    "vision",
+                    "--taskset.vision-width",
+                    pairs.get("width", "512"),
+                    "--taskset.vision-height",
+                    pairs.get("height", "512"),
+                ]
+            )
         return _run(cmd, env_dir)
 
     if action == "codex":
-        _require("uv", "Install uv: https://docs.astral.sh/uv/")
-        model = pairs.get("model", "openai/gpt-5-codex")
-        cmd = [
-            "uv", "run", "eval", "mazebench_codex",
-            "-m", model,
-            "-n", pairs.get("n", "1"),
-            "-r", pairs.get("r", "1"),
-            "--taskset.max-actions", pairs.get("max_actions", "100"),
-            "--max-turns", pairs.get("max_turns", "40"),
-            "--rich", "false",
-            *flags,
-        ]
-        return _run(cmd, env_dir)
-
-    if action == "vision":
-        _require("uv", "Install uv: https://docs.astral.sh/uv/")
-        model = pairs.get("model", "openai/gpt-4.1-mini")
-        cmd = [
-            "uv", "run", "eval", "mazebench",
-            "-m", model,
-            "-n", pairs.get("n", "1"),
-            "-r", pairs.get("r", "1"),
-            "--taskset.observation-mode", "vision",
-            "--taskset.vision-width", pairs.get("width", "512"),
-            "--taskset.vision-height", pairs.get("height", "512"),
-            "--max-turns", pairs.get("max_turns", "8"),
-            "--rich", "false",
-            *flags,
-        ]
-        return _run(cmd, env_dir)
+        raise CliError(RETIRED_LOCAL_AGENT_MESSAGE)
 
     print(
-        "mazebench prime <install|eval|codex|vision> [key=value ...]\n\n"
+        "mazebench prime <install|eval|vision> [key=value ...]\n\n"
         "  install   prime env install mazebench\n"
-        "  eval      normal multi-turn chat-model eval\n"
-        "  codex     Codex CLI harness through Verifiers v1\n"
-        "  vision    perspective-image observations",
+        "  eval      four-tool game-agent evaluation\n"
+        "  vision    four-tool evaluation with perspective images",
         file=sys.stderr,
     )
     return 0 if action == "help" else 2

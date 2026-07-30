@@ -33,6 +33,7 @@ jobs:
           uv run --project environments/mazebench python scripts/maze-prime-harness-catalog.py --write environments/mazebench/prime-harness-catalog.json
           uv run --project environments/mazebench python scripts/maze-certify-prime-harnesses.py --self-test --write environments/mazebench/prime-harness-certification.json
           uv run --project environments/mazebench python scripts/maze-verify-prime-tools.py --self-test
+          uv run --locked --project environments/mazebench python3 -m unittest tests/test_game_runtime_isolation.py
           uv run --project environments/mazebench python scripts/maze-verify-prime-resume.py --self-test
           npm run sync-runtime
           node tests/prime-custom-harness.test.js
@@ -52,7 +53,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$branch"
-          git add environments/mazebench/pyproject.toml environments/mazebench/uv.lock environments/mazebench/prime-harness-catalog.json environments/mazebench/prime-harness-certification.json environments/mazebench/mazebench/runtime/environments/mazebench environments/mazebench_agent/mazebench_agent/runtime.tar.gz
+          git add environments/mazebench/pyproject.toml environments/mazebench/uv.lock environments/mazebench/prime-harness-catalog.json environments/mazebench/prime-harness-certification.json environments/mazebench/mazebench/runtime/environments/mazebench
           git commit -m "chore: refresh Prime harness compatibility"
           git push --force-with-lease origin "HEAD:$branch"
           gh pr view "$branch" >/dev/null 2>&1 || gh pr create \

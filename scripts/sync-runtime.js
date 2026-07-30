@@ -1,17 +1,8 @@
 const fs = require("fs");
 const path = require("path");
-const { spawnSync } = require("child_process");
 
 const ROOT_DIR = path.resolve(__dirname, "..");
 const RUNTIME_DIR = path.join(ROOT_DIR, "environments", "mazebench", "mazebench", "runtime");
-const AGENT_RUNTIME_ARCHIVE = path.join(
-  ROOT_DIR,
-  "environments",
-  "mazebench_agent",
-  "mazebench_agent",
-  "runtime.tar.gz"
-);
-const AGENT_RUNTIME_PACKAGER = path.join(ROOT_DIR, "scripts", "package-agent-runtime.py");
 
 // The runtime bundle mirrors the subset of the live tree that the MazeBench
 // environment needs. Directories listed in MIRRORED_DIRECTORIES are copied
@@ -78,6 +69,7 @@ const MIRRORED_FILES = [
   "scripts/codex-play.js",
   "scripts/maze-play.js",
   "scripts/maze-codex-tool-guard.js",
+  "scripts/maze-mcp-client.js",
   "scripts/maze-mcp-server.js",
   "scripts/maze-python-sandbox.js",
   "scripts/maze-prime-live-eval.py",
@@ -174,21 +166,7 @@ function computeTargetDrift(runtimeDir) {
 }
 
 function computeRuntimeDrift() {
-  const primary = computeTargetDrift(RUNTIME_DIR);
-  const archiveCheck = spawnSync("python3", [AGENT_RUNTIME_PACKAGER, "--check"], {
-    cwd: ROOT_DIR,
-    encoding: "utf8"
-  });
-  const archivePath = "mazebench_agent/runtime.tar.gz";
-  return {
-    missing: primary.missing.concat(
-      archiveCheck.status !== 0 && !fs.existsSync(AGENT_RUNTIME_ARCHIVE) ? [archivePath] : []
-    ),
-    modified: primary.modified.concat(
-      archiveCheck.status !== 0 && fs.existsSync(AGENT_RUNTIME_ARCHIVE) ? [archivePath] : []
-    ),
-    stale: primary.stale
-  };
+  return computeTargetDrift(RUNTIME_DIR);
 }
 
 function removeEmptyDirectories(directoryPath, runtimeDir = RUNTIME_DIR) {
@@ -227,21 +205,9 @@ function syncTarget(runtimeDir) {
 
 function syncRuntime() {
   const result = syncTarget(RUNTIME_DIR);
-  const archiveWasCurrent = spawnSync("python3", [AGENT_RUNTIME_PACKAGER, "--check"], {
-    cwd: ROOT_DIR,
-    encoding: "utf8"
-  }).status === 0;
-  const archive = spawnSync("python3", [AGENT_RUNTIME_PACKAGER], {
-    cwd: ROOT_DIR,
-    encoding: "utf8"
-  });
-  if (archive.status !== 0) {
-    throw new Error(archive.stderr || archive.stdout || "could not package the agent runtime");
-  }
-  const copied = result.copied.length + (archiveWasCurrent ? 0 : 1);
 
   console.log(
-    `sync-runtime: copied ${copied} file(s), removed ${result.stale.length} stale file(s).`
+    `sync-runtime: copied ${result.copied.length} file(s), removed ${result.stale.length} stale file(s).`
   );
 
   return computeRuntimeDrift();
@@ -254,7 +220,6 @@ if (require.main === module) {
 module.exports = {
   MIRRORED_DIRECTORIES,
   MIRRORED_FILES,
-  AGENT_RUNTIME_ARCHIVE,
   ROOT_DIR,
   RUNTIME_DIR,
   computeRuntimeDrift,

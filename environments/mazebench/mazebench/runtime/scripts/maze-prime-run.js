@@ -37,23 +37,38 @@ const CERTIFIED_HARNESSES = new Set(
   HARNESS_CERTIFICATION.harnesses.filter((entry) => entry.status === "certified").map((entry) => entry.id)
 );
 const PRIME_HARNESSES = new Map(HARNESS_CATALOG.harnesses.map((entry) => [entry.id, entry]));
-const TEXT_RUNTIME_IMAGE = "node:24-bookworm-slim";
-const VISION_RUNTIME_IMAGE = "mcr.microsoft.com/playwright:v1.60.0-noble";
+const MAZEBENCH_ENV_DIR = path.join(ROOT_DIR, "environments", "mazebench");
+const ISOLATED_AGENT_ROUTES = new Map([
+  ["null", {
+    adapter: "trusted_model_relay",
+    runtimeHarnessId: "mazebench_codex_harness",
+    defaultConfig: {}
+  }]
+]);
 const PRIME_REASONING_LEVELS = new Set(["low", "medium", "high"]);
-const PRIME_PYTHON_HARNESSES = new Set(["codex", "claude_code"]);
 const PRIME_PROVIDER_RETRY_ATTEMPTS = 3;
 const PRIME_PROVIDER_RETRY_BASE_MS = 30_000;
 const GAME_WON_GEM_COUNT = 100;
 
 function harnessDefinition(harnessId) {
-  return harnessId === "none" ? null : PRIME_HARNESSES.get(harnessId);
+  return PRIME_HARNESSES.get(harnessId);
 }
 
-function harnessCliValue(value) {
-  if (typeof value === "boolean") return value ? "True" : "False";
-  if (value === null) return "None";
-  if (Array.isArray(value) || (value && typeof value === "object")) return JSON.stringify(value);
-  return String(value);
+function requireIsolatedAgentRoute(harnessId, definition) {
+  const route = ISOLATED_AGENT_ROUTES.get(harnessId);
+  if (
+    !route ||
+    definition?.adapter !== route.adapter ||
+    definition?.runtime_harness_id !== route.runtimeHarnessId ||
+    definition?.boundary !== "game-tools-only" ||
+    Object.keys(definition?.default_config || {}).length !== Object.keys(route.defaultConfig).length ||
+    Object.entries(route.defaultConfig).some(([key, value]) => definition?.default_config?.[key] !== value)
+  ) {
+    throw new Error(
+      `Prime harness "${harnessId}" is not approved for MazeBench's game-tools-only agent boundary.`
+    );
+  }
+  return definition;
 }
 
 function positiveTurnBudget(value, fallback = 20) {
@@ -70,7 +85,7 @@ function parseArgs(argv) {
     envDir: "",
     environment: "mazebench/mazebench",
     gameWonGemCount: GAME_WON_GEM_COUNT,
-    harness: "none",
+    harness: "null",
     harnessConfig: {},
     hosted: false,
     levelId: "level_HxI",
@@ -101,13 +116,14 @@ function parseArgs(argv) {
 
     if (arg === "--env-dir") opts.envDir = path.resolve(next());
     else if (arg === "--harness") {
-      const harness = String(next() || "none").trim().toLowerCase();
+      const harness = String(next() || "null").trim().toLowerCase();
       const aliases = {
         claude: "claude_code",
         "claude-code": "claude_code",
         default: "null",
         "kimi-code": "kimi_code",
         "mini-swe-agent": "mini_swe_agent",
+        none: "null",
         "terminus-2": "terminus_2"
       };
       opts.harness = aliases[harness] || harness;
@@ -164,34 +180,47 @@ function parseArgs(argv) {
       opts.autoQuitWindow = Math.max(1, Math.min(10_000, Math.round(Number(next()) || 100)));
     }
     else if (arg === "--no-video") opts.video = false;
+    else throw new Error(`Unknown MazeBench agent option "${arg}".`);
   }
 
-  if (!opts.outDir || (!opts.hosted && !opts.envDir)) {
-    throw new Error("maze-prime-run.js requires --out and, for local evaluations, --env-dir");
+  if (!opts.outDir || !opts.envDir) {
+    throw new Error("maze-prime-run.js requires --out and --env-dir");
+  }
+  if (opts.envDir !== MAZEBENCH_ENV_DIR) {
+    throw new Error(`Local Prime evaluations require the isolated MazeBench environment at ${MAZEBENCH_ENV_DIR}.`);
   }
   const definition = harnessDefinition(opts.harness);
-  if (opts.harness !== "none" && !definition) {
+  if (!definition) {
     throw new Error(`Unknown Prime harness "${opts.harness}".`);
   }
-  if (definition && !definition.launchable) {
+  requireIsolatedAgentRoute(opts.harness, definition);
+  if (!definition.launchable) {
     throw new Error(definition.reason || `Prime harness "${opts.harness}" failed catalog validation.`);
   }
-  if (definition && !CERTIFIED_HARNESSES.has(opts.harness)) {
+  if (!CERTIFIED_HARNESSES.has(opts.harness)) {
     throw new Error(`Prime harness "${opts.harness}" has not passed MazeBench compatibility certification.`);
   }
-  if (opts.hosted && opts.harness !== "none") {
-    throw new Error("Custom harnesses run through the local trusted evaluator with only their harness program in a Prime sandbox.");
+  if (opts.hosted) {
+    throw new Error("Hosted agent evaluations cannot provide the separate game sandbox.");
   }
-  if (definition && opts.vision) {
-    throw new Error(`${opts.harness} currently supports only text and JSON through MazeBench's isolated MCP controls.`);
+  if (opts.toolUse === "offline") {
+    throw new Error("Agent computation tools are unavailable in the game-tools-only boundary.");
   }
-  if (opts.toolUse === "offline" && !PRIME_PYTHON_HARNESSES.has(opts.harness)) {
-    throw new Error("Prime isolated Python tools are supported only by the Codex and Claude Code harnesses.");
-  }
-  const allowedHarnessConfig = new Set(definition?.configurable || []);
+  const allowedHarnessConfig = new Set([
+    ...(definition?.configurable || []),
+    ...Object.keys(definition?.default_config || {})
+  ]);
   const unknownHarnessConfig = Object.keys(opts.harnessConfig).filter((key) => !allowedHarnessConfig.has(key));
   if (unknownHarnessConfig.length) {
     throw new Error(`Unsupported ${opts.harness} harness configuration: ${unknownHarnessConfig.join(", ")}.`);
+  }
+  const changedPinnedConfig = Object.entries(opts.harnessConfig).filter(
+    ([key, value]) =>
+      !definition?.configurable?.includes(key) &&
+      JSON.stringify(value) !== JSON.stringify(definition?.default_config?.[key])
+  );
+  if (changedPinnedConfig.length) {
+    throw new Error(`Unsupported ${opts.harness} harness variant: ${changedPinnedConfig.map(([key]) => key).join(", ")} is pinned by the game-tools-only boundary.`);
   }
   opts.harnessConfig = { ...(definition?.default_config || {}), ...opts.harnessConfig };
   if (opts.resumeCheckpoint && !fs.existsSync(opts.resumeCheckpoint)) {
@@ -674,43 +703,19 @@ function runHostedEval(opts) {
 }
 
 function agenticHarnessArgs(opts) {
-  if (opts.harness === "none") return [];
-  const definition = harnessDefinition(opts.harness);
-  const runtimeImage = opts.vision ? VISION_RUNTIME_IMAGE : TEXT_RUNTIME_IMAGE;
+  const definition = requireIsolatedAgentRoute(opts.harness, harnessDefinition(opts.harness));
   const argv = [
     "--harness.id",
     definition.runtime_harness_id,
     "--harness.runtime.type",
-    "prime",
-    "--harness.runtime.image",
-    runtimeImage,
-    "--harness.runtime.workdir",
-    "/app",
-    "--harness.runtime.cpu",
-    "2",
-    "--harness.runtime.memory",
-    "4",
-    "--harness.runtime.disk",
-    "8",
+    "subprocess",
     "--taskset.tools.colocated",
     "False",
     "--taskset.python-tools",
-    opts.toolUse === "offline" ? "True" : "False",
+    "False",
     "--push",
     "False"
   ];
-  if (definition.adapter === "cli_gateway") {
-    argv.push(
-      "--harness.upstream-id",
-      definition.upstream_id || opts.harness,
-      "--harness.upstream-config-json",
-      JSON.stringify(opts.harnessConfig)
-    );
-  } else {
-    for (const [key, value] of Object.entries(opts.harnessConfig)) {
-      argv.push(`--harness.${key.replace(/_/g, "-")}`, harnessCliValue(value));
-    }
-  }
   return argv;
 }
 
@@ -719,13 +724,11 @@ function agenticHarnessArgs(opts) {
 // budget; we fix examples/rollouts at 1 (one maze, one attempt) so the run is
 // simply "make N moves and stop". -o keeps results inside the run dir.
 function runEval(opts) {
-  if (opts.hosted) return runHostedEval(opts);
   const evalOutDir = path.join(opts.outDir, "eval-output");
   const liveUsagePath = path.join(opts.outDir, "prime-usage.jsonl");
   const liveActionsPath = path.join(opts.outDir, "actions.jsonl");
   const liveReasoningPath = path.join(opts.outDir, "prime-reasoning.jsonl");
-  const agentic = opts.harness !== "none";
-  const taskset = agentic ? "mazebench-tools" : "mazebench";
+  const taskset = "mazebench-tools";
   const argv = ["run", "--project", opts.envDir, "python", LIVE_EVAL, taskset];
 
   let resumeActionCount = 0;
@@ -806,10 +809,6 @@ function runEval(opts) {
       cwd: opts.envDir,
       env: {
         ...process.env,
-        MAZEBENCH_PRIME_HARNESS: opts.harness,
-        MAZEBENCH_PRIME_HARNESS_ADAPTER: harnessDefinition(opts.harness)?.adapter || "user_simulator",
-        MAZEBENCH_PRIME_HARNESS_CATALOG: HARNESS_CATALOG.catalog_fingerprint,
-        MAZEBENCH_PRIME_TOOL_USE: opts.toolUse,
         MAZEBENCH_LIVE_USAGE_PATH: liveUsagePath,
         MAZEBENCH_LIVE_ACTIONS_PATH: liveActionsPath,
         MAZEBENCH_LIVE_REASONING_PATH: liveReasoningPath,

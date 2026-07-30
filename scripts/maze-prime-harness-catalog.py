@@ -13,9 +13,12 @@ from typing import Any
 
 import verifiers.v1 as vf
 import verifiers.v1.harnesses as builtin_harnesses
+from mazebench_harnesses.codex import (
+    MazeBenchCodexHarness,
+    MazeBenchRelayHarnessConfig,
+)
 from verifiers.v1.loaders import harness_class, harness_config_type
 from verifiers.v1.utils.version import verifiers_commit
-
 
 COMMON_CONFIG_FIELDS = {
     "disabled_tools",
@@ -30,41 +33,30 @@ LABELS = {
     "codex": "Codex",
     "kimi_code": "Kimi Code",
     "mini_swe_agent": "mini-swe-agent",
-    "null": "Default MCP",
+    "null": "Game agent",
     "pi": "Pi",
     "rlm": "RLM",
     "terminus_2": "Terminus 2",
 }
+GAME_TOOLS_ONLY_ROUTES = {
+    "null": {
+        "adapter": "trusted_model_relay",
+        "runtime_harness_id": "mazebench_codex_harness",
+        "default_config": {},
+    }
+}
 
 
 def adapter_for(harness_id: str, harness_type: type[vf.Harness]) -> dict[str, Any]:
-    if harness_id == "claude_code":
+    del harness_type
+    if harness_id == "null":
         return {
-            "adapter": "claude_mcp",
-            "runtime_harness_id": "mazebench_claude_harness",
-        }
-    if harness_id == "codex":
-        return {
-            "adapter": "codex_mcp",
+            "adapter": "trusted_model_relay",
             "runtime_harness_id": "mazebench_codex_harness",
         }
-    if harness_id == "kimi_code":
-        return {
-            "adapter": "kimi_mcp",
-            "runtime_harness_id": "mazebench_kimi_harness",
-        }
-    if harness_id == "pi":
-        return {
-            "adapter": "cli_gateway",
-            "runtime_harness_id": "mazebench_cli_harness",
-            "upstream_id": harness_id,
-        }
-    if harness_type.SUPPORTS_MCP:
-        return {"adapter": "native_mcp", "runtime_harness_id": harness_id}
     return {
-        "adapter": "cli_gateway",
-        "runtime_harness_id": "mazebench_cli_harness",
-        "upstream_id": harness_id,
+        "adapter": "unsupported",
+        "runtime_harness_id": "",
     }
 
 
@@ -92,31 +84,54 @@ def discover() -> dict[str, Any]:
             )
             continue
 
-        schema = config_type.model_json_schema()
+        effective_type = MazeBenchCodexHarness if harness_id == "null" else harness_type
+        effective_config_type = (
+            MazeBenchRelayHarnessConfig if harness_id == "null" else config_type
+        )
+        if harness_id == "null":
+            config = effective_config_type.model_validate(
+                {"id": "mazebench_codex_harness"}
+            )
+        schema = effective_config_type.model_json_schema()
         properties = schema.get("properties") or {}
         configurable = sorted(set(properties) - COMMON_CONFIG_FIELDS)
         defaults = config.model_dump(exclude=COMMON_CONFIG_FIELDS)
         adapter = adapter_for(harness_id, harness_type)
-        vision_harnesses = {"bash", "claude_code", "codex", "kimi_code", "null", "pi"}
+        approved = GAME_TOOLS_ONLY_ROUTES.get(harness_id) or {}
+        game_tools_only = adapter == {
+            "adapter": approved.get("adapter"),
+            "runtime_harness_id": approved.get("runtime_harness_id"),
+        } and defaults == approved.get("default_config")
+        if game_tools_only:
+            # Only the generated, certified default variant is approved. An
+            # arbitrary CLI version or feature toggle is a different boundary.
+            configurable = []
         harnesses.append(
             {
                 "id": harness_id,
                 "label": LABELS.get(harness_id, harness_id.replace("_", " ").title()),
-                "description": (harness_type.__doc__ or "").strip().splitlines()[0]
-                if (harness_type.__doc__ or "").strip()
+                "description": (effective_type.__doc__ or "").strip().splitlines()[0]
+                if (effective_type.__doc__ or "").strip()
                 else f"Prime-provided {harness_id.replace('_', ' ')} harness.",
-                "launchable": True,
-                "status": "compatible",
-                "reason": "",
-                "boundary": "isolated-game-gateway",
+                "launchable": game_tools_only,
+                "status": "compatible" if game_tools_only else "unsafe_agent_tools",
+                "reason": ""
+                if game_tools_only
+                else (
+                    "This harness can expose shell, filesystem, subprocess, or network "
+                    "capabilities beyond MazeBench game tools."
+                ),
+                "boundary": "game-tools-only"
+                if game_tools_only
+                else "unrestricted-agent-tools",
                 "observation_modes": [
                     "text",
                     "json",
-                    *(["vision"] if harness_id in vision_harnesses else []),
+                    *(["vision"] if harness_id == "null" else []),
                 ],
-                "supports_mcp": bool(harness_type.SUPPORTS_MCP),
-                "supports_message_prompt": bool(harness_type.SUPPORTS_MESSAGE_PROMPT),
-                "supports_user_sim": bool(harness_type.SUPPORTS_USER_SIM),
+                "supports_mcp": bool(effective_type.SUPPORTS_MCP),
+                "supports_message_prompt": bool(effective_type.SUPPORTS_MESSAGE_PROMPT),
+                "supports_user_sim": bool(effective_type.SUPPORTS_USER_SIM),
                 "configurable": configurable,
                 "default_config": defaults,
                 "config_schema": {
@@ -134,9 +149,9 @@ def discover() -> dict[str, Any]:
         "verifiers_version": version,
         "verifiers_revision": commit,
         "policy": (
-            "Prime-provided harnesses execute in disposable Prime sandboxes. "
-            "MazeBench state, source, checkpoints, and scoring remain behind an "
-            "evaluator-owned capability URL."
+            "Only the fixed evaluator-side model relay is launchable. It advertises the "
+            "four MazeBench game tools and no shell, filesystem, subprocess, or network "
+            "tools. Game state and scoring remain inside the evaluator-owned sandbox."
         ),
         "harnesses": harnesses,
     }

@@ -1,15 +1,14 @@
-"""Backward-compatible Codex taskset using the isolated MazeBench gateway.
-
-The original experiment colocated a repository-backed helper with Codex.  That
-made benchmark source and evaluator files visible to the harness.  Keep the old
-taskset id working, but route it through the same external tool task and
-Prime-sandboxed MCP adapter used by the Agent page.
-"""
+"""Retired direct Codex taskset alias."""
 
 from __future__ import annotations
 
 from mazebench_codex_harness import MazeBenchCodexHarness
 from mazebench_tools import MazeBenchToolConfig, MazeBenchToolTaskset
+
+RETIRED_MESSAGE = (
+    "mazebench_codex is retired because its default subprocess runtime can expose "
+    "repository or host files. Use scripts/maze-prime-run.js with mazebench-tools."
+)
 
 
 class MazeBenchCodexConfig(MazeBenchToolConfig):
@@ -19,9 +18,17 @@ class MazeBenchCodexConfig(MazeBenchToolConfig):
 class MazeBenchCodexTaskset(MazeBenchToolTaskset):
     config: MazeBenchCodexConfig
 
+    def load(self):
+        raise RuntimeError(RETIRED_MESSAGE)
+
 
 def load_taskset(config: MazeBenchCodexConfig) -> MazeBenchCodexTaskset:
     return MazeBenchCodexTaskset(config=config)
 
 
-__all__ = ["MazeBenchCodexConfig", "MazeBenchCodexHarness", "MazeBenchCodexTaskset", "load_taskset"]
+__all__ = [
+    "MazeBenchCodexConfig",
+    "MazeBenchCodexHarness",
+    "MazeBenchCodexTaskset",
+    "load_taskset",
+]

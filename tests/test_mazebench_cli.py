@@ -53,9 +53,7 @@ class CliCommandTests(TestCase):
     @mock.patch.object(mazebench_cli, "run_json", return_value=29)
     @mock.patch.object(mazebench_cli, "resolve_root", return_value=Path("/maze"))
     def test_main_routes_json_flags(self, _resolve_root, run_json):
-        result = mazebench_cli.main(
-            ["json", "--level", "CxD", "--omniscient"]
-        )
+        result = mazebench_cli.main(["json", "--level", "CxD", "--omniscient"])
 
         self.assertEqual(result, 29)
         run_json.assert_called_once_with(
@@ -90,3 +88,32 @@ class CliCommandTests(TestCase):
             ],
             root,
         )
+
+    @mock.patch.object(mazebench_cli, "_run", return_value=0)
+    @mock.patch.object(mazebench_cli, "_require")
+    def test_prime_eval_uses_only_the_fixed_game_relay(self, _require, run_command):
+        root = Path("/maze")
+
+        result = mazebench_cli.run_prime(
+            root,
+            ["eval"],
+            {"model": "openai/test", "max_turns": "3"},
+            [],
+        )
+
+        self.assertEqual(result, 0)
+        command = run_command.call_args.args[0]
+        self.assertIn("mazebench-tools", command)
+        self.assertEqual(
+            command[command.index("--harness.id") + 1],
+            "mazebench_codex_harness",
+        )
+        self.assertEqual(
+            command[command.index("--harness.runtime.type") + 1], "subprocess"
+        )
+        self.assertEqual(
+            command[command.index("--taskset.tools.colocated") + 1], "false"
+        )
+        self.assertEqual(command[command.index("--taskset.python-tools") + 1], "false")
+        with self.assertRaisesRegex(mazebench_cli.CliError, "replace the certified"):
+            mazebench_cli.run_prime(root, ["eval"], {}, ["--harness.id", "bash"])

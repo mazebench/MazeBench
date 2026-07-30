@@ -29,5 +29,5 @@ const certificationOutput = execFileSync(
   ],
   { cwd: root, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }
 );
-assert.match(certificationOutput, /Prime harness certification ready: 9 harnesses/);
+assert.match(certificationOutput, /MazeBench game-agent certification ready: 1 harness/);
 console.log("prime custom harness tests passed");

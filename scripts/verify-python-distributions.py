@@ -4,11 +4,15 @@
 from __future__ import annotations
 
 import argparse
+import os
+import subprocess
+import sys
 import tarfile
+import tempfile
 import zipfile
+from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
-from typing import Callable, Iterable
-
+from typing import Callable
 
 ROOT = Path(__file__).resolve().parents[1]
 NOTICE_NAME = "THIRD_PARTY_NOTICES.md"
@@ -26,6 +30,16 @@ NOTICE_MARKERS = (
     "## Lucide Icons",
     "ISC License",
     "Copyright (c) 2013-present Cole Bemis",
+)
+ENVIRONMENT_ROOT = ROOT / "environments" / "mazebench"
+AGENT_ENVIRONMENT_MARKERS = (
+    "pyproject.toml",
+    "uv.lock",
+    "mazebench/mazebench.py",
+    "mazebench/runtime/scripts/maze-mcp-client.js",
+    "mazebench/runtime/scripts/maze-mcp-server.js",
+    "mazebench_harnesses/codex.py",
+    "mazebench_tools/__init__.py",
 )
 
 
@@ -62,7 +76,32 @@ def require_notice(notice: bytes, expected: bytes, location: str) -> None:
         fail(f"{location} is missing notice markers {missing!r}")
 
 
-def verify_wheel(wheel_path: Path, expected_notice: bytes, expected_license: bytes) -> None:
+def require_agent_environment(names: Iterable[str], prefix: str) -> None:
+    available = set(names)
+    expected = []
+    for directory, directory_names, file_names in os.walk(ENVIRONMENT_ROOT):
+        directory_names[:] = [
+            name
+            for name in directory_names
+            if not name.startswith(".") and name != "__pycache__"
+        ]
+        for name in file_names:
+            if not name.startswith(".") and not name.endswith(".pyc"):
+                expected.append(
+                    (Path(directory) / name).relative_to(ENVIRONMENT_ROOT).as_posix()
+                )
+    missing = [
+        relative for relative in expected if f"{prefix}/{relative}" not in available
+    ]
+    if missing:
+        fail(f"packaged Agent environment is missing {missing!r}")
+    if any(".venv" in PurePosixPath(name).parts for name in available):
+        fail("packaged Agent environment contains .venv")
+
+
+def verify_wheel(
+    wheel_path: Path, expected_notice: bytes, expected_license: bytes
+) -> None:
     with zipfile.ZipFile(wheel_path) as archive:
         names = safe_archive_names(archive.namelist(), wheel_path.name)
 
@@ -83,8 +122,10 @@ def verify_wheel(wheel_path: Path, expected_notice: bytes, expected_license: byt
         )
         metadata_license = exactly_one(
             names,
-            lambda name: name.endswith(f".dist-info/licenses/{LICENSE_NAME}")
-            or name.endswith(f".dist-info/{LICENSE_NAME}"),
+            lambda name: (
+                name.endswith(f".dist-info/licenses/{LICENSE_NAME}")
+                or name.endswith(f".dist-info/{LICENSE_NAME}")
+            ),
             "distribution metadata license in the wheel",
         )
         metadata = exactly_one(
@@ -101,7 +142,10 @@ def verify_wheel(wheel_path: Path, expected_notice: bytes, expected_license: byt
             fail(f"{metadata_license} does not match the repository {LICENSE_NAME}")
 
         metadata_text = archive.read(metadata).decode("utf-8")
-        if "License-Expression: MIT" not in metadata_text and "License: MIT" not in metadata_text:
+        if (
+            "License-Expression: MIT" not in metadata_text
+            and "License: MIT" not in metadata_text
+        ):
             fail(f"{metadata} does not declare the MIT license")
 
         for vendor_name in VENDOR_FILES:
@@ -112,8 +156,14 @@ def verify_wheel(wheel_path: Path, expected_notice: bytes, expected_license: byt
                 f"bundled {vendor_name} in the wheel",
             )
 
+        require_agent_environment(
+            names, "mazebench_cli/_runtime/environments/mazebench"
+        )
 
-def verify_sdist(sdist_path: Path, expected_notice: bytes, expected_license: bytes) -> None:
+
+def verify_sdist(
+    sdist_path: Path, expected_notice: bytes, expected_license: bytes
+) -> None:
     with tarfile.open(sdist_path, "r:gz") as archive:
         members = archive.getmembers()
         names = safe_archive_names((member.name for member in members), sdist_path.name)
@@ -121,14 +171,17 @@ def verify_sdist(sdist_path: Path, expected_notice: bytes, expected_license: byt
 
         root_notice = exactly_one(
             names,
-            lambda name: len(PurePosixPath(name).parts) == 2
-            and name.endswith(f"/{NOTICE_NAME}"),
+            lambda name: (
+                len(PurePosixPath(name).parts) == 2 and name.endswith(f"/{NOTICE_NAME}")
+            ),
             "top-level third-party notice in the sdist",
         )
         root_license = exactly_one(
             names,
-            lambda name: len(PurePosixPath(name).parts) == 2
-            and name.endswith(f"/{LICENSE_NAME}"),
+            lambda name: (
+                len(PurePosixPath(name).parts) == 2
+                and name.endswith(f"/{LICENSE_NAME}")
+            ),
             "top-level MazeBench license in the sdist",
         )
         runtime_notice = exactly_one(
@@ -163,6 +216,93 @@ def verify_sdist(sdist_path: Path, expected_notice: bytes, expected_license: byt
                 f"bundled {vendor_name} in the sdist",
             )
 
+        environment_prefix = exactly_one(
+            names,
+            lambda name: name.endswith(
+                "/mazebench_cli/_runtime/environments/mazebench/pyproject.toml"
+            ),
+            "Agent environment project in the sdist",
+        ).removesuffix("/pyproject.toml")
+        require_agent_environment(names, environment_prefix)
+
+
+def smoke_wheel_agent_command(wheel_path: Path) -> None:
+    """Exercise the installed Agent route without contacting a provider."""
+
+    with tempfile.TemporaryDirectory(prefix="mazebench-wheel-smoke-") as temporary:
+        root = Path(temporary)
+        installed = root / "site-packages"
+        with zipfile.ZipFile(wheel_path) as archive:
+            safe_archive_names(archive.namelist(), wheel_path.name)
+            archive.extractall(installed)
+
+        fake_bin = root / "bin"
+        fake_bin.mkdir()
+        cwd_path = root / "uv-cwd.txt"
+        argv_path = root / "uv-argv.txt"
+        fake_uv = fake_bin / "uv"
+        fake_uv.write_text(
+            "#!/bin/sh\n"
+            'printf \'%s\\n\' "$PWD" > "$MAZEBENCH_SMOKE_CWD"\n'
+            'printf \'%s\\n\' "$@" > "$MAZEBENCH_SMOKE_ARGV"\n',
+            encoding="utf-8",
+        )
+        fake_uv.chmod(0o755)
+
+        code = (
+            "import sys; "
+            "sys.path.insert(0, sys.argv[1]); "
+            "import mazebench_cli; "
+            "raise SystemExit(mazebench_cli.main(['prime', 'eval', "
+            "'model=openai/smoke', 'n=1', 'r=1', 'max_turns=1']))"
+        )
+        environment = os.environ.copy()
+        environment.pop("MAZEBENCH_REPO_ROOT", None)
+        environment.update(
+            {
+                "MAZEBENCH_HOME": str(root / "home"),
+                "MAZEBENCH_SMOKE_CWD": str(cwd_path),
+                "MAZEBENCH_SMOKE_ARGV": str(argv_path),
+                "PATH": f"{fake_bin}{os.pathsep}{environment.get('PATH', '')}",
+            }
+        )
+        result = subprocess.run(
+            [sys.executable, "-I", "-c", code, str(installed)],
+            cwd=root,
+            env=environment,
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+        if result.returncode != 0:
+            fail(
+                "wheel-installed Agent command failed: "
+                f"{(result.stderr or result.stdout).strip()}"
+            )
+
+        environment_dir = root / "home" / "site" / "environments" / "mazebench"
+        command_cwd = Path(cwd_path.read_text(encoding="utf-8").strip())
+        if command_cwd.resolve() != environment_dir.resolve():
+            fail(f"Agent command used the wrong environment: {str(command_cwd)!r}")
+        argv = argv_path.read_text(encoding="utf-8").splitlines()
+        required_arguments = (
+            "mazebench-tools",
+            "--harness.id",
+            "mazebench_codex_harness",
+            "--harness.runtime.type",
+            "subprocess",
+            "--taskset.tools.colocated",
+            "false",
+            "--taskset.python-tools",
+            "false",
+        )
+        if any(argument not in argv for argument in required_arguments):
+            fail(f"Agent command is incomplete: {argv!r}")
+        if not all(
+            (environment_dir / marker).is_file() for marker in AGENT_ENVIRONMENT_MARKERS
+        ):
+            fail("materialized Agent environment is incomplete")
+
 
 def main() -> int:
     parser = argparse.ArgumentParser()
@@ -182,10 +322,8 @@ def main() -> int:
     expected_license = (ROOT / LICENSE_NAME).read_bytes()
     verify_wheel(wheels[0], expected_notice, expected_license)
     verify_sdist(sdists[0], expected_notice, expected_license)
-    print(
-        "release archive verification passed: "
-        f"{wheels[0].name}, {sdists[0].name}"
-    )
+    smoke_wheel_agent_command(wheels[0])
+    print(f"release archive verification passed: {wheels[0].name}, {sdists[0].name}")
     return 0
 
 

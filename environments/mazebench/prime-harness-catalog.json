@@ -3,20 +3,19 @@
   "source": "pinned-prime-verifiers",
   "verifiers_version": "0.2.1.dev62",
   "verifiers_revision": "653bb14003b87e39588bde308fa8626d1038ce15",
-  "policy": "Prime-provided harnesses execute in disposable Prime sandboxes. MazeBench state, source, checkpoints, and scoring remain behind an evaluator-owned capability URL.",
+  "policy": "Only the fixed evaluator-side model relay is launchable. It advertises the four MazeBench game tools and no shell, filesystem, subprocess, or network tools. Game state and scoring remain inside the evaluator-owned sandbox.",
   "harnesses": [
     {
       "id": "bash",
       "label": "Bash",
       "description": "Prime-provided bash harness.",
-      "launchable": true,
-      "status": "compatible",
-      "reason": "",
-      "boundary": "isolated-game-gateway",
+      "launchable": false,
+      "status": "unsafe_agent_tools",
+      "reason": "This harness can expose shell, filesystem, subprocess, or network capabilities beyond MazeBench game tools.",
+      "boundary": "unrestricted-agent-tools",
       "observation_modes": [
         "text",
-        "json",
-        "vision"
+        "json"
       ],
       "supports_mcp": true,
       "supports_message_prompt": true,
@@ -43,21 +42,20 @@
           }
         }
       },
-      "adapter": "native_mcp",
-      "runtime_harness_id": "bash"
+      "adapter": "unsupported",
+      "runtime_harness_id": ""
     },
     {
       "id": "claude_code",
       "label": "Claude Code",
       "description": "Prime-provided claude code harness.",
-      "launchable": true,
-      "status": "compatible",
-      "reason": "",
-      "boundary": "isolated-game-gateway",
+      "launchable": false,
+      "status": "unsafe_agent_tools",
+      "reason": "This harness can expose shell, filesystem, subprocess, or network capabilities beyond MazeBench game tools.",
+      "boundary": "unrestricted-agent-tools",
       "observation_modes": [
         "text",
-        "json",
-        "vision"
+        "json"
       ],
       "supports_mcp": true,
       "supports_message_prompt": false,
@@ -78,21 +76,20 @@
           }
         }
       },
-      "adapter": "claude_mcp",
-      "runtime_harness_id": "mazebench_claude_harness"
+      "adapter": "unsupported",
+      "runtime_harness_id": ""
     },
     {
       "id": "codex",
       "label": "Codex",
       "description": "Prime-provided codex harness.",
-      "launchable": true,
-      "status": "compatible",
-      "reason": "",
-      "boundary": "isolated-game-gateway",
+      "launchable": false,
+      "status": "unsafe_agent_tools",
+      "reason": "This harness can expose shell, filesystem, subprocess, or network capabilities beyond MazeBench game tools.",
+      "boundary": "unrestricted-agent-tools",
       "observation_modes": [
         "text",
-        "json",
-        "vision"
+        "json"
       ],
       "supports_mcp": false,
       "supports_message_prompt": true,
@@ -119,21 +116,20 @@
           }
         }
       },
-      "adapter": "codex_mcp",
-      "runtime_harness_id": "mazebench_codex_harness"
+      "adapter": "unsupported",
+      "runtime_harness_id": ""
     },
     {
       "id": "kimi_code",
       "label": "Kimi Code",
       "description": "Prime-provided kimi code harness.",
-      "launchable": true,
-      "status": "compatible",
-      "reason": "",
-      "boundary": "isolated-game-gateway",
+      "launchable": false,
+      "status": "unsafe_agent_tools",
+      "reason": "This harness can expose shell, filesystem, subprocess, or network capabilities beyond MazeBench game tools.",
+      "boundary": "unrestricted-agent-tools",
       "observation_modes": [
         "text",
-        "json",
-        "vision"
+        "json"
       ],
       "supports_mcp": true,
       "supports_message_prompt": false,
@@ -153,17 +149,17 @@
           }
         }
       },
-      "adapter": "kimi_mcp",
-      "runtime_harness_id": "mazebench_kimi_harness"
+      "adapter": "unsupported",
+      "runtime_harness_id": ""
     },
     {
       "id": "mini_swe_agent",
       "label": "mini-swe-agent",
       "description": "Prime-provided mini swe agent harness.",
-      "launchable": true,
-      "status": "compatible",
-      "reason": "",
-      "boundary": "isolated-game-gateway",
+      "launchable": false,
+      "status": "unsafe_agent_tools",
+      "reason": "This harness can expose shell, filesystem, subprocess, or network capabilities beyond MazeBench game tools.",
+      "boundary": "unrestricted-agent-tools",
       "observation_modes": [
         "text",
         "json"
@@ -186,18 +182,17 @@
           }
         }
       },
-      "adapter": "cli_gateway",
-      "runtime_harness_id": "mazebench_cli_harness",
-      "upstream_id": "mini_swe_agent"
+      "adapter": "unsupported",
+      "runtime_harness_id": ""
     },
     {
       "id": "null",
-      "label": "Default MCP",
-      "description": "Prime-provided null harness.",
+      "label": "Game agent",
+      "description": "Drive any configured model through four evaluator-owned game tools only.",
       "launchable": true,
       "status": "compatible",
       "reason": "",
-      "boundary": "isolated-game-gateway",
+      "boundary": "game-tools-only",
       "observation_modes": [
         "text",
         "json",
@@ -205,27 +200,26 @@
       ],
       "supports_mcp": true,
       "supports_message_prompt": true,
-      "supports_user_sim": true,
+      "supports_user_sim": false,
       "configurable": [],
       "default_config": {},
       "config_schema": {
         "properties": {}
       },
-      "adapter": "native_mcp",
-      "runtime_harness_id": "null"
+      "adapter": "trusted_model_relay",
+      "runtime_harness_id": "mazebench_codex_harness"
     },
     {
       "id": "pi",
       "label": "Pi",
       "description": "Prime-provided pi harness.",
-      "launchable": true,
-      "status": "compatible",
-      "reason": "",
-      "boundary": "isolated-game-gateway",
+      "launchable": false,
+      "status": "unsafe_agent_tools",
+      "reason": "This harness can expose shell, filesystem, subprocess, or network capabilities beyond MazeBench game tools.",
+      "boundary": "unrestricted-agent-tools",
       "observation_modes": [
         "text",
-        "json",
-        "vision"
+        "json"
       ],
       "supports_mcp": true,
       "supports_message_prompt": true,
@@ -245,18 +239,17 @@
           }
         }
       },
-      "adapter": "cli_gateway",
-      "runtime_harness_id": "mazebench_cli_harness",
-      "upstream_id": "pi"
+      "adapter": "unsupported",
+      "runtime_harness_id": ""
     },
     {
       "id": "rlm",
       "label": "RLM",
       "description": "Prime-provided rlm harness.",
-      "launchable": true,
-      "status": "compatible",
-      "reason": "",
-      "boundary": "isolated-game-gateway",
+      "launchable": false,
+      "status": "unsafe_agent_tools",
+      "reason": "This harness can expose shell, filesystem, subprocess, or network capabilities beyond MazeBench game tools.",
+      "boundary": "unrestricted-agent-tools",
       "observation_modes": [
         "text",
         "json"
@@ -327,17 +320,17 @@
           }
         }
       },
-      "adapter": "native_mcp",
-      "runtime_harness_id": "rlm"
+      "adapter": "unsupported",
+      "runtime_harness_id": ""
     },
     {
       "id": "terminus_2",
       "label": "Terminus 2",
       "description": "Prime-provided terminus 2 harness.",
-      "launchable": true,
-      "status": "compatible",
-      "reason": "",
-      "boundary": "isolated-game-gateway",
+      "launchable": false,
+      "status": "unsafe_agent_tools",
+      "reason": "This harness can expose shell, filesystem, subprocess, or network capabilities beyond MazeBench game tools.",
+      "boundary": "unrestricted-agent-tools",
       "observation_modes": [
         "text",
         "json"
@@ -360,10 +353,9 @@
           }
         }
       },
-      "adapter": "cli_gateway",
-      "runtime_harness_id": "mazebench_cli_harness",
-      "upstream_id": "terminus_2"
+      "adapter": "unsupported",
+      "runtime_harness_id": ""
     }
   ],
-  "catalog_fingerprint": "745525d2953b094a531a6487957beb2a159081451cece7330bf215e7562e1a30"
+  "catalog_fingerprint": "1af566e20050655337fc1d4d5653b3728f51807361502717a905683e6be1bfa8"
 }

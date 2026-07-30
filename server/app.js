@@ -230,7 +230,6 @@ const buildWorlds = createLocalBuildWorldService({
 const agentRuns = createAgentRunService({
   agentEnvironment,
   agentEnvironmentAsync,
-  allowLegacyLocalLaunch: true,
   syncPrimeEvaluations: true,
   buildWorlds,
   ensureDirectory,
@@ -260,9 +259,8 @@ const solverExports = createSolverExportService({
   rootDir: ROOT_DIR
 });
 
-// Which agent/runtime CLIs are usable — shown on the Agent page so users know
-// what they can launch. Cached briefly (15s: short enough that starting Docker
-// then reloading picks it up, long enough to keep page loads snappy).
+// The game relay needs Prime, uv, and a live Docker daemon. Cache the probe for
+// 15 seconds so starting Docker and reloading is reflected quickly.
 let agentEnvironmentCache = null;
 let agentEnvironmentPromise = null;
 
@@ -288,52 +286,6 @@ function dockerState() {
   return { installed: true, running };
 }
 
-function codexSubscriptionStatus(result) {
-  const output = String(result?.stdout || result?.stderr || "").trim();
-  const authenticated = result?.status === 0;
-  return {
-    authenticated,
-    subscription: authenticated && /logged in using chatgpt/i.test(output),
-    method: /chatgpt/i.test(output) ? "chatgpt" : /api key/i.test(output) ? "api-key" : authenticated ? "other" : ""
-  };
-}
-
-function claudeSubscriptionStatus(result) {
-  let payload = {};
-  try {
-    payload = JSON.parse(String(result?.stdout || "{}"));
-  } catch (_error) {
-    /* a non-JSON result is not a confirmed subscription session */
-  }
-  const authenticated = result?.status === 0 && payload.loggedIn === true;
-  const subscriptionType = String(payload.subscriptionType || "").trim();
-  return {
-    authenticated,
-    subscription: authenticated && payload.authMethod === "claude.ai" && Boolean(subscriptionType),
-    method: String(payload.authMethod || ""),
-    subscriptionType
-  };
-}
-
-function kimiAccountStatus(result) {
-  let payload = {};
-  try {
-    payload = JSON.parse(String(result?.stdout || "{}"));
-  } catch (_error) {
-    /* a non-JSON result is not a confirmed configured account */
-  }
-  const providers = Object.values(payload.providers || {});
-  const models = Object.keys(payload.models || {});
-  const apiKey = providers.some((provider) => Boolean(String(provider?.apiKey || provider?.api_key || "")));
-  const oauth = providers.some((provider) => Boolean(provider?.oauth));
-  const authenticated = result?.status === 0 && models.length > 0 && (apiKey || oauth);
-  return {
-    authenticated,
-    subscription: authenticated,
-    method: oauth ? "kimi-oauth" : apiKey ? "api-key" : ""
-  };
-}
-
 function agentEnvironment(options = {}) {
   if (!options.fresh && agentEnvironmentCache && Date.now() - agentEnvironmentCache.at < 15000) {
     return agentEnvironmentCache.value;
@@ -357,19 +309,7 @@ function agentEnvironment(options = {}) {
       timeout,
       maxBuffer: 2 * 1024 * 1024
     });
-  const codexInstalled = probe("codex");
-  const claudeInstalled = probe("claude");
-  const kimiInstalled = probe("kimi");
   const primeInstalled = probe("prime");
-  const codexAuth = codexSubscriptionStatus(
-    codexInstalled ? probeCommand("codex", ["login", "status"]) : null
-  );
-  const claudeAuth = claudeSubscriptionStatus(
-    claudeInstalled ? probeCommand("claude", ["auth", "status", "--json"]) : null
-  );
-  const kimiAuth = kimiAccountStatus(
-    kimiInstalled ? probeCommand("kimi", ["provider", "list", "--json"]) : null
-  );
   // An API key can remain in the environment after it expires. Ask Prime to
   // validate the current credentials instead of treating presence as proof.
   const primeAuthenticated =
@@ -377,22 +317,6 @@ function agentEnvironment(options = {}) {
   const docker = dockerState();
   const value = {
     checking: false,
-    codex: codexInstalled && codexAuth.subscription,
-    codex_installed: codexInstalled,
-    codex_authenticated: codexAuth.authenticated,
-    codex_subscription: codexAuth.subscription,
-    codex_auth_method: codexAuth.method,
-    claude: claudeInstalled && claudeAuth.subscription,
-    claude_installed: claudeInstalled,
-    claude_authenticated: claudeAuth.authenticated,
-    claude_subscription: claudeAuth.subscription,
-    claude_auth_method: claudeAuth.method,
-    claude_subscription_type: claudeAuth.subscriptionType,
-    kimi: kimiInstalled && kimiAuth.subscription,
-    kimi_installed: kimiInstalled,
-    kimi_authenticated: kimiAuth.authenticated,
-    kimi_subscription: kimiAuth.subscription,
-    kimi_auth_method: kimiAuth.method,
     // `docker` means "ready for a container run" — installed AND daemon up.
     docker: docker.running,
     docker_installed: docker.installed,
@@ -441,44 +365,19 @@ async function agentEnvironmentAsync(options = {}) {
   };
 
   agentEnvironmentPromise = (async () => {
-    const [codexInstalled, claudeInstalled, kimiInstalled, primeInstalled, uvInstalled, dockerInstalled] = await Promise.all([
-      commandExists("codex"),
-      commandExists("claude"),
-      commandExists("kimi"),
+    const [primeInstalled, uvInstalled, dockerInstalled] = await Promise.all([
       commandExists("prime"),
       commandExists("uv"),
       commandExists("docker")
     ]);
-    const [codexResult, claudeResult, kimiResult, primeResult, dockerResult] = await Promise.all([
-      codexInstalled ? runCommand("codex", ["login", "status"]) : null,
-      claudeInstalled ? runCommand("claude", ["auth", "status", "--json"]) : null,
-      kimiInstalled ? runCommand("kimi", ["provider", "list", "--json"]) : null,
+    const [primeResult, dockerResult] = await Promise.all([
       primeInstalled ? runCommand("prime", ["whoami"], 8000) : null,
       dockerInstalled ? runCommand("docker", ["info", "--format", "{{.ServerVersion}}"], 8000) : null
     ]);
-    const codexAuth = codexSubscriptionStatus(codexResult ? { ...codexResult, status: 0 } : null);
-    const claudeAuth = claudeSubscriptionStatus(claudeResult ? { ...claudeResult, status: 0 } : null);
-    const kimiAuth = kimiAccountStatus(kimiResult ? { ...kimiResult, status: 0 } : null);
     const primeAuthenticated = Boolean(primeResult);
     const dockerRunning = Boolean(dockerResult && String(dockerResult.stdout || "").trim());
     const value = {
       checking: false,
-      codex: codexInstalled && codexAuth.subscription,
-      codex_installed: codexInstalled,
-      codex_authenticated: codexAuth.authenticated,
-      codex_subscription: codexAuth.subscription,
-      codex_auth_method: codexAuth.method,
-      claude: claudeInstalled && claudeAuth.subscription,
-      claude_installed: claudeInstalled,
-      claude_authenticated: claudeAuth.authenticated,
-      claude_subscription: claudeAuth.subscription,
-      claude_auth_method: claudeAuth.method,
-      claude_subscription_type: claudeAuth.subscriptionType,
-      kimi: kimiInstalled && kimiAuth.subscription,
-      kimi_installed: kimiInstalled,
-      kimi_authenticated: kimiAuth.authenticated,
-      kimi_subscription: kimiAuth.subscription,
-      kimi_auth_method: kimiAuth.method,
       docker: Boolean(dockerRunning),
       docker_installed: dockerInstalled,
       docker_running: Boolean(dockerRunning),

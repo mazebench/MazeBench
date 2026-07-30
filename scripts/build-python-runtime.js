@@ -7,10 +7,11 @@
 //
 // The staged tree mirrors a minimal checkout:
 //   server.js, package.json, shared/, server/, public/, scripts/, games/maze/,
-//   vendor/ (the three.js files normally served from node_modules), licenses
+//   environments/mazebench/, vendor/ (the three.js files normally served from
+//   node_modules), licenses
 //
 // Node.js remains a runtime prerequisite on the user's machine (plus ffmpeg +
-// a Chromium-family browser for replay videos, and codex/claude for agents).
+// a Chromium-family browser for replay videos, plus uv and Docker for agents).
 
 const crypto = require("crypto");
 const fs = require("fs");
@@ -24,6 +25,7 @@ const COPY_DIRECTORIES = [
   "server",
   "public",
   "scripts",
+  "environments/mazebench",
   "games/maze/levels",
   "games/maze/images",
   "games/maze/assets_3d",
@@ -35,8 +37,6 @@ const COPY_FILES = [
   "THIRD_PARTY_NOTICES.md",
   "server.js",
   "package.json",
-  "environments/mazebench/prime-harness-catalog.json",
-  "environments/mazebench/prime-harness-certification.json",
   "games/maze/config.json",
   "games/maze/level_parsing.json",
   "games/maze/toolbox.json",

@@ -1,23 +1,13 @@
-# MazeBench Agent (disabled)
+# MazeBench Agent (retired)
 
-> **Security hold:** this taskset is intentionally disabled. Verifiers' built-in
-> Codex and Claude Code harnesses run in the same sandbox as the task runtime,
-> which lets the coding agent inspect hidden level, engine, and session files.
-> Use the `mazebench` taskset until the game is moved behind a separate tool
-> boundary and only sanitized observations/actions are exposed.
+This legacy taskset is intentionally disabled. It placed the MazeBench runtime
+and hidden game state inside the evaluated coding agent's sandbox, violating the
+benchmark's isolation boundary.
 
-Harness-neutral Verifiers v1 taskset for running MazeBench through a coding-agent
-harness. The taskset supplies the maze runtime and a shell command contract; the
-harness is selected separately by Verifiers.
+Use the canonical `mazebench-tools` taskset from `environments/mazebench`.
+That taskset keeps the game and scoring evaluator-owned, gives the agent only an
+external tool connection, and exposes sanitized game actions instead of shell or
+filesystem access.
 
-```bash
-uv run eval mazebench-agent \
-  -m openai/gpt-5.4 \
-  --harness.id codex \
-  --harness.runtime.type prime \
-  --harness.runtime.image node:24-bookworm-slim \
-  -n 1 -r 1 --no-rich --no-push
-```
-
-Claude Code uses the same taskset by changing only `--harness.id` to
-`claude-code`.
+Use `scripts/maze-prime-run.js` through the Agent page for the certified,
+game-tools-only launch path.

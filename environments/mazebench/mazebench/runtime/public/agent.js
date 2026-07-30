@@ -16,23 +16,8 @@
   const HARNESSES = [
     {
       id: "custom",
-      name: "Prime Intellect",
+      name: "Game agent",
       logo: '<img src="/logos/prime.png" alt="" width="128" height="128" loading="eager" decoding="sync" fetchpriority="high">'
-    },
-    {
-      id: "codex",
-      name: "Codex",
-      logo: '<img src="/logos/codex.png" alt="" width="128" height="128" loading="eager" decoding="sync" fetchpriority="high">'
-    },
-    {
-      id: "claude-code",
-      name: "Claude Code",
-      logo: '<img src="/logos/claude.png" alt="" width="128" height="128" loading="eager" decoding="sync" fetchpriority="high">'
-    },
-    {
-      id: "kimi-code",
-      name: "Kimi Code",
-      logo: '<img src="/logos/kimi.svg" alt="" width="64" height="64" loading="eager" decoding="sync" fetchpriority="high">'
     }
   ];
   const LOCAL_SETUP = {
@@ -398,9 +383,7 @@
   }
 
   function primePythonToolsAvailable() {
-    return state.execution === "prime" &&
-      state.mode !== "vision" &&
-      ["codex", "claude_code"].includes(effectiveHarnessId());
+    return false;
   }
 
   function runOptionsReady() {
@@ -471,7 +454,7 @@
     const harnessId = effectiveHarnessId();
     if (harnessId === "none") return true;
     const definition = state.customHarnesses.find((entry) => entry.id === harnessId);
-    return definition ? Boolean(definition.launchable) : ["codex", "claude_code", "kimi_code"].includes(harnessId);
+    return Boolean(definition?.launchable);
   }
 
   function localProviderId(harnessId = state.harness) {
@@ -488,8 +471,7 @@
   function renderExecutionPicker() {
     const wrapper = document.getElementById("harness-execution");
     const picker = document.getElementById("execution-picker");
-    const supportsLocal = Boolean(localProviderId());
-    if (wrapper) tweenVisibility(wrapper, supportsLocal, 420);
+    if (wrapper) wrapper.hidden = true;
     picker?.querySelectorAll("[data-execution]").forEach((option) => {
       const blockedPrimeAgentHarness = option.dataset.execution === "prime" && !primeHarnessLaunchable();
       const selected = option.dataset.execution === state.execution;
@@ -515,17 +497,15 @@
     const note = document.getElementById("execution-note");
     if (note) {
       note.textContent = state.harness === "custom"
-        ? "Prime harnesses run in disposable sandboxes while game state and scoring stay on the trusted evaluator."
+        ? "The trusted evaluator relays model turns while the game runs in a separate networkless sandbox."
         : state.harness && state.harness !== "none" && state.execution === "prime"
         ? `${HARNESSES.find((entry) => entry.id === state.harness)?.name || "This harness"} is hosted by Prime and connected to MazeBench's isolated game controls.`
-        : state.execution === "prime"
-          ? "Prime supplies inference through the isolated Verifiers environment."
-          : "This run uses the signed-in CLI and your configured local account.";
+        : "Prime supplies inference through the isolated Verifiers environment.";
     }
   }
 
   function setExecution(value) {
-    const next = value === "local" ? "local" : "prime";
+    const next = "prime";
     if (next === "prime" && !primeHarnessLaunchable()) {
       setStatus(selectedCustomHarness()?.reason || "This harness is not compatible with the isolated Prime game controls.", true);
       return;
@@ -605,11 +585,7 @@
     }
 
     const routeLabels = {
-      native_mcp: "native MCP",
-      claude_mcp: "Claude MCP",
-      codex_mcp: "Codex MCP",
-      kimi_mcp: "Kimi MCP",
-      cli_gateway: "isolated CLI gateway"
+      trusted_model_relay: "trusted game relay"
     };
     status.textContent = selected.launchable
       ? `${selected.label} · ${routeLabels[selected.adapter] || "isolated gateway"}`
@@ -749,19 +725,54 @@
 
   function showPrimeSetup(environment = data.environment || {}) {
     const installed = Boolean(environment.prime_installed);
+    if (!environment.prime) {
+      presentProviderSetup({
+        logo: '<img src="/logos/prime.png" alt="" width="128" height="128">',
+        title: installed ? "Reconnect Prime" : "Install Prime CLI",
+        message: installed
+          ? "Your Prime login has expired or is no longer authorized. Run this command in a terminal to sign in again."
+          : "Prime isn't installed on this computer yet. Run these commands in a terminal, then come back here.",
+        command: installed ? PRIME_SETUP.login : PRIME_SETUP.install,
+        note: installed
+          ? "Prime will open a browser so you can authenticate securely."
+          : "If uv is already installed, skip the first command.",
+        docs: PRIME_SETUP.docs,
+        retry: checkPrimeAvailability
+      });
+      return installed ? "Prime sign-in is needed." : "Prime CLI setup is needed.";
+    }
+    if (!environment.uv) {
+      presentProviderSetup({
+        logo: '<img src="/logos/prime.png" alt="" width="128" height="128">',
+        title: "Install uv",
+        message: "MazeBench uses uv to launch the isolated evaluation environment.",
+        command: "curl -LsSf https://astral.sh/uv/install.sh | sh",
+        docs: "https://docs.astral.sh/uv/getting-started/installation/",
+        retry: checkPrimeAvailability
+      });
+      return "uv setup is needed.";
+    }
+    if (!environment.docker_installed) {
+      presentProviderSetup({
+        logo: '<img src="/logos/prime.png" alt="" width="128" height="128">',
+        title: "Install Docker Desktop",
+        message: "MazeBench runs the game tool server in a separate networkless Docker sandbox.",
+        command: "open https://docs.docker.com/desktop/setup/install/mac-install/",
+        docs: "https://docs.docker.com/desktop/setup/install/mac-install/",
+        retry: checkPrimeAvailability
+      });
+      return "Docker setup is needed.";
+    }
     presentProviderSetup({
       logo: '<img src="/logos/prime.png" alt="" width="128" height="128">',
-      title: installed ? "Reconnect Prime" : "Install Prime CLI",
-      message: installed
-        ? "Your Prime login has expired or is no longer authorized. Run this command in a terminal to sign in again."
-        : "Prime isn't installed on this computer yet. Run these commands in a terminal, then come back here.",
-      command: installed ? PRIME_SETUP.login : PRIME_SETUP.install,
-      note: installed
-        ? "Prime will open a browser so you can authenticate securely."
-        : "If uv is already installed, skip the first command.",
-      docs: PRIME_SETUP.docs,
+      title: "Start Docker Desktop",
+      message: "Docker is installed, but its daemon is not running yet.",
+      command: "open -a Docker",
+      note: "Wait until Docker finishes starting, then check again.",
+      docs: "https://docs.docker.com/desktop/setup/install/mac-install/",
       retry: checkPrimeAvailability
     });
+    return "Docker must be running.";
   }
 
   function closeProviderSetup() {
@@ -789,15 +800,11 @@
     try {
       const environment = await refreshEnvironment();
       if (requestId !== primeAvailabilityRequest || state.execution !== "prime") return environment;
-      if (!environment.prime) {
-        setStatus(
-          environment.prime_installed ? "Prime sign-in is needed." : "Prime CLI setup is needed.",
-          true
-        );
-        showPrimeSetup(environment);
+      if (!environment.prime || !environment.uv || !environment.docker_running) {
+        setStatus(showPrimeSetup(environment), true);
         return environment;
       }
-      setStatus("Prime is ready.");
+      setStatus("Prime, uv, and Docker are ready.");
       return environment;
     } catch (error) {
       if (requestId !== primeAvailabilityRequest || state.execution !== "prime") return null;
@@ -861,7 +868,7 @@
     const providerHost = document.getElementById("provider-picker");
     const providerSelectionFrom = selectedRect(providerHost, ".provider-card.is-selected");
     localAvailabilityRequest += 1;
-    state.execution = harnessId === "none" || harnessId === "custom" ? "prime" : "local";
+    state.execution = "prime";
     state.localAvailability = "idle";
     state.harness = harnessId;
     state.modelId = null;
@@ -899,7 +906,6 @@
       loadModels(harnessId, { fresh: !state.catalogs[catalogKey(harnessId)] });
     }
     if (state.execution === "prime") void checkPrimeAvailability();
-    if (localProviderId(harnessId)) checkLocalAvailability(harnessId);
   }
 
   // ---- model picker ---------------------------------------------------------
@@ -1725,58 +1731,28 @@
       return;
     }
 
-    const body = state.execution === "prime"
-      ? {
-          kind: "prime",
-          harness: effectiveHarnessId(),
-          harness_config: state.harness === "custom" ? { ...state.customHarnessConfig } : {},
-          model_name: resolvedModelName(),
-          max_turns: moveBudget(),
-          unlimited: state.unlimited,
-          mode: state.mode,
-          vision: state.mode === "vision",
-          omniscient: state.mode === "json" && state.omniscient,
-          hide_names: state.mode !== "vision" && state.hideNames,
-          hide_names_seed: state.mode !== "vision" && state.hideNames ? state.hideNamesSeed.trim() : "",
-          reasoning: state.reasoning,
-          tools: primePythonToolsAvailable() && state.toolUse === "offline",
-          tool_use: primePythonToolsAvailable() ? state.toolUse : "read-only",
-          allow_quit: state.allowQuit,
-          auto_quit: state.autoQuit,
-          auto_quit_threshold: state.autoQuitThreshold,
-          auto_quit_mode: state.autoQuitMode,
-          auto_quit_window: state.autoQuitWindow,
-          video: false
-        }
-      : {
-          kind: "local",
-          subscription: true,
-          model: localProviderId(),
-          game_id: state.worldId,
-          level_id: effectiveLevelId(),
-          moves: moveBudget(),
-          unlimited: state.unlimited,
-          allow_quit: state.allowQuit,
-          auto_quit: state.autoQuit,
-          auto_quit_threshold: state.autoQuitThreshold,
-          auto_quit_mode: state.autoQuitMode,
-          auto_quit_window: state.autoQuitWindow,
-          mode: state.mode,
-          omniscient: state.mode === "json" && state.omniscient,
-          hide_names: state.mode !== "vision" && state.hideNames,
-          hide_names_seed: state.mode !== "vision" && state.hideNames ? state.hideNamesSeed.trim() : "",
-          vision_view: "",
-          model_name: resolvedModelName(),
-          reasoning: state.reasoning,
-          codex_fast: state.harness === "codex" && document.getElementById("run-codex-fast").checked,
-          container: false,
-          video: false,
-          tools: state.toolUse === "offline",
-          tool_use: state.toolUse,
-          auto_run_tools: state.toolUse === "offline" && state.autoRunTools,
-          auto_run_all_frames: state.toolUse === "offline" && state.autoRunTools && state.autoRunAllFrames,
-          swarm: state.harness !== "kimi-code" && state.orchestration === "swarm"
-        };
+    const body = {
+      kind: "prime",
+      harness: effectiveHarnessId(),
+      harness_config: state.harness === "custom" ? { ...state.customHarnessConfig } : {},
+      model_name: resolvedModelName(),
+      max_turns: moveBudget(),
+      unlimited: state.unlimited,
+      mode: state.mode,
+      vision: state.mode === "vision",
+      omniscient: state.mode === "json" && state.omniscient,
+      hide_names: state.mode !== "vision" && state.hideNames,
+      hide_names_seed: state.mode !== "vision" && state.hideNames ? state.hideNamesSeed.trim() : "",
+      reasoning: state.reasoning,
+      tools: primePythonToolsAvailable() && state.toolUse === "offline",
+      tool_use: primePythonToolsAvailable() ? state.toolUse : "read-only",
+      allow_quit: state.allowQuit,
+      auto_quit: state.autoQuit,
+      auto_quit_threshold: state.autoQuitThreshold,
+      auto_quit_mode: state.autoQuitMode,
+      auto_quit_window: state.autoQuitWindow,
+      video: false
+    };
 
     body.count = 1;
     beginLaunch();
@@ -1786,12 +1762,8 @@
     try {
       if (body.kind === "prime") {
         const environment = await refreshEnvironment();
-        if (!environment?.prime) {
-          setStatus(
-            environment?.prime_installed ? "Prime sign-in is needed." : "Prime CLI setup is needed.",
-            true
-          );
-          showPrimeSetup(environment);
+        if (!environment?.prime || !environment?.uv || !environment?.docker_running) {
+          setStatus(showPrimeSetup(environment), true);
           return;
         }
       }

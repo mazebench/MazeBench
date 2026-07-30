@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-import atexit
 import asyncio
+import atexit
 import functools
 import json
 import os
 import re
 import select
-import signal
 import shlex
+import signal
 import subprocess
 import threading
 from datetime import datetime, timezone
@@ -17,9 +17,8 @@ from pathlib import Path
 from string import Template
 from typing import Any, Literal
 
-from pydantic import Field, model_validator
-
 import verifiers.v1 as vf
+from pydantic import Field
 
 from .auto_quit import (
     AUTO_QUIT_DEFAULT_MODE,
@@ -61,7 +60,6 @@ DEFAULT_VIEW = "top-diagonal"
 DEFAULT_YAW = 0
 DEFAULT_NODE_BIN = "node"
 DEFAULT_TIMEOUT_SECONDS = 20
-DEFAULT_MAX_TURNS = 40
 DEFAULT_MAX_ACTIONS = env_int("MAZEBENCH_MAX_ACTIONS", 256, minimum=1)
 DEFAULT_TARGET_GEMS = 0
 _configured_observation_mode = str(
@@ -88,7 +86,11 @@ PRIME_RESUME_CHECKPOINT_VERSION = 1
 
 
 def _utc_timestamp() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    return (
+        datetime.now(timezone.utc)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
 
 
 def write_live_actions(actions: list[dict[str, Any]]) -> None:
@@ -106,7 +108,9 @@ def write_live_actions(actions: list[dict[str, Any]]) -> None:
                 {
                     "turn": turn,
                     "timestamp": action.get("timestamp"),
-                    "command_text": action.get("command") or action.get("raw_response") or "",
+                    "command_text": action.get("command")
+                    or action.get("raw_response")
+                    or "",
                     "valid": action.get("valid", True),
                     "error": action.get("error"),
                     "status": action.get("status") or {},
@@ -117,7 +121,9 @@ def write_live_actions(actions: list[dict[str, Any]]) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-    temporary.write_text("\n".join(records) + ("\n" if records else ""), encoding="utf-8")
+    temporary.write_text(
+        "\n".join(records) + ("\n" if records else ""), encoding="utf-8"
+    )
     os.replace(temporary, target)
 
 
@@ -162,6 +168,8 @@ INFO_ROW_FIELD_NAMES = {
     "view",
     "yaw",
 }
+
+
 def read_prompt_file(filename: str) -> str:
     return (
         files(__package__ or "mazebench")
@@ -201,9 +209,7 @@ def parse_level_ids(
 
     if isinstance(level_ids, str):
         values = [
-            part.strip()
-            for part in re.split(r"[,\\s]+", level_ids)
-            if part.strip()
+            part.strip() for part in re.split(r"[,\\s]+", level_ids) if part.strip()
         ]
     else:
         values = [str(part).strip() for part in level_ids if str(part).strip()]
@@ -312,9 +318,7 @@ def target_text_for_row(row: dict[str, Any]) -> str:
             f"{'' if target_gems == 1 else 's'}."
         )
 
-    return (
-        f"Collect {GAME_WON_GEM_COUNT} unique gems to win."
-    )
+    return f"Collect {GAME_WON_GEM_COUNT} unique gems to win."
 
 
 def player_fields(player: dict[str, Any] | None) -> dict[str, object]:
@@ -334,7 +338,9 @@ def allowed_commands_for_status(status: dict[str, Any]) -> tuple[str, ...]:
     raw_commands = status.get("allowed_commands")
     if isinstance(raw_commands, list) and raw_commands:
         return tuple(str(command) for command in raw_commands)
-    return DEAD_ALLOWED_COMMANDS if status_player_dead(status) else ALIVE_ALLOWED_COMMANDS
+    return (
+        DEAD_ALLOWED_COMMANDS if status_player_dead(status) else ALIVE_ALLOWED_COMMANDS
+    )
 
 
 def apply_quit_policy(status: dict[str, Any], allow_quit: bool) -> dict[str, Any]:
@@ -397,7 +403,9 @@ def render_multiturn_user_prompt(
         response_instruction=response_instruction(status),
         target_text=target_text,
         terminal_note=terminal_note_text(status),
-        visited_levels=", ".join(str(room) for room in status.get("visited_levels") or []),
+        visited_levels=", ".join(
+            str(room) for room in status.get("visited_levels") or []
+        ),
         yaw=int(status.get("yaw") or 0),
     )
 
@@ -420,7 +428,8 @@ def render_vision_user_prompt(
         f"Current view: {current_view}",
         f"Yaw: {status.get('yaw', 0)}",
         f"Gems collected: {status.get('gem_count', 0)}",
-        "Visited rooms: " + (", ".join(str(room) for room in visited_rooms) or "(none)"),
+        "Visited rooms: "
+        + (", ".join(str(room) for room in visited_rooms) or "(none)"),
     ]
     death = death_text(status)
     if death:
@@ -463,7 +472,8 @@ def render_json_user_prompt(
             f"elevation={fields['player_elevation']}"
         ),
         f"Gems collected: {status.get('gem_count', 0)}",
-        "Visited rooms: " + (", ".join(str(room) for room in visited_rooms) or "(none)"),
+        "Visited rooms: "
+        + (", ".join(str(room) for room in visited_rooms) or "(none)"),
         death_text(status),
         "",
         "The current room is represented by JSON, not an ASCII board. Object coordinates are [x,y,elevation]. Directional names are camera-relative.",
@@ -599,7 +609,7 @@ def valid_action_commands(actions: list[dict[str, Any]]) -> list[str]:
 def render_vision_frame_data_url(
     *,
     actions: list[str],
-    task: "MazeBenchTaskData",
+    task: MazeBenchTaskData,
 ) -> str:
     payload = {
         "actions": actions,
@@ -692,9 +702,7 @@ def make_row(
     row["info"] = json.dumps(
         {
             INFO_KEY: {
-                field: row[field]
-                for field in INFO_ROW_FIELD_NAMES
-                if field in row
+                field: row[field] for field in INFO_ROW_FIELD_NAMES if field in row
             }
         }
     )
@@ -754,17 +762,17 @@ class MazeSession:
         self.repo_root = Path(repo_root)
         self.timeout_seconds = int(timeout_seconds)
         command = [
-                node_bin,
-                str(self.repo_root / "scripts" / "maze-bridge.js"),
-                "--game-won-gem-count",
-                str(GAME_WON_GEM_COUNT),
-                "--level",
-                normalize_level_id(level_id),
-                "--view",
-                view,
-                "--yaw",
-                str(int(yaw)),
-            ]
+            node_bin,
+            str(self.repo_root / "scripts" / "maze-bridge.js"),
+            "--game-won-gem-count",
+            str(GAME_WON_GEM_COUNT),
+            "--level",
+            normalize_level_id(level_id),
+            "--view",
+            view,
+            "--yaw",
+            str(int(yaw)),
+        ]
         if observation_mode == "json":
             command.extend(["--observation-mode", "json"])
             if omniscient:
@@ -792,9 +800,7 @@ class MazeSession:
         self.process.stdin.write(json.dumps(payload) + "\n")
         self.process.stdin.flush()
 
-        ready, _, _ = select.select(
-            [self.process.stdout], [], [], self.timeout_seconds
-        )
+        ready, _, _ = select.select([self.process.stdout], [], [], self.timeout_seconds)
         if not ready:
             self.close(kill=True)
             raise TimeoutError(f"maze bridge timed out waiting for {command!r}")
@@ -833,7 +839,7 @@ class VisionSession:
     """Persistent maze-render-frame.js --serve session: one server + headless
     browser per rollout, with actions applied incrementally between frames."""
 
-    def __init__(self, *, task: "MazeBenchTaskData") -> None:
+    def __init__(self, *, task: MazeBenchTaskData) -> None:
         self.repo_root = Path(task.repo_root or find_repo_root())
         self.timeout_seconds = max(30, int(task.timeout_seconds))
         self.init_payload = {
@@ -881,9 +887,7 @@ class VisionSession:
         self.process.stdin.write(json.dumps(payload) + "\n")
         self.process.stdin.flush()
 
-        ready, _, _ = select.select(
-            [self.process.stdout], [], [], self.timeout_seconds
-        )
+        ready, _, _ = select.select([self.process.stdout], [], [], self.timeout_seconds)
         if not ready:
             self.close(kill=True)
             raise TimeoutError(f"maze render timed out waiting for {command!r}")
@@ -995,7 +999,12 @@ def parse_json_action(value: dict[str, Any]) -> tuple[str, dict[str, Any]]:
 
     function_value = value.get("function") or value.get("function_call") or {}
     name = value.get("name") or value.get("tool") or function_value.get("name")
-    raw_args = value.get("arguments") or value.get("args") or function_value.get("arguments") or {}
+    raw_args = (
+        value.get("arguments")
+        or value.get("args")
+        or function_value.get("arguments")
+        or {}
+    )
 
     if isinstance(raw_args, str):
         raw_args = json.loads(raw_args) if raw_args.strip().startswith("{") else {}
@@ -1038,7 +1047,9 @@ def normalize_action(command: str, args: dict[str, Any]) -> tuple[str, dict[str,
         raise ValueError(f"unknown command: {command}")
 
     if normalized in {"move", "rotate_camera"}:
-        direction = str(args.get("direction") or (positional[0] if positional else "")).lower()
+        direction = str(
+            args.get("direction") or (positional[0] if positional else "")
+        ).lower()
         if direction not in DIRECTIONS:
             raise ValueError(
                 f"{normalized} requires direction: up, down, left, or right"
@@ -1051,14 +1062,18 @@ def normalize_action(command: str, args: dict[str, Any]) -> tuple[str, dict[str,
     x = str(args.get("x") or (positional[0] if len(positional) >= 1 else "")).upper()
     y = str(args.get("y") or (positional[1] if len(positional) >= 2 else "")).upper()
     if not re.fullmatch(r"[A-Z]", x) or not re.fullmatch(r"[A-Z]", y):
-        raise ValueError("go to level requires two world coordinate letters, e.g. go to level H I")
+        raise ValueError(
+            "go to level requires two world coordinate letters, e.g. go to level H I"
+        )
 
     return normalized, {"x": x, "y": y}
 
 
 def parse_text_action(text: str) -> tuple[str, dict[str, Any]]:
     cleaned = strip_code_fence(text)
-    first_line = next((line.strip() for line in cleaned.splitlines() if line.strip()), "")
+    first_line = next(
+        (line.strip() for line in cleaned.splitlines() if line.strip()), ""
+    )
 
     if not first_line:
         raise ValueError("empty response")
@@ -1071,7 +1086,9 @@ def parse_text_action(text: str) -> tuple[str, dict[str, Any]]:
 
     function_match = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)\s*\((.*)\)", first_line)
     if function_match:
-        return normalize_action(function_match.group(1), parse_key_value_args(function_match.group(2)))
+        return normalize_action(
+            function_match.group(1), parse_key_value_args(function_match.group(2))
+        )
 
     tokens = shlex.split(first_line)
     if not tokens:
@@ -1135,7 +1152,9 @@ def load_prime_resume_checkpoint(file_path: str) -> dict[str, Any]:
     try:
         checkpoint = json.loads(path.read_text(encoding="utf8"))
     except (OSError, json.JSONDecodeError) as error:
-        raise ValueError(f"could not read Prime resume checkpoint {path}: {error}") from error
+        raise ValueError(
+            f"could not read Prime resume checkpoint {path}: {error}"
+        ) from error
     if checkpoint.get("version") != PRIME_RESUME_CHECKPOINT_VERSION:
         raise ValueError("unsupported Prime resume checkpoint version")
     actions = checkpoint.get("actions")
@@ -1145,7 +1164,9 @@ def load_prime_resume_checkpoint(file_path: str) -> dict[str, Any]:
     if not isinstance(messages, list) or not messages:
         raise ValueError("Prime resume checkpoint has no model transcript")
     if checkpoint.get("task", {}).get("observation_mode") == "vision":
-        raise ValueError("Prime vision checkpoints cannot resume without saved image pixels")
+        raise ValueError(
+            "Prime vision checkpoints cannot resume without saved image pixels"
+        )
     checkpoint["_path"] = str(path)
     return checkpoint
 
@@ -1157,9 +1178,13 @@ def prime_resume_prompt(checkpoint: dict[str, Any]) -> vf.Messages:
     if str(status.get("board_state_hash") or "") != str(
         checkpoint.get("final_board_state_hash") or ""
     ):
-        raise ValueError("Prime resume checkpoint final board hash does not match its last action")
+        raise ValueError(
+            "Prime resume checkpoint final board hash does not match its last action"
+        )
     if latest.get("valid", True) is False or latest.get("error"):
-        result_text = action_result_text(error=str(latest.get("error") or "invalid response"))
+        result_text = action_result_text(
+            error=str(latest.get("error") or "invalid response")
+        )
     else:
         result_text = action_result_text(
             command=str(latest.get("command_text") or ""),
@@ -1378,23 +1403,6 @@ class MazeBenchConfig(vf.TasksetConfig):
     user: vf.UserConfig = Field(default_factory=vf.UserConfig)
 
 
-class MazeBenchEnvConfig(vf.EnvConfig):
-    """Typed v1 environment config with usable local/Hub defaults."""
-
-    taskset: MazeBenchConfig = Field(default_factory=MazeBenchConfig)
-    harness: vf.HarnessConfig = Field(
-        default_factory=lambda: vf.HarnessConfig(id="null")
-    )
-    max_turns: int | None = DEFAULT_MAX_TURNS
-
-    @model_validator(mode="before")
-    @classmethod
-    def _safe_default_harness(cls, value: Any) -> Any:
-        data = dict(value or {})
-        data.setdefault("harness", {"id": "mazebench"})
-        return data
-
-
 class MazeBenchState(vf.State):
     game_lost: bool = False
     game_won: bool = False
@@ -1438,7 +1446,10 @@ class MazeBenchUser(vf.User[vf.UserConfig, MazeBenchState]):
                 checkpoint.get("initial_board_state_hash") or ""
             )
             actual_initial_hash = str(initial_status.get("board_state_hash") or "")
-            if not expected_initial_hash or actual_initial_hash != expected_initial_hash:
+            if (
+                not expected_initial_hash
+                or actual_initial_hash != expected_initial_hash
+            ):
                 raise ValueError(
                     "Prime checkpoint initial state does not match this MazeBench runtime"
                 )
@@ -1463,7 +1474,9 @@ class MazeBenchUser(vf.User[vf.UserConfig, MazeBenchState]):
                 else:
                     command, action_args = parse_text_action(raw_response)
                     status = apply_quit_policy(
-                        await run_blocking(self.session.request, command, **action_args),
+                        await run_blocking(
+                            self.session.request, command, **action_args
+                        ),
                         task.allow_quit,
                     )
                     record_maze_action(
@@ -1474,7 +1487,9 @@ class MazeBenchUser(vf.User[vf.UserConfig, MazeBenchState]):
                         status=status,
                         timestamp=str(saved.get("timestamp") or "") or None,
                     )
-                expected_hash = str(saved.get("status", {}).get("board_state_hash") or "")
+                expected_hash = str(
+                    saved.get("status", {}).get("board_state_hash") or ""
+                )
                 actual_hash = str(status.get("board_state_hash") or "")
                 if not expected_hash or actual_hash != expected_hash:
                     raise ValueError(
@@ -1482,7 +1497,9 @@ class MazeBenchUser(vf.User[vf.UserConfig, MazeBenchState]):
                     )
             final_hash = str(checkpoint.get("final_board_state_hash") or "")
             if str(status.get("board_state_hash") or "") != final_hash:
-                raise ValueError("Prime checkpoint replay did not reach its saved final state")
+                raise ValueError(
+                    "Prime checkpoint replay did not reach its saved final state"
+                )
             self._resume_initial_status = initial_status
             self._resume_status = status
             self._resume_actions = list(replay_state["maze_actions"])
@@ -1530,7 +1547,9 @@ class MazeBenchUser(vf.User[vf.UserConfig, MazeBenchState]):
             render_vision_frame_data_url, actions=actions, task=task
         )
 
-    async def build_user_message(self, status: dict[str, Any], result_text: str) -> vf.Messages:
+    async def build_user_message(
+        self, status: dict[str, Any], result_text: str
+    ) -> vf.Messages:
         task = self.task
         target_text = target_text_for_row(task.model_dump())
         if task.observation_mode == "ascii":
@@ -1835,6 +1854,16 @@ class MazeBenchTask(
 
 
 class MazeBenchTaskset(vf.Taskset[MazeBenchTask, MazeBenchConfig]):
+    def __init__(
+        self, config: MazeBenchConfig, *, _trusted_task_generation: bool = False
+    ) -> None:
+        if not _trusted_task_generation:
+            raise RuntimeError(
+                "The direct MazeBench taskset is retired. Use mazebench-tools with "
+                "the fixed evaluator-side model relay."
+            )
+        super().__init__(config)
+
     def load(self) -> list[MazeBenchTask]:
         resolved_repo_root = find_bridge_root(self.config.repo_root)
         normalized_level_ids = parse_level_ids(
@@ -1877,7 +1906,8 @@ class MazeBenchTaskset(vf.Taskset[MazeBenchTask, MazeBenchConfig]):
                     "observation_mode": self.config.observation_mode,
                     "omniscient": bool(self.config.omniscient),
                     "hide_names": bool(self.config.hide_names),
-                    "hide_names_seed": str(self.config.hide_names_seed).strip()[:128] or "1",
+                    "hide_names_seed": str(self.config.hide_names_seed).strip()[:128]
+                    or "1",
                     "allow_quit": bool(self.config.allow_quit),
                     "auto_quit": bool(self.config.auto_quit),
                     "auto_quit_threshold": float(self.config.auto_quit_threshold),
@@ -1935,25 +1965,13 @@ class MazeBenchTaskset(vf.Taskset[MazeBenchTask, MazeBenchConfig]):
 
 
 def load_taskset(config: MazeBenchConfig) -> MazeBenchTaskset:
-    return MazeBenchTaskset(config=config)
+    raise RuntimeError(
+        "The direct MazeBench taskset is retired. Use mazebench-tools with the "
+        "fixed evaluator-side model relay."
+    )
 
 
-def load_environment(
-    config: MazeBenchEnvConfig | vf.EnvConfig | dict[str, Any] | None = None,
-) -> vf.Environment:
-    """Load the JS-backed ASCII maze benchmark as a Verifiers v1 environment."""
-    if config is None:
-        config = MazeBenchEnvConfig()
-    elif not isinstance(config, MazeBenchEnvConfig):
-        raw_config = config if isinstance(config, dict) else config.model_dump()
-        config = MazeBenchEnvConfig.model_validate(raw_config)
-    if not config.taskset.id:
-        taskset_config = MazeBenchConfig.model_validate(config.taskset.model_dump())
-        config = config.model_copy(update={"taskset": taskset_config})
-    return vf.Environment(config=config)
-
-
-__all__ = ["MazeBenchConfig", "MazeBenchEnvConfig", "MazeBenchTaskset"]
+__all__ = ["MazeBenchConfig", "MazeBenchTaskset"]
 
 
 if __name__ == "__main__":

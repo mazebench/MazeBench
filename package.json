@@ -11,13 +11,7 @@
     "dev": "node --watch server.js",
     "maze:terminal": "node scripts/maze-terminal.js",
     "maze:model": "node scripts/maze-model-repl.js",
-    "maze:replay": "node scripts/maze-export-replay.js",
-    "maze:agent": "node scripts/maze-agent-local.js",
-    "maze:wizard": "node scripts/maze-agent-local.js wizard",
-    "maze:codex-local": "node scripts/maze-agent-local.js --model codex",
-    "maze:claude-local": "node scripts/maze-agent-local.js --model claude",
-    "maze:kimi-local": "node scripts/maze-agent-local.js --model kimi --container false",
-    "maze:build-image": "docker build -t mazebench-agent ."
+    "maze:replay": "node scripts/maze-export-replay.js"
   },
   "dependencies": {
     "three": "0.184.0"

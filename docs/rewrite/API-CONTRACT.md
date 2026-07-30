@@ -484,7 +484,8 @@ access at load time, safe under `"use strict"`-less vm evaluation).
 - Everything else in `scripts/` reaches the engine only through subprocesses:
   `codex-play.js`/`maze-model-repl.js`/`maze-export-replay.js` spawn
   `maze-bridge.js`; `maze-prime-run.js` spawns `maze-terminal.js`;
-  `maze-agent-local.js`/`maze-mcp-server.js` spawn `codex-play.js`;
+  `maze-mcp-server.js` spawns `codex-play.js`; the former
+  `maze-agent-local.js` entry point is retired and fails closed;
   `maze-render-frame.js` drives the browser app (`window.__PIXEL_GAME_APP__`)
   in Playwright and consumes maze-bridge's `_render_state` snapshots — none of
   them load the engine directly.
@@ -508,59 +509,13 @@ access at load time, safe under `"use strict"`-less vm evaluation).
 ### Runtime mirror (sync-runtime)
 `scripts/sync-runtime.js` mirrors runtime files into
 `environments/mazebench/mazebench/runtime` for the MazeBench Python
-environment; `public/maze-engine.js` is in the list (`:34`), compared
-byte-for-byte by the drift check.
-
-`MIRRORED_DIRECTORIES` (`scripts/sync-runtime.js:13-18`):
-`games/maze/assets_3d`, `games/maze/images`, `games/maze/levels`, `server`.
-
-`MIRRORED_FILES` (`scripts/sync-runtime.js:20-64`), verbatim:
-
-```
-games/maze/level_parsing.json
-games/maze/world_map.json
-games/maze/world_parsing.json
-public/author-play-data.js
-public/author-shell.js
-public/author-solver-worker.js
-public/author-theme.css
-public/author.js
-public/build-theme.css
-public/build.js
-public/favicon.svg
-public/level-preview.js
-public/local-site.css
-public/maze-engine.js
-public/maze-solver.js
-public/world-solver.js
-public/world-solver-worker.js
-public/play-core.js
-public/play-gameplay.js
-public/play-movement.js
-public/play-render-actors.js
-public/play-render-compositor.js
-public/play-render-effects.js
-public/play-render-terrain.js
-public/play-render-three.js
-public/play-render.js
-public/play-rules.js
-public/play-theme.css
-public/play-world-transitions.js
-public/play.js
-public/site.css
-public/styles.css
-shared/default-world-template.js
-scripts/maze-agent-local.js
-scripts/maze-bridge.js
-scripts/codex-play.js
-scripts/maze-codex-tool-guard.js
-scripts/maze-mcp-server.js
-scripts/maze-prime-live-eval.py
-scripts/maze-prime-run.js
-scripts/playwright-process.js
-scripts/maze-render-frame.js
-scripts/maze-terminal.js
-```
+environment. The authoritative selection is `MIRRORED_DIRECTORIES` and
+`MIRRORED_FILES` near the top of that script; directories are copied
+recursively and individual files are copied exactly. The selection includes
+the game assets and levels, browser/server runtime, environment metadata, and
+the isolated game-control scripts such as `scripts/maze-mcp-client.js`.
+`tests/runtime-drift.test.js` compares every selected file byte-for-byte, so
+this contract does not duplicate a second list that can become stale.
 
 ### playData producers feeding `createEngine`
 - `public/play-movement.js:22-35` — runtime → engine: actors mapped to
