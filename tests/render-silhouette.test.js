@@ -148,10 +148,15 @@ function createRenderApp({ terrain, actors, playData = {}, collectedGemIds = [] 
       return 0;
     },
     localStorage: {
+      getCalls: 0,
+      setCalls: [],
       getItem() {
+        this.getCalls += 1;
         return storedCollectedGemIds;
       },
-      setItem() {}
+      setItem(...args) {
+        this.setCalls.push(args);
+      }
     },
     PlayModules: {}
   };
@@ -452,6 +457,62 @@ function createRenderApp({ terrain, actors, playData = {}, collectedGemIds = [] 
   assert.equal(app.state.actors[0].removed, false);
   assert.equal(app.state.actors[0].showCollectedGhost, false);
   assert.equal(app.state.actors[0].renderAlpha, 1);
+}
+
+{
+  const actors = [
+    { type: "gem", x: 0, y: 0, removed: false, elevation: 0, imageUrl: null }
+  ];
+  const app = createRenderApp({
+    terrain: buildTerrain(1, 1),
+    actors,
+    playData: {
+      ignoreSavedGemProgress: true,
+      levelId: "level_AxA"
+    },
+    collectedGemIds: ["level_AxA:gem:0,0,0"]
+  });
+
+  assert.equal(app.ignoreSavedGemProgress, true);
+  assert.equal(window.localStorage.getCalls, 0);
+  assert.deepEqual(Array.from(app.collectedGemIds), []);
+  assert.equal(app.state.actors[0].collected, false);
+  assert.equal(app.state.actors[0].removed, false);
+  assert.equal(app.state.actors[0].showCollectedGhost, false);
+  assert.equal(app.state.actors[0].renderAlpha, 1);
+
+  app.recordCollectedGemsFromMoves([
+    {
+      actor: app.state.actors[0],
+      actorIndex: 0,
+      toRemoved: true
+    }
+  ]);
+  assert.deepEqual(Array.from(app.collectedGemIds), ["level_AxA:gem:0,0,0"]);
+  assert.deepEqual(
+    window.localStorage.setCalls,
+    [],
+    "one-off captures must never persist collected-gem progress"
+  );
+
+  app.applyLevelState(
+    {
+      actors,
+      height: 1,
+      levelId: "level_BxA",
+      levelLabel: "level_BxA",
+      terrain: buildTerrain(1, 1),
+      width: 1
+    },
+    { deferRender: true, skipTransientSideEffects: true }
+  );
+  assert.equal(
+    app.ignoreSavedGemProgress,
+    true,
+    "the capture-only progress policy must survive room transitions"
+  );
+  assert.equal(app.state.actors[0].collected, false);
+  assert.equal(app.state.actors[0].removed, false);
 }
 
 {
