@@ -16,6 +16,7 @@ start_level_id = "level_HxI"
 game_won_gem_count = 100
 max_actions = 20
 observation_mode = "ascii"
+python_tools = false
 
 [taskset.tools]
 colocated = false

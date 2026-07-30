@@ -78,8 +78,8 @@
           }
         }
       },
-      "adapter": "native_mcp",
-      "runtime_harness_id": "claude_code"
+      "adapter": "claude_mcp",
+      "runtime_harness_id": "mazebench_claude_harness"
     },
     {
       "id": "codex",
@@ -365,5 +365,5 @@
       "upstream_id": "terminus_2"
     }
   ],
-  "catalog_fingerprint": "45482b168037bc27dcfc1842be4dd63eaafeb0fad674818fb1d75eb6e9cfb7e6"
+  "catalog_fingerprint": "745525d2953b094a531a6487957beb2a159081451cece7330bf215e7562e1a30"
 }

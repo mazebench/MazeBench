@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "catalog_fingerprint": "45482b168037bc27dcfc1842be4dd63eaafeb0fad674818fb1d75eb6e9cfb7e6",
+  "catalog_fingerprint": "745525d2953b094a531a6487957beb2a159081451cece7330bf215e7562e1a30",
   "verifiers_version": "0.2.1.dev62",
   "verifiers_revision": "653bb14003b87e39588bde308fa8626d1038ce15",
   "boundary": {
@@ -34,13 +34,14 @@
     },
     {
       "id": "claude_code",
-      "adapter": "native_mcp",
-      "runtime_harness_id": "claude_code",
+      "adapter": "claude_mcp",
+      "runtime_harness_id": "mazebench_claude_harness",
       "checks": [
         "upstream-load",
         "effective-mcp-pairing",
         "external-task-boundary",
-        "config-validation"
+        "config-validation",
+        "claude-mcp-argv"
       ],
       "status": "certified"
     },
@@ -53,7 +54,8 @@
         "effective-mcp-pairing",
         "external-task-boundary",
         "config-validation",
-        "codex-mcp-argv"
+        "codex-mcp-argv",
+        "isolated-python-tool"
       ],
       "status": "certified"
     },

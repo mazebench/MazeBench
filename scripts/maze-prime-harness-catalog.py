@@ -38,6 +38,11 @@ LABELS = {
 
 
 def adapter_for(harness_id: str, harness_type: type[vf.Harness]) -> dict[str, Any]:
+    if harness_id == "claude_code":
+        return {
+            "adapter": "claude_mcp",
+            "runtime_harness_id": "mazebench_claude_harness",
+        }
     if harness_id == "codex":
         return {
             "adapter": "codex_mcp",

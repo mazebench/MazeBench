@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
 import re
 
 from verifiers.v1.clients import ModelContext
@@ -37,6 +38,10 @@ GAME_ONLY_DISABLED_FEATURES = (
     "tool_suggest",
     "workspace_dependencies",
 )
+
+
+def _python_tools_enabled() -> bool:
+    return os.environ.get("MAZEBENCH_PRIME_TOOL_USE", "").strip().lower() == "offline"
 
 
 def _direct_mcp_model_catalog(model: str) -> bytes:
@@ -131,10 +136,13 @@ class MazeBenchCodexHarness(CodexHarness):
             prompt = "\n\n".join(part for part in (system_prompt, prompt) if part)
 
         env = {**self.config.resolved_env, KEY_VAR: secret}
+        tool_names = ["start", "observe", "action", "action_sequence"]
+        if _python_tools_enabled():
+            tool_names.append("python_exec")
         allowed_tools = [
             f"mcp__{name}__{tool}"
             for name in mcp_urls
-            for tool in ("start", "observe", "action", "action_sequence")
+            for tool in tool_names
         ]
         guard_path = f".vf-codex-game-only-{trace.id}.js"
         model_catalog_path = f".vf-codex-models-{trace.id}.json"
@@ -150,7 +158,7 @@ process.stdin.on("end", () => {{
     return;
   }}
   if (!allowed.has(String(event.tool_name || ""))) {{
-    process.stderr.write("External tools are disabled; use only the game controls.\\n");
+    process.stderr.write("External tools are disabled; use only the approved MazeBench controls.\\n");
     process.exitCode = 2;
   }}
 }});
@@ -183,7 +191,7 @@ process.stdin.on("end", () => {{
                 "-c",
                 f"{prefix}.default_tools_approval_mode=auto",
                 "-c",
-                f'{prefix}.enabled_tools=["start","observe","action","action_sequence"]',
+                f"{prefix}.enabled_tools={json.dumps(tool_names)}",
             ]
         argv = [
             CODEX_BIN,

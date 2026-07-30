@@ -134,6 +134,7 @@ const PRIME_HARNESSES = new Map([
 ]);
 const UNSAFE_PRIME_AGENT_HARNESS_MESSAGE =
   "This Prime harness is not approved for MazeBench's isolated game-control boundary.";
+const PRIME_PYTHON_HARNESSES = new Set(["codex", "claude_code"]);
 
 const STANDARD_REASONING_LEVELS = ["low", "medium", "high"];
 const PRIME_REASONING_LEVELS = ["low", "medium", "high"];
@@ -3252,7 +3253,7 @@ function createAgentRunService({
   }
 
   function readToolsWorkspace(runId, summary) {
-    if (summary.kind === "prime" || summary.tool_use !== "offline") return null;
+    if (summary.tool_use !== "offline") return null;
     const executions = readPythonExecutions(runId, summary);
     const workspaces = workspaceDescriptors(runId).map(scanToolWorkspace);
     return {
@@ -3275,7 +3276,7 @@ function createAgentRunService({
 
   function getToolExecution(runId, executionId) {
     const summary = summarizeRun(runId);
-    if (!summary || summary.kind === "prime" || summary.tool_use !== "offline") return null;
+    if (!summary || summary.tool_use !== "offline") return null;
     const execution = readPythonExecutions(runId, summary, { fresh: true })
       .find((entry) => entry.id === String(executionId || ""));
     if (!execution) return null;
@@ -3290,7 +3291,7 @@ function createAgentRunService({
 
   function getToolWorkspaceFile(runId, workspaceId, requestedPath) {
     const summary = summarizeRun(runId);
-    if (!summary || summary.kind === "prime" || summary.tool_use !== "offline") return null;
+    if (!summary || summary.tool_use !== "offline") return null;
     const descriptor = workspaceDescriptors(runId)
       .find((entry) => entry.id === String(workspaceId || "primary"));
     if (!descriptor) return null;
@@ -5168,6 +5169,14 @@ function createAgentRunService({
     const hideNames = mode !== "vision" && (params.hide_names === true || params.hide_names === "true");
     const hideNamesSeed = resolvedHideNamesSeed(hideNames, params.hide_names_seed);
     const hosted = harness === "none" && !vision && (params.hosted === true || params.hosted === "true");
+    const requestedToolUse = String(params.tool_use || "").trim().toLowerCase();
+    const toolUse = requestedToolUse === "offline" ? "offline" : "read-only";
+    if (toolUse === "offline" && !PRIME_PYTHON_HARNESSES.has(harness)) {
+      throw new Error("Prime isolated Python tools are supported only by the Codex and Claude Code harnesses.");
+    }
+    if (toolUse === "offline" && vision) {
+      throw new Error("Prime isolated Python tools currently support only ASCII and JSON observations.");
+    }
     const wantVideo = !(params.video === false || params.video === "false");
     const allowQuit = !(params.allow_quit === false || params.allow_quit === "false");
     const autoQuit = normalizeAutoQuitConfig(params);
@@ -5193,6 +5202,8 @@ function createAgentRunService({
       harness,
       "--harness-config-json",
       JSON.stringify(harnessConfig),
+      "--tool-use",
+      toolUse,
       "--level",
       levelId,
       "--game-won-gem-count",
@@ -5253,6 +5264,7 @@ function createAgentRunService({
       .concat(hosted ? ["--hosted"] : [])
       .concat(["--out", "<run>", "--harness", harness])
       .concat(Object.keys(harnessConfig).length ? ["--harness-config", JSON.stringify(harnessConfig)] : [])
+      .concat(["--tool-use", toolUse])
       .concat(unlimited ? ["--unlimited"] : ["--max-turns", String(maxTurns)])
       .concat(model ? ["--model", model] : [])
       .concat(vision ? ["--vision"] : [])
@@ -5298,6 +5310,7 @@ function createAgentRunService({
       omniscient,
       hideNames,
       hideNamesSeed,
+      toolUse,
       hosted,
       levelId,
       gemTotal,
@@ -5389,6 +5402,8 @@ function createAgentRunService({
           omniscient: command.omniscient,
           hide_names: command.hideNames,
           hide_names_seed: command.hideNamesSeed,
+          tools: command.toolUse === "offline",
+          tool_use: command.toolUse,
           reasoning: command.reasoning,
           allow_quit: command.allowQuit,
           ...autoQuitLaunchParams(command.autoQuit),
@@ -5404,6 +5419,8 @@ function createAgentRunService({
             harness_runtime_id: command.runtimeHarnessId,
             harness_catalog_fingerprint: command.harnessCatalogFingerprint,
             verifiers_revision: VERIFIED_VERIFIERS_REVISION,
+            tools: command.toolUse === "offline",
+            tool_use: command.toolUse,
             ...(command.hideNames ? { hide_names_seed: command.hideNamesSeed } : {})
           },
           continue_of: params.continue_of || null,
@@ -5417,7 +5434,9 @@ function createAgentRunService({
             ? "Prime Hosted Evaluation. Sample artifacts sync as Prime publishes them; per-turn streaming requires local Agent execution."
             : command.harness === "none"
               ? "Local Prime Verifiers evaluation using Prime inference. Moves, boards, reasoning, and usage stream into this page after every model turn."
-              : `${command.harnessLabel} runs in a Prime sandbox and receives only MazeBench's isolated MCP game controls; the trusted evaluator retains game state and scoring.`
+              : command.toolUse === "offline"
+                ? `${command.harnessLabel} runs in a Prime sandbox with MazeBench's isolated game controls and fail-closed Python scratchpad; the trusted evaluator retains game state and scoring.`
+                : `${command.harnessLabel} runs in a Prime sandbox and receives only MazeBench's isolated MCP game controls; the trusted evaluator retains game state and scoring.`
         };
       } else {
         let effectiveParams = params;
@@ -5802,6 +5821,12 @@ function createAgentRunService({
         omniscient: Boolean(meta.omniscient),
         hide_names: Boolean(meta.hide_names),
         hide_names_seed: normalizedHideNamesSeed(meta.hide_names_seed),
+        tools: Boolean(meta.tools),
+        tool_use: ["read-only", "offline"].includes(meta.tool_use)
+          ? meta.tool_use
+          : meta.tools
+            ? "offline"
+            : "read-only",
         reasoning: meta.reasoning || "",
         unlimited: Boolean(meta.unlimited),
         allow_quit: meta.allow_quit !== false,

@@ -40,6 +40,7 @@ const PRIME_HARNESSES = new Map(HARNESS_CATALOG.harnesses.map((entry) => [entry.
 const TEXT_RUNTIME_IMAGE = "node:24-bookworm-slim";
 const VISION_RUNTIME_IMAGE = "mcr.microsoft.com/playwright:v1.60.0-noble";
 const PRIME_REASONING_LEVELS = new Set(["low", "medium", "high"]);
+const PRIME_PYTHON_HARNESSES = new Set(["codex", "claude_code"]);
 const PRIME_PROVIDER_RETRY_ATTEMPTS = 3;
 const PRIME_PROVIDER_RETRY_BASE_MS = 30_000;
 const GAME_WON_GEM_COUNT = 100;
@@ -81,6 +82,7 @@ function parseArgs(argv) {
     hideNamesSeed: "1",
     outDir: "",
     reasoning: "",
+    toolUse: "read-only",
     resumeCheckpoint: "",
     runId: "",
     unlimited: false,
@@ -143,6 +145,10 @@ function parseArgs(argv) {
     else if (arg === "--hide-names") opts.hideNames = true;
     else if (arg === "--hide-names-seed") opts.hideNamesSeed = String(next() || "").trim().slice(0, 128);
     else if (arg === "--reasoning") opts.reasoning = String(next() || "").trim();
+    else if (arg === "--tool-use") {
+      const toolUse = String(next() || "").trim().toLowerCase();
+      opts.toolUse = toolUse === "offline" ? "offline" : "read-only";
+    }
     else if (arg === "--resume-checkpoint") opts.resumeCheckpoint = path.resolve(String(next() || ""));
     else if (arg === "--no-quit") opts.allowQuit = false;
     else if (arg === "--auto-quit") opts.autoQuit = true;
@@ -178,6 +184,9 @@ function parseArgs(argv) {
   }
   if (definition && opts.vision) {
     throw new Error(`${opts.harness} currently supports only text and JSON through MazeBench's isolated MCP controls.`);
+  }
+  if (opts.toolUse === "offline" && !PRIME_PYTHON_HARNESSES.has(opts.harness)) {
+    throw new Error("Prime isolated Python tools are supported only by the Codex and Claude Code harnesses.");
   }
   const allowedHarnessConfig = new Set(definition?.configurable || []);
   const unknownHarnessConfig = Object.keys(opts.harnessConfig).filter((key) => !allowedHarnessConfig.has(key));
@@ -652,6 +661,47 @@ function runHostedEval(opts) {
   });
 }
 
+function agenticHarnessArgs(opts) {
+  if (opts.harness === "none") return [];
+  const definition = harnessDefinition(opts.harness);
+  const runtimeImage = opts.vision ? VISION_RUNTIME_IMAGE : TEXT_RUNTIME_IMAGE;
+  const argv = [
+    "--harness.id",
+    definition.runtime_harness_id,
+    "--harness.runtime.type",
+    "prime",
+    "--harness.runtime.image",
+    runtimeImage,
+    "--harness.runtime.workdir",
+    "/app",
+    "--harness.runtime.cpu",
+    "2",
+    "--harness.runtime.memory",
+    "4",
+    "--harness.runtime.disk",
+    "8",
+    "--taskset.tools.colocated",
+    "False",
+    "--taskset.python-tools",
+    opts.toolUse === "offline" ? "True" : "False",
+    "--push",
+    "False"
+  ];
+  if (definition.adapter === "cli_gateway") {
+    argv.push(
+      "--harness.upstream-id",
+      definition.upstream_id || opts.harness,
+      "--harness.upstream-config-json",
+      JSON.stringify(opts.harnessConfig)
+    );
+  } else {
+    for (const [key, value] of Object.entries(opts.harnessConfig)) {
+      argv.push(`--harness.${key.replace(/_/g, "-")}`, harnessCliValue(value));
+    }
+  }
+  return argv;
+}
+
 // mazebench is a Verifiers v1 taskset, run via `uv run eval` (NOT `prime eval
 // run`, the legacy env-module loader). --max-turns is the per-rollout move
 // budget; we fix examples/rollouts at 1 (one maze, one attempt) so the run is
@@ -702,42 +752,7 @@ function runEval(opts) {
     argv.push("--taskset.resume-checkpoint-path", opts.resumeCheckpoint);
   }
 
-  if (agentic) {
-    const definition = harnessDefinition(opts.harness);
-    const runtimeImage = opts.vision ? VISION_RUNTIME_IMAGE : TEXT_RUNTIME_IMAGE;
-    argv.push(
-      "--harness.id",
-      definition.runtime_harness_id,
-      "--harness.runtime.type",
-      "prime",
-      "--harness.runtime.image",
-      runtimeImage,
-      "--harness.runtime.workdir",
-      "/app",
-      "--harness.runtime.cpu",
-      "2",
-      "--harness.runtime.memory",
-      "4",
-      "--harness.runtime.disk",
-      "8",
-      "--taskset.tools.colocated",
-      "False",
-      "--push",
-      "False"
-    );
-    if (definition.adapter === "cli_gateway") {
-      argv.push(
-        "--harness.upstream-id",
-        definition.upstream_id || opts.harness,
-        "--harness.upstream-config-json",
-        JSON.stringify(opts.harnessConfig)
-      );
-    } else {
-      for (const [key, value] of Object.entries(opts.harnessConfig)) {
-        argv.push(`--harness.${key.replace(/_/g, "-")}`, harnessCliValue(value));
-      }
-    }
-  }
+  argv.push(...agenticHarnessArgs(opts));
 
   if (opts.vision) {
     argv.push("--taskset.observation-mode", "vision");
@@ -782,6 +797,7 @@ function runEval(opts) {
         MAZEBENCH_PRIME_HARNESS: opts.harness,
         MAZEBENCH_PRIME_HARNESS_ADAPTER: harnessDefinition(opts.harness)?.adapter || "user_simulator",
         MAZEBENCH_PRIME_HARNESS_CATALOG: HARNESS_CATALOG.catalog_fingerprint,
+        MAZEBENCH_PRIME_TOOL_USE: opts.toolUse,
         MAZEBENCH_LIVE_USAGE_PATH: liveUsagePath,
         MAZEBENCH_LIVE_ACTIONS_PATH: liveActionsPath,
         MAZEBENCH_LIVE_REASONING_PATH: liveReasoningPath,
@@ -1165,6 +1181,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  agenticHarnessArgs,
   agenticConversationTurns,
   conversationTurns,
   hostedEvalArgs,

@@ -1047,6 +1047,15 @@ function createPageRenderer({
                 </div>
                 <p id="prime-vision-note" class="muted" hidden></p>
               </article>
+              <article class="setting-card setting-card--tool-use is-gated" inert aria-hidden="true">
+                <div class="setting-card__head"><span>Tool use</span></div>
+                <div class="animated-segmented" id="prime-tool-use-picker" role="radiogroup" aria-label="Tool use">
+                  <span class="segmented__glider" aria-hidden="true"></span>
+                  <button type="button" class="segmented__option" data-tool-use="read-only" aria-pressed="false"><span class="segmented__icon">NO</span><span>No Tools</span></button>
+                  <button type="button" class="segmented__option" data-tool-use="offline" aria-pressed="false" title="Isolated Python scratchpad; no host files, subprocesses, or network"><span class="segmented__icon">PY</span><span>Tools</span></button>
+                </div>
+                <p class="muted">Available for Prime-hosted Codex and Claude Code. Python files persist only in this run's empty scratch workspace.</p>
+              </article>
               <article class="setting-card setting-card--budget is-gated" inert aria-hidden="true">
                 <div class="setting-card__head"><span>Budget</span></div>
                 <div class="budget-limit-control">
@@ -1352,7 +1361,7 @@ function createPageRenderer({
             </div>
           </div>
         </section>`;
-    const toolsSection = !isPrime && run.tool_use === "offline"
+    const toolsSection = run.tool_use === "offline"
       ? `<section class="panel run-tools" id="run-tools-section" aria-labelledby="run-tools-heading">
           <div class="run-tools__head">
             <div>
