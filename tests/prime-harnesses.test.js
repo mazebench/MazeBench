@@ -4,6 +4,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const {
+  agenticHarnessArgs,
   agenticConversationTurns,
   parseArgs,
   retryablePrimeProviderError,
@@ -42,6 +43,10 @@ try {
   );
   const codexHarnessSource = fs.readFileSync(
     path.join(root, "environments", "mazebench", "mazebench_harnesses", "codex.py"),
+    "utf8"
+  );
+  const claudeHarnessSource = fs.readFileSync(
+    path.join(root, "environments", "mazebench", "mazebench_harnesses", "claude.py"),
     "utf8"
   );
   const cliHarnessSource = fs.readFileSync(
@@ -129,6 +134,9 @@ try {
   assert.match(runSource, /opts\.vision \? VISION_RUNTIME_IMAGE : TEXT_RUNTIME_IMAGE/);
   assert.match(runSource, /const taskset = agentic \? "mazebench-tools" : "mazebench"/);
   assert.match(runSource, /"--taskset\.tools\.colocated",\s*"False"/);
+  assert.match(runSource, /"--taskset\.python-tools"/);
+  assert.match(runSource, /MAZEBENCH_PRIME_TOOL_USE: opts\.toolUse/);
+  assert.doesNotMatch(runSource, /CLAUDE_BLOCKED_BUILTINS|--harness\.disabled-tools/);
   assert.doesNotMatch(runSource, /--taskset\.tools\.shared/);
   assert.doesNotMatch(runSource, /Math\.min\(500/);
   assert.doesNotMatch(runsSource, /Math\.min\(500/);
@@ -173,11 +181,21 @@ try {
   assert.match(toolsTasksetSource, /next_required_tool.*game_observe/s);
   assert.match(toolsTasksetSource, /Call game_observe before another game_action/);
   assert.match(toolsTasksetSource, /async def action_sequence/);
+  assert.match(toolsTasksetSource, /class MazeBenchToolsetWithPython/);
+  assert.match(toolsTasksetSource, /async def python_exec/);
+  assert.match(toolsTasksetSource, /python_tools: bool = False/);
+  assert.match(toolsTasksetSource, /denied_paths/);
+  assert.match(toolsTasksetSource, /observations\/current\.json/);
   assert.match(toolsTasksetSource, /include_intermediate_observations/);
   assert.match(toolsTasksetSource, /there is no sequence-length cap/);
   assert.match(toolsTasksetSource, /`json_observation` field/);
-  assert.match(codexHarnessSource, /"start", "observe", "action", "action_sequence"/);
-  assert.match(codexHarnessSource, /enabled_tools=\["start","observe","action","action_sequence"\]/);
+  assert.match(codexHarnessSource, /tool_names = \["start", "observe", "action", "action_sequence"\]/);
+  assert.match(codexHarnessSource, /tool_names\.append\("python_exec"\)/);
+  assert.match(codexHarnessSource, /enabled_tools=\{json\.dumps\(tool_names\)\}/);
+  assert.match(claudeHarnessSource, /"--tools",\s*""/);
+  assert.match(claudeHarnessSource, /"--disable-slash-commands"/);
+  assert.match(claudeHarnessSource, /"--strict-mcp-config"/);
+  assert.doesNotMatch(claudeHarnessSource, /--disallowedTools/);
   assert.match(codexHarnessSource, /model_catalog_json=/);
   assert.match(codexHarnessSource, /"supports_search_tool": False/);
   assert.match(codexHarnessSource, /GAME_ONLY_DISABLED_FEATURES[\s\S]*?"tool_suggest"/);
@@ -243,6 +261,47 @@ assert "there is no sequence-length cap" in json_prompt
 assert "include_intermediate_observations: true" in json_prompt
 assert "json_observation" in json_prompt
 assert "final_observation" in json_prompt
+python_prompt = module._tool_prompt(json_prompt_task, python_tools=True)
+assert "exactly one general-purpose" in python_prompt
+assert "python_exec" in python_prompt
+assert "subprocesses" in python_prompt
+assert "network access are blocked" in python_prompt
+assert "observations/current.json" in python_prompt
+
+from verifiers.v1.decorators import discover_decorated
+base_tools = [fn.__name__ for fn in discover_decorated(object.__new__(module.MazeBenchToolset), "tool")]
+python_tools = [fn.__name__ for fn in discover_decorated(object.__new__(module.MazeBenchToolsetWithPython), "tool")]
+assert "python_exec" not in base_tools
+assert "python_exec" in python_tools
+
+import json
+import tempfile
+from pathlib import Path
+with tempfile.TemporaryDirectory(prefix="mazebench-prime-python-workspace-") as workspace_dir:
+    with tempfile.TemporaryDirectory(prefix="mazebench-prime-python-state-") as private_dir:
+        integrated = module.MazeBenchToolsetWithPython(
+            config=module.MazeBenchToolsetConfig(
+                python_workspace_path=workspace_dir,
+                python_state_path=str(Path(private_dir) / "state"),
+                python_activity_path=str(Path(private_dir) / "tool-activity.jsonl"),
+            )
+        )
+        integrated.task = SimpleNamespace(node_bin="node")
+        isolation = integrated._python_request("preflight", "", 5)
+        assert isolation["verified"] is True
+        execution = integrated._python_request(
+            "run",
+            "import json\\nfrom pathlib import Path\\n"
+            + "result = {}\\n"
+            + "try:\\n Path('" + str(Path.cwd() / "package.json") + "').read_text()\\n"
+            + "except PermissionError:\\n result['repo'] = 'blocked'\\n"
+            + "Path('planner.py').write_text('print(1)\\\\n')\\n"
+            + "result['scratch'] = Path('planner.py').is_file()\\n"
+            + "print(json.dumps(result))",
+            5,
+        )
+        assert execution["exit_code"] == 0, execution["stderr"]
+        assert json.loads(execution["stdout"]) == {"repo": "blocked", "scratch": True}
 
 public_observation = module._public_observation(
     {
@@ -540,6 +599,15 @@ print("kimi observe break ready")`
   ]);
   assert.equal(parsedCodex.harness, "codex");
   assert.deepEqual(parsedCodex.harnessConfig, { version: "0.144.5", multi_agent: false });
+  const parsedCodexTools = parseArgs([
+    "--env-dir", path.join(root, "environments", "mazebench"),
+    "--out", runDir,
+    "--harness", "codex",
+    "--tool-use", "offline"
+  ]);
+  assert.equal(parsedCodexTools.toolUse, "offline");
+  const codexToolArgs = agenticHarnessArgs(parsedCodexTools);
+  assert.equal(codexToolArgs[codexToolArgs.indexOf("--taskset.python-tools") + 1], "True");
   const parsedClaude = parseArgs([
     "--env-dir", path.join(root, "environments", "mazebench"),
     "--out", runDir,
@@ -547,6 +615,28 @@ print("kimi observe break ready")`
   ]);
   assert.equal(parsedClaude.harness, "claude_code");
   assert.deepEqual(parsedClaude.harnessConfig, { version: "2.1.214" });
+  const parsedClaudeTools = parseArgs([
+    "--env-dir", path.join(root, "environments", "mazebench"),
+    "--out", runDir,
+    "--harness", "claude",
+    "--tool-use", "offline"
+  ]);
+  const claudeToolArgs = agenticHarnessArgs(parsedClaudeTools);
+  assert.equal(claudeToolArgs[claudeToolArgs.indexOf("--taskset.python-tools") + 1], "True");
+  assert.equal(
+    claudeToolArgs[claudeToolArgs.indexOf("--harness.id") + 1],
+    "mazebench_claude_harness"
+  );
+  assert.equal(claudeToolArgs.includes("--harness.disabled-tools"), false);
+  assert.throws(
+    () => parseArgs([
+      "--env-dir", root,
+      "--out", runDir,
+      "--harness", "kimi-code",
+      "--tool-use", "offline"
+    ]),
+    /supported only by the Codex and Claude Code/
+  );
   assert.throws(
     () => parseArgs(["--env-dir", root, "--out", runDir, "--harness", "unknown"]),
     /Unknown Prime harness/

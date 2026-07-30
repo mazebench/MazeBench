@@ -1560,8 +1560,12 @@
         }
       }
       items.push(["Orchestration", swarm ? "Swarm" : "Single", swarm]);
-    } else if (run.prime_execution) {
-      items.push(["Execution", run.prime_execution === "hosted" ? "Hosted" : "Local"]);
+    } else {
+      const toolUse = String(configuredValue(params, "tool_use", run.tool_use || "read-only"));
+      items.push(["Tool use", toolUse === "offline" ? "Isolated Python" : "No Tools"]);
+      if (run.prime_execution) {
+        items.push(["Execution", run.prime_execution === "hosted" ? "Hosted" : "Local"]);
+      }
     }
 
     return items.filter(([, value]) => value !== "" && value != null);

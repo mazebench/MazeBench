@@ -397,11 +397,21 @@
     );
   }
 
+  function primePythonToolsAvailable() {
+    return state.execution === "prime" &&
+      state.mode !== "vision" &&
+      ["codex", "claude_code"].includes(effectiveHarnessId());
+  }
+
   function runOptionsReady() {
     return Boolean(
       composerSettingsReady() &&
       state.mode &&
-      (state.execution === "prime" || (state.toolUse && state.orchestration))
+      (
+        state.execution === "prime"
+          ? (!primePythonToolsAvailable() || state.toolUse)
+          : state.toolUse && state.orchestration
+      )
     );
   }
 
@@ -596,7 +606,9 @@
 
     const routeLabels = {
       native_mcp: "native MCP",
+      claude_mcp: "Claude MCP",
       codex_mcp: "Codex MCP",
+      kimi_mcp: "Kimi MCP",
       cli_gateway: "isolated CLI gateway"
     };
     status.textContent = selected.launchable
@@ -1384,9 +1396,24 @@
     setCardVisibility(localSettings?.querySelector(".setting-card--budget"), localBudgetReady);
     setCardVisibility(localSettings?.querySelector(".setting-card--give-up"), localBudgetReady && hasBudget);
     setCardVisibility(localSettings?.querySelector(".setting-card--auto-quit"), localBudgetReady && hasBudget && state.allowQuit !== null);
-    setCardVisibility(primeSettings?.querySelector(".setting-card--budget"), hasObservation);
-    setCardVisibility(primeSettings?.querySelector(".setting-card--give-up"), hasObservation && hasBudget);
-    setCardVisibility(primeSettings?.querySelector(".setting-card--auto-quit"), hasObservation && hasBudget && state.allowQuit !== null);
+    const primeToolsAvailable = primePythonToolsAvailable();
+    const primeToolsReady = !primeToolsAvailable || hasToolUse;
+    setCardVisibility(
+      primeSettings?.querySelector(".setting-card--tool-use"),
+      hasObservation && primeToolsAvailable
+    );
+    setCardVisibility(
+      primeSettings?.querySelector(".setting-card--budget"),
+      hasObservation && primeToolsReady
+    );
+    setCardVisibility(
+      primeSettings?.querySelector(".setting-card--give-up"),
+      hasObservation && primeToolsReady && hasBudget
+    );
+    setCardVisibility(
+      primeSettings?.querySelector(".setting-card--auto-quit"),
+      hasObservation && primeToolsReady && hasBudget && state.allowQuit !== null
+    );
   }
 
   function setMode(mode, syncSteps = true) {
@@ -1499,9 +1526,10 @@
       option.classList.toggle("is-selected", selected);
       option.setAttribute("aria-pressed", String(selected));
     });
-    const picker = document.getElementById("tool-use-picker");
-    picker?.classList.toggle("has-selection", Boolean(state.toolUse));
-    picker?.classList.toggle("is-second", state.toolUse === "offline");
+    document.querySelectorAll("#tool-use-picker, #prime-tool-use-picker").forEach((picker) => {
+      picker.classList.toggle("has-selection", Boolean(state.toolUse));
+      picker.classList.toggle("is-second", state.toolUse === "offline");
+    });
     const autoRunOption = document.getElementById("auto-run-tools-option");
     const autoRunInput = document.getElementById("run-auto-run-tools");
     const allFramesOption = document.getElementById("auto-run-all-frames-option");
@@ -1711,6 +1739,8 @@
           hide_names: state.mode !== "vision" && state.hideNames,
           hide_names_seed: state.mode !== "vision" && state.hideNames ? state.hideNamesSeed.trim() : "",
           reasoning: state.reasoning,
+          tools: primePythonToolsAvailable() && state.toolUse === "offline",
+          tool_use: primePythonToolsAvailable() ? state.toolUse : "read-only",
           allow_quit: state.allowQuit,
           auto_quit: state.autoQuit,
           auto_quit_threshold: state.autoQuitThreshold,

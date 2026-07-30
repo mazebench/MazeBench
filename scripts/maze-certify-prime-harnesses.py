@@ -12,12 +12,14 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import verifiers.v1 as vf
 from verifiers.v1.loaders import harness_class, harness_config_type
 from verifiers.v1.runtimes import ProgramResult
 
 from mazebench_harnesses.cli import MazeBenchCLIHarness, MazeBenchCLIHarnessConfig
+from mazebench_harnesses.claude import MazeBenchClaudeCodeHarness
 from mazebench_harnesses.common import cli_source
 from mazebench_harnesses.codex import MazeBenchCodexHarness
 from mazebench_harnesses.kimi import MazeBenchKimiCodeHarness
@@ -159,6 +161,15 @@ def effective_harness(entry: dict) -> vf.Harness:
             {"id": entry["id"], "runtime": RUNTIME, **entry["default_config"]}
         )
         return harness_class(entry["id"])(config)
+    if route == "claude_mcp":
+        config = harness_config_type(entry["runtime_harness_id"]).model_validate(
+            {
+                "id": entry["runtime_harness_id"],
+                "runtime": RUNTIME,
+                **entry["default_config"],
+            }
+        )
+        return MazeBenchClaudeCodeHarness(config)
     if route == "codex_mcp":
         config = harness_config_type(entry["runtime_harness_id"]).model_validate(
             {
@@ -228,6 +239,11 @@ async def certify() -> dict:
                     ),
                     *(["codex-mcp-argv"] if entry["adapter"] == "codex_mcp" else []),
                     *(
+                        ["claude-mcp-argv"]
+                        if entry["adapter"] == "claude_mcp"
+                        else []
+                    ),
+                    *(
                         ["kimi-image-capability"]
                         if entry["adapter"] == "kimi_mcp"
                         else []
@@ -236,23 +252,70 @@ async def certify() -> dict:
                 "status": "certified",
             }
         )
+    next(result for result in results if result["id"] == "codex")["checks"].append(
+        "isolated-python-tool"
+    )
 
     codex = effective_harness(
         next(h for h in catalog["harnesses"] if h["id"] == "codex")
     )
     runtime = RecordingRuntime()
     trace = vf.Trace(task=vf.TraceTask(type="MazeBenchToolTask", data=task.data))
-    await codex.launch(
-        SimpleNamespace(model="openai/gpt-5"),
+
+    claude_entry = next(
+        h for h in catalog["harnesses"] if h["id"] == "claude_code"
+    )
+    claude = effective_harness(claude_entry)
+    claude_runtime = RecordingRuntime()
+    await claude.launch(
+        SimpleNamespace(
+            model="zai-org/GLM-5.2",
+            client=SimpleNamespace(base_url="https://api.pinference.ai/api/v1"),
+        ),
         trace,
-        runtime,
+        claude_runtime,
         "https://interception.invalid/v1",
         "test-secret",
         {"mazebench": "https://capability.invalid/mcp/token"},
     )
+    assert claude_runtime.argv[claude_runtime.argv.index("--tools") + 1] == ""
+    assert "--disable-slash-commands" in claude_runtime.argv
+    assert "--strict-mcp-config" in claude_runtime.argv
+    assert "--disallowedTools" not in claude_runtime.argv
+    claude_mcp = json.loads(
+        next(
+            data.decode()
+            for path, data in claude_runtime.writes.items()
+            if path.endswith("/mcp.json")
+        )
+    )
+    assert claude_mcp == {
+        "mcpServers": {
+            "mazebench": {
+                "type": "http",
+                "url": "https://capability.invalid/mcp/token",
+            }
+        }
+    }
+    assert str(ROOT) not in "\n".join(claude_runtime.argv)
+
+    with patch(
+        "mazebench_harnesses.codex._python_tools_enabled", return_value=False
+    ):
+        await codex.launch(
+            SimpleNamespace(model="openai/gpt-5"),
+            trace,
+            runtime,
+            "https://interception.invalid/v1",
+            "test-secret",
+            {"mazebench": "https://capability.invalid/mcp/token"},
+        )
     command = "\n".join(runtime.argv)
     assert "mcp_servers.mazebench.url" in command
-    assert 'enabled_tools=["start","observe","action","action_sequence"]' in command
+    assert (
+        'enabled_tools=["start", "observe", "action", "action_sequence"]'
+        in command
+    )
     assert "--ephemeral" in runtime.argv
     assert "--ignore-user-config" in runtime.argv
     assert "--ignore-rules" in runtime.argv
@@ -300,6 +363,32 @@ async def certify() -> dict:
     assert model_catalog["models"][0]["supports_search_tool"] is False
     assert any("model_catalog_json" in value for value in runtime.argv)
     assert str(ROOT) not in command
+
+    python_runtime = RecordingRuntime()
+    with patch(
+        "mazebench_harnesses.codex._python_tools_enabled", return_value=True
+    ):
+        await codex.launch(
+            SimpleNamespace(model="openai/gpt-5"),
+            trace,
+            python_runtime,
+            "https://interception.invalid/v1",
+            "test-secret",
+            {"mazebench": "https://capability.invalid/mcp/token"},
+        )
+    python_command = "\n".join(python_runtime.argv)
+    assert (
+        'enabled_tools=["start", "observe", "action", "action_sequence", '
+        '"python_exec"]'
+        in python_command
+    )
+    python_guard_source = next(
+        data.decode()
+        for path, data in python_runtime.writes.items()
+        if path.startswith(".vf-codex-game-only-")
+    )
+    assert "mcp__mazebench__python_exec" in python_guard_source
+    assert str(ROOT) not in python_command
 
     kimi_entry = next(h for h in catalog["harnesses"] if h["id"] == "kimi_code")
     kimi = effective_harness(kimi_entry)

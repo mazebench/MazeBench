@@ -33,17 +33,17 @@ const service = createAgentRunService({
   }
 });
 
-function prepareRun(runId, model = "codex") {
+function prepareRun(runId, model = "codex", kind = "local") {
   const runDir = path.join(rootDir, "outputs", "maze-local", "site", runId);
   fs.mkdirSync(runDir, { recursive: true });
   fs.writeFileSync(path.join(runDir, "run.json"), `${JSON.stringify({
     id: runId,
-    kind: "local",
+    kind,
     created_at: "2026-07-22T00:00:00.000Z",
     finished_at: "2026-07-22T00:01:00.000Z",
     status: "finished",
-    model,
-    provider: model,
+    model: kind === "prime" ? "prime" : model,
+    provider: kind === "prime" ? "prime" : model,
     model_name: "test-model",
     game_id: "maze",
     game_title: "Maze",
@@ -154,6 +154,32 @@ try {
   assert.equal(file.content, "HxI\n");
   assert.equal(service.getToolWorkspaceFile(runId, "primary", "../outside-secret.txt"), null);
   assert.equal(service.getToolWorkspaceFile(runId, "primary", "outside-link"), null);
+
+  const primeId = "2026-07-22T00-00-00-000-prime01";
+  const prime = prepareRun(primeId, "prime", "prime");
+  fs.mkdirSync(prime.workspace, { recursive: true });
+  fs.writeFileSync(path.join(prime.workspace, "prime-plan.py"), "print('prime route')\n");
+  fs.writeFileSync(path.join(prime.runDir, "tool-activity.jsonl"), [
+    {
+      id: "prime-python",
+      tool: "python_exec",
+      actor: "lead",
+      started_at: "2026-07-22T00:00:05.000Z",
+      completed_at: "2026-07-22T00:00:05.010Z",
+      duration_ms: 10,
+      status: "completed",
+      python_code: "print('prime route')",
+      python_result: { exit_code: 0, stdout: "prime route\n", stderr: "" }
+    }
+  ].map(JSON.stringify).join("\n") + "\n");
+  const primeProgress = service.getRunProgress(primeId);
+  assert.equal(primeProgress.tools_workspace.available, true);
+  assert.equal(primeProgress.tools_workspace.counts.executions, 1);
+  assert.equal(service.getToolExecution(primeId, "prime-python").stdout, "prime route\n");
+  assert.equal(
+    service.getToolWorkspaceFile(primeId, "primary", "prime-plan.py").content,
+    "print('prime route')\n"
+  );
 
   const kimiId = "2026-07-22T00-00-00-000-kimi001";
   const kimi = prepareRun(kimiId, "kimi");

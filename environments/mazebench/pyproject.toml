@@ -22,6 +22,7 @@ include = [
     "mazebench_codex/**/*.py",
     "mazebench_tools/**/*.py",
     "mazebench_harnesses/**/*.py",
+    "mazebench_claude_harness.py",
     "mazebench_codex_harness.py",
     "mazebench_cli_harness.py",
     "mazebench_kimi_harness.py",

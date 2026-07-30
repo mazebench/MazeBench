@@ -103,6 +103,27 @@ print(json.dumps(result, sort_keys=True))
     subprocess: "blocked"
   });
 
+  const cliExecution = spawnSync(
+    process.execPath,
+    [path.join(root, "scripts", "maze-python-sandbox.js")],
+    {
+      encoding: "utf8",
+      input: JSON.stringify({
+        operation: "run",
+        code: "from pathlib import Path\nprint(Path('persistent.txt').read_text())",
+        timeout_seconds: 5,
+        scratch_dir: scratchDir,
+        state_dir: stateDir,
+        denied_paths: [root, os.homedir()],
+        codex_bin: "codex"
+      })
+    }
+  );
+  assert.equal(cliExecution.status, 0, cliExecution.stderr);
+  const cliResult = JSON.parse(cliExecution.stdout);
+  assert.equal(cliResult.exit_code, 0, cliResult.stderr);
+  assert.equal(cliResult.stdout, "ok\n");
+
   console.log("maze Python sandbox tests passed");
   }
 } finally {

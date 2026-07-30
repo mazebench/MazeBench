@@ -374,11 +374,50 @@ print("MAZEBENCH_PREFLIGHT=" + json.dumps(result, sort_keys=True))
   };
 }
 
+function cliRequest(value) {
+  const request = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const operation = String(request.operation || "");
+  const options = {
+    scratchDir: request.scratch_dir,
+    stateDir: request.state_dir,
+    deniedPaths: Array.isArray(request.denied_paths) ? request.denied_paths : [],
+    codexBin: request.codex_bin || "codex",
+    pythonBin: request.python_bin || ""
+  };
+  if (operation === "preflight") {
+    return preflightPythonSandbox(options);
+  }
+  if (operation === "run") {
+    return runSandboxedPython(String(request.code || ""), {
+      ...options,
+      timeoutSeconds: Number(request.timeout_seconds) || 10
+    });
+  }
+  throw new Error('operation must be "preflight" or "run".');
+}
+
+function runCli() {
+  try {
+    const source = fs.readFileSync(0, "utf8");
+    if (Buffer.byteLength(source, "utf8") > MAX_CODE_BYTES + 64 * 1024) {
+      throw new Error("Python sandbox request is too large.");
+    }
+    const request = JSON.parse(source);
+    process.stdout.write(`${JSON.stringify(cliRequest(request))}\n`);
+  } catch (error) {
+    process.stderr.write(`${String(error?.message || error)}\n`);
+    process.exitCode = 1;
+  }
+}
+
 module.exports = {
   canonicalPath,
+  cliRequest,
   findPythonExecutable,
   inlinePermissionTable,
   preflightPythonSandbox,
   pythonSandboxCommand,
   runSandboxedPython
 };
+
+if (require.main === module) runCli();

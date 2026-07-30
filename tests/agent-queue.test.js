@@ -118,7 +118,7 @@ try {
     ["bash", "claude_code", "codex", "kimi_code", "mini_swe_agent", "null", "pi", "rlm", "terminus_2"]
   );
   assert.equal(harnessRegistry.harnesses.find((harness) => harness.id === "codex").adapter, "codex_mcp");
-  assert.equal(harnessRegistry.harnesses.find((harness) => harness.id === "claude_code").adapter, "native_mcp");
+  assert.equal(harnessRegistry.harnesses.find((harness) => harness.id === "claude_code").adapter, "claude_mcp");
   assert.equal(harnessRegistry.harnesses.find((harness) => harness.id === "kimi_code").adapter, "kimi_mcp");
   assert.equal(harnessRegistry.harnesses.find((harness) => harness.id === "mini_swe_agent").adapter, "cli_gateway");
   const [customPrime] = service.launchRuns({

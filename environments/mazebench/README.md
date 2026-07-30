@@ -23,7 +23,8 @@ Models navigate a real JavaScript maze world one action at a time, preserve stat
 | Perspective image observations | Not yet self-contained | Supported by image-capable MCP harnesses |
 | All built-in harnesses in the pinned Verifiers revision | Not part of Hosted Training | Discovered and routed through isolated MCP or CLI controls |
 | Codex and Claude Code hosted by Prime | Not part of Hosted Training | Supported |
-| Claude Code, Docker/full-access, tools, and swarm modes | Not part of this environment | Available through the separate local Agent runner |
+| Isolated Python tools for Prime Codex/Claude | Not part of Hosted Training | Supported through the evaluator-owned scratch sandbox |
+| Docker/full-access and swarm modes | Not part of this environment | Available through the separate local Agent runner |
 
 The package brings its own Node runtime for the JavaScript maze engine. Perspective vision additionally needs `playwright-core` and a compatible Chromium binary, which Prime's current Hosted Training image does not provide. Until that renderer is self-contained and tested, use ASCII mode for Hosted Training. Prime-hosted agentic runs use the evaluator-owned renderer instead: Bash, Claude Code, Codex, Kimi Code, Null, and Pi receive each frame as an MCP image result. RLM and the isolated CLI-gateway harnesses remain text-only.
 
@@ -289,6 +290,15 @@ evaluator-owned snapshot after the harness exits. New built-ins follow the
 native-MCP or generic CLI route automatically when the scheduled exact-pin
 update passes certification.
 
+Prime-hosted Codex and Claude Code runs can optionally expose the same
+`python_exec` scratchpad used by local tools mode. The Python process runs on
+the trusted evaluator inside Codex's fail-closed OS sandbox, not inside the
+coding harness: it receives a fresh persistent workspace, bounded CPU/memory
+and output, and no repository files, host files, subprocesses, credentials, or
+network. A launch-time canary preflight verifies those denials before the model
+starts. Claude's native Bash/read/edit tools and Codex's native shell remain
+disabled in both modes; enabling tools adds only `python_exec`.
+
 In these coding-agent paths, scoring is finalized after the agent exits. The
 agent-facing helper exposes start, observe, and action operations, but no
 scorecard operation.
@@ -304,6 +314,7 @@ uv run --project environments/mazebench eval mazebench_codex \
   -n 1 \
   -r 1 \
   --taskset.max-actions 100 \
+  --taskset.python-tools true \
   --max-turns 40 \
   --rich false
 ```
