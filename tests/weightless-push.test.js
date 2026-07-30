@@ -1238,7 +1238,7 @@ asyncTests.push(
     assert.equal(app.collectedGemIds.has(gem.collectionId), true);
     assert.deepEqual([player.x, player.y], [0, 0]);
 
-    app.undoMove({ instantRestore: true });
+    app.undoMove();
     assert.equal(gem.removed, true);
     assert.equal(app.collectedGemIds.has(gem.collectionId), true);
     assert.deepEqual([player.x, player.y], [1, 0]);
@@ -1383,6 +1383,50 @@ asyncTests.push(
     assert.equal(app.moveHistory.length, 0);
   })()
 );
+
+{
+  const player = {
+    type: "player",
+    x: 0,
+    y: 0,
+    elevation: 0,
+    removed: false,
+    renderX: 0,
+    renderY: 0
+  };
+  const app = createGameplayApp([player], {
+    height: 1,
+    moveDurationMs: 100,
+    width: 12
+  });
+  app.initialPositions = app.cloneActorPositions();
+  app.initialTerrain = app.cloneTerrainState();
+  player.x = 10;
+  player.renderX = 10;
+
+  app.resetPositions();
+
+  const originalRequestAnimationFrame = window.requestAnimationFrame;
+  const queuedFrames = [];
+  window.requestAnimationFrame = (callback) => {
+    queuedFrames.push(callback);
+    return queuedFrames.length;
+  };
+
+  const undoStartedAt = performance.now();
+  app.undoMove();
+  const undoWindowMs = app.inputActionEndsAtMs - undoStartedAt;
+
+  window.requestAnimationFrame = originalRequestAnimationFrame;
+  queuedFrames.shift()?.(performance.now() + 1000);
+
+  assert.ok(
+    undoWindowMs >= 90 && undoWindowMs < 200,
+    `reset undo should use one move duration, received ${undoWindowMs}ms`
+  );
+  assert.equal(player.x, 10);
+  assert.equal(player.renderX, 10);
+}
 
 asyncTests.push(
   (async () => {

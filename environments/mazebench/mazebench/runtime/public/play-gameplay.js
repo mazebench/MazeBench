@@ -3562,6 +3562,10 @@
         collectedGemVisual: "hidden"
       });
       movement.applyUndoIceSlideMetadata(moves, previousState);
+      // Reset already returns every actor to the room-entry state in one
+      // normal move duration. Its inverse should be equally snappy instead
+      // of scaling with however many tiles the actors traveled before Reset.
+      const undoDurationMs = previousState.kind === "reset" ? MOVE_DURATION_MS : null;
 
       if (options.instantRestore === true) {
         restoreTerrainState(previousState.terrain);
@@ -3594,7 +3598,7 @@
         if (hasLiftReversal) {
           app.gateRenderOverride = raisedPlayerGates;
           app.orangeWallRenderOverride = raisedOrangeWalls;
-          animateMoves(moves, null, {
+          animateMoves(moves, undoDurationMs, {
             liftPhaseFirst: true,
             startLiftPhase: () => {
               restoreTerrainState(previousState.terrain);
@@ -3611,7 +3615,7 @@
         setRaisedOrangeWallState(previousState.raisedOrangeWalls || []);
         app.gateRenderOverride = raisedPlayerGates;
         app.orangeWallRenderOverride = raisedOrangeWalls;
-        animateMoves(moves, null, { onFinish: finishUndo });
+        animateMoves(moves, undoDurationMs, { onFinish: finishUndo });
         return;
       }
 
