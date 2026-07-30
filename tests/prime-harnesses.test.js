@@ -192,10 +192,13 @@ try {
   assert.match(codexHarnessSource, /tool_names = \["start", "observe", "action", "action_sequence"\]/);
   assert.match(codexHarnessSource, /tool_names\.append\("python_exec"\)/);
   assert.match(codexHarnessSource, /enabled_tools=\{json\.dumps\(tool_names\)\}/);
-  assert.match(claudeHarnessSource, /"--tools",\s*""/);
+  assert.match(claudeHarnessSource, /"--tools",\s*"default"/);
+  assert.match(claudeHarnessSource, /"--allowedTools"/);
+  assert.match(claudeHarnessSource, /"--disallowedTools"/);
   assert.match(claudeHarnessSource, /"--disable-slash-commands"/);
   assert.match(claudeHarnessSource, /"--strict-mcp-config"/);
-  assert.doesNotMatch(claudeHarnessSource, /--disallowedTools/);
+  assert.match(claudeHarnessSource, /"alwaysLoad": True/);
+  assert.match(claudeHarnessSource, /"MCP_CONNECTION_NONBLOCKING": "false"/);
   assert.match(codexHarnessSource, /model_catalog_json=/);
   assert.match(codexHarnessSource, /"supports_search_tool": False/);
   assert.match(codexHarnessSource, /GAME_ONLY_DISABLED_FEATURES[\s\S]*?"tool_suggest"/);

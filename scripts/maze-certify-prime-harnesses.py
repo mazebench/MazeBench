@@ -278,10 +278,24 @@ async def certify() -> dict:
         "test-secret",
         {"mazebench": "https://capability.invalid/mcp/token"},
     )
-    assert claude_runtime.argv[claude_runtime.argv.index("--tools") + 1] == ""
+    assert claude_runtime.argv[claude_runtime.argv.index("--tools") + 1] == "default"
+    assert (
+        claude_runtime.argv[claude_runtime.argv.index("--allowedTools") + 1]
+        == "mcp__mazebench__*"
+    )
+    assert "--permission-mode" in claude_runtime.argv
     assert "--disable-slash-commands" in claude_runtime.argv
     assert "--strict-mcp-config" in claude_runtime.argv
-    assert "--disallowedTools" not in claude_runtime.argv
+    assert "--disallowedTools" in claude_runtime.argv
+    denied_tools = set(
+        claude_runtime.argv[
+            claude_runtime.argv.index("--disallowedTools") + 1
+        ].split(",")
+    )
+    assert {"Bash", "Read", "WebFetch", "WebSearch", "ToolSearch"} <= denied_tools
+    assert claude_runtime.env["ENABLE_TOOL_SEARCH"] == "false"
+    assert claude_runtime.env["MCP_CONNECTION_NONBLOCKING"] == "false"
+    assert claude_runtime.env["MCP_TIMEOUT"] == "30000"
     claude_mcp = json.loads(
         next(
             data.decode()
@@ -294,6 +308,7 @@ async def certify() -> dict:
             "mazebench": {
                 "type": "http",
                 "url": "https://capability.invalid/mcp/token",
+                "alwaysLoad": True,
             }
         }
     }

@@ -504,7 +504,19 @@ function localRolloutError(resultsPath) {
   if (!firstLine) return "The local Prime evaluation produced no result row.";
   const row = JSON.parse(firstLine);
   const errors = Array.isArray(row.errors) ? row.errors : [];
-  if (!errors.length && !["error", "has_error"].includes(String(row.stop_condition || ""))) return "";
+  const stopCondition = String(row.stop_condition || "");
+  const actions = row.info?.maze_actions ?? row.state?.maze_actions;
+  if (
+    stopCondition === "agent_completed" &&
+    Array.isArray(actions) &&
+    actions.length === 0
+  ) {
+    return (
+      "The agent exited before issuing its first MazeBench action. " +
+      "This is an invalid zero-action rollout, not a successful task completion."
+    );
+  }
+  if (!errors.length && !["error", "has_error"].includes(stopCondition)) return "";
   const error = errors[errors.length - 1] || {};
   const traceback = String(error.traceback || "");
   const providerMatches = [...traceback.matchAll(/openai\.([A-Za-z]+Error):\s*([^\n]+)/g)];
