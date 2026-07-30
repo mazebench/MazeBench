@@ -310,7 +310,7 @@ function createPageRenderer({
               </div>
               <div class="top-play-right">
                 <div class="top-play-actions">
-                  <button class="control-button" type="button" data-action="undo" aria-label="Undo last move">Undo</button>
+                  <button class="control-button" type="button" data-action="undo" aria-label="Undo last action">Undo</button>
                   <button class="control-button" type="button" data-action="reset" aria-label="Reset level">Reset</button>
                   <button class="control-button play-icon-button" type="button" data-action="controls" aria-label="Controls settings" title="Controls"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 7h9"></path><circle cx="16" cy="7" r="2.5"></circle><path d="M18.5 7H20"></path><path d="M4 17h2.5"></path><circle cx="9.5" cy="17" r="2.5"></circle><path d="M12 17h8"></path></svg></button>
                 </div>

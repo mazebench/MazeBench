@@ -187,7 +187,7 @@ assert.match(pages, /data-quadrant-pad="camera"/);
 assert.match(pages, /const PLAY_HUD_ICONS = Object\.freeze/);
 assert.match(pages, /id="play-hud-rooms" class="play-hud-stat play-hud-stat--rooms"/);
 assert.match(pages, /id="play-hud-gems" class="play-hud-stat play-hud-stat--gems"/);
-assert.match(pages, /data-action="undo" aria-label="Undo last move">Undo<\/button>/);
+assert.match(pages, /data-action="undo" aria-label="Undo last action">Undo<\/button>/);
 assert.doesNotMatch(pages, /id="play-hud-room">Room --/);
 assert.doesNotMatch(pages, /data-action="undo"[^>]*><svg/);
 assert.match(playScript, /const visitedPlayRoomIds = new Set\(\)/);

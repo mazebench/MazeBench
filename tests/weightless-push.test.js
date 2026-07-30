@@ -1198,6 +1198,61 @@ asyncTests.push(
 asyncTests.push(
   (async () => {
     const player = { type: "player", x: 0, y: 0, elevation: 0, removed: false };
+    const gem = {
+      type: "gem",
+      collectionId: "level_AxA:gem:1,0,0",
+      x: 1,
+      y: 0,
+      elevation: 0,
+      removed: false
+    };
+    const app = createGameplayApp([player, gem], {
+      height: 1,
+      width: 3
+    });
+    app.collectedGemIds = new Set();
+    app.applyCollectedGemVisual = (actor) => {
+      actor.collected = true;
+      actor.removed = true;
+      actor.showCollectedGhost = true;
+    };
+    app.hideCollectedGemVisual = (actor) => {
+      actor.collected = true;
+      actor.removed = true;
+      actor.showCollectedGhost = false;
+    };
+    app.initialPositions = app.cloneActorPositions();
+    app.initialTerrain = app.cloneTerrainState();
+
+    app.movePlayers(1, 0);
+    await flushAsyncTurns();
+    app.collectedGemIds.add(gem.collectionId);
+    gem.collected = true;
+
+    assert.equal(gem.removed, true);
+    assert.deepEqual([player.x, player.y], [1, 0]);
+
+    app.resetPositions();
+    await flushAsyncTurns();
+    assert.equal(gem.removed, true);
+    assert.equal(app.collectedGemIds.has(gem.collectionId), true);
+    assert.deepEqual([player.x, player.y], [0, 0]);
+
+    app.undoMove({ instantRestore: true });
+    assert.equal(gem.removed, true);
+    assert.equal(app.collectedGemIds.has(gem.collectionId), true);
+    assert.deepEqual([player.x, player.y], [1, 0]);
+
+    app.undoMove({ instantRestore: true });
+    assert.equal(gem.removed, true);
+    assert.equal(app.collectedGemIds.has(gem.collectionId), true);
+    assert.deepEqual([player.x, player.y], [0, 0]);
+  })()
+);
+
+asyncTests.push(
+  (async () => {
+    const player = { type: "player", x: 0, y: 0, elevation: 0, removed: false };
     const terrain = createTerrain(4, 1);
     terrain[0][1] = { type: "ice" };
     terrain[0][2] = { type: "ice" };
@@ -1283,6 +1338,49 @@ asyncTests.push(
     app.resetPositions();
 
     assert.deepEqual([incomingPlayer.x, incomingPlayer.y], [2, 0]);
+  })()
+);
+
+asyncTests.push(
+  (async () => {
+    const player = { type: "player", x: 0, y: 0, elevation: 0, removed: false };
+    const box = {
+      type: "weightless_box",
+      groupId: "M0",
+      x: 1,
+      y: 0,
+      elevation: 0,
+      removed: false
+    };
+    const app = createGameplayApp([player, box], {
+      height: 1,
+      width: 4
+    });
+    app.initialPositions = app.cloneActorPositions();
+    app.initialTerrain = app.cloneTerrainState();
+
+    app.movePlayers(1, 0);
+    await flushAsyncTurns();
+
+    assert.deepEqual([player.x, box.x], [1, 2]);
+    assert.equal(app.moveHistory.length, 1);
+
+    app.resetPositions();
+    await flushAsyncTurns();
+
+    assert.deepEqual([player.x, box.x], [0, 1]);
+    assert.equal(app.moveHistory.length, 2);
+    assert.equal(app.moveHistory.at(-1)?.kind, "reset");
+
+    app.undoMove({ instantRestore: true });
+
+    assert.deepEqual([player.x, box.x], [1, 2]);
+    assert.equal(app.moveHistory.length, 1);
+
+    app.undoMove({ instantRestore: true });
+
+    assert.deepEqual([player.x, box.x], [0, 1]);
+    assert.equal(app.moveHistory.length, 0);
   })()
 );
 

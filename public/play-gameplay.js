@@ -3623,13 +3623,30 @@
       app.render();
     }
 
+    function pushResetUndoSnapshot() {
+      moveHistory.push({
+        kind: "reset",
+        actors: app.cloneActorPositions(),
+        terrain: app.cloneTerrainState(state.terrain),
+        raisedOrangeWalls: Array.from(computeRaisedOrangeWallSet()),
+        undoGroupId: null
+      });
+
+      if (moveHistory.length > 500) {
+        moveHistory.splice(0, moveHistory.length - 500);
+      }
+    }
+
     function resetPositions() {
       if (app.isAnimating || app.isTransitioningLevel) {
         queueLateAction({ type: "reset" });
         return;
       }
 
-      moveHistory.length = 0;
+      // Reset is a normal reversible game action. Preserve both the exact
+      // pre-reset room state and the older move history so one undo restores
+      // an accidental reset and subsequent undos can continue normally.
+      pushResetUndoSnapshot();
       restoreTerrainState(app.initialTerrain);
       app.gateRenderOverride = computeRaisedPlayerGateSet();
       app.orangeWallRenderOverride = computeRaisedOrangeWallSet();

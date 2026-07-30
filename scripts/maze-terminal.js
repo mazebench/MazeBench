@@ -3568,9 +3568,10 @@ function resetLevel(context) {
     return false;
   }
 
+  const previous = captureHistorySnapshot(context);
   restoreRoomSnapshot(context, context.entrySnapshot);
   context.entrySnapshot = captureRoomSnapshot(context);
-  context.history.length = 0;
+  context.history.push(previous);
   applyCollectedGemsToContext(context);
   recordPlayerVisit(context);
   return true;

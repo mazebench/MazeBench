@@ -1327,7 +1327,12 @@ function syntheticFloor(width, height) {
   assert.deepEqual(playerPosition(context), { elevation: 0, x: 6, y: 13 });
   assert.equal(resetLevel(context), true);
   assert.deepEqual(playerPosition(context), { elevation: 0, x: 6, y: 15 });
-  assert.equal(undoMove(context), false);
+  assert.equal(undoMove(context), true);
+  assert.deepEqual(playerPosition(context), { elevation: 0, x: 6, y: 13 });
+  assert.equal(undoMove(context), true);
+  assert.deepEqual(playerPosition(context), { elevation: 0, x: 6, y: 14 });
+  assert.equal(undoMove(context), true);
+  assert.deepEqual(playerPosition(context), { elevation: 0, x: 6, y: 15 });
 }
 
 {
