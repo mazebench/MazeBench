@@ -3,7 +3,7 @@
   "source": "pinned-prime-verifiers",
   "verifiers_version": "0.2.2.dev56",
   "verifiers_revision": "b3b8f51ed470e3c46c12bb858ad18d257dc50c5e",
-  "policy": "MazeBench uses unmodified Verifiers harnesses. The app launches the native null harness because it advertises only the four MazeBench game tools; other MCP-capable harnesses remain framework-compatible but are not approved when they expose shell, filesystem, subprocess, or network tools.",
+  "policy": "MazeBench uses unmodified Verifiers harnesses in isolated Prime runtimes. Each approved route pins its standard harness configuration so the model can reach the four MazeBench game tools without receiving shell, host filesystem, or repository access.",
   "harnesses": [
     {
       "id": "bash",
@@ -128,39 +128,28 @@
       "id": "codex",
       "label": "Codex",
       "description": "Prime-provided codex harness.",
-      "launchable": false,
-      "status": "unsafe_agent_tools",
-      "reason": "This harness can expose shell, filesystem, subprocess, or network capabilities beyond MazeBench game tools.",
-      "boundary": "unrestricted-agent-tools",
+      "launchable": true,
+      "status": "compatible",
+      "reason": "",
+      "boundary": "game-tools-only",
       "observation_modes": [
         "text",
         "json"
       ],
       "supports_mcp": true,
-      "configurable": [
-        "multi_agent",
-        "version"
-      ],
+      "configurable": [],
       "default_config": {
+        "disabled_tools": [
+          "shell_tool"
+        ],
         "version": "0.144.5",
         "multi_agent": false
       },
       "config_schema": {
-        "properties": {
-          "multi_agent": {
-            "default": false,
-            "title": "Multi Agent",
-            "type": "boolean"
-          },
-          "version": {
-            "default": "0.144.5",
-            "title": "Version",
-            "type": "string"
-          }
-        }
+        "properties": {}
       },
-      "adapter": "unsupported",
-      "runtime_harness_id": ""
+      "adapter": "native",
+      "runtime_harness_id": "codex"
     },
     {
       "id": "kimi_code",
@@ -419,5 +408,5 @@
       "runtime_harness_id": ""
     }
   ],
-  "catalog_fingerprint": "b558004feeb54a6c2c6359feb38472bca9b1ca2d3a1ef65410cb0e66233966d2"
+  "catalog_fingerprint": "3648cb8915a7117e9339bb9de5f30781d68b21137e9bf02b57b689077e487b19"
 }

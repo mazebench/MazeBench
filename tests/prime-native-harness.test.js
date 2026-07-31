@@ -29,5 +29,5 @@ const certificationOutput = execFileSync(
   ],
   { cwd: root, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }
 );
-assert.match(certificationOutput, /MazeBench native harness certification ready: 1 harness/);
+assert.match(certificationOutput, /MazeBench native harness certification ready: 2 harnesses/);
 console.log("prime native harness tests passed");

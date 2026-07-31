@@ -87,7 +87,11 @@ try {
     runSource,
     /\["null", \{\s*adapter: "native",\s*runtimeHarnessId: "null"/
   );
-  assert.match(runSource, /"--env\.agent\.runtime\.type",\s*"prime"/);
+  assert.match(
+    runSource,
+    /\["codex", \{\s*adapter: "native",\s*runtimeHarnessId: "codex"[\s\S]*disabled_tools: \["shell_tool"\]/
+  );
+  assert.match(runSource, /'type = "prime"'/);
   assert.doesNotMatch(runSource, /"--env\.taskset\.(?:tools\.colocated|python-tools)"/);
   assert.doesNotMatch(runSource, /"--env\.agent\.runtime\.type",\s*"subprocess"/);
   assert.match(runSource, /const taskset = "mazebench-tools"/);
@@ -162,25 +166,20 @@ try {
   const launchableCatalogEntries = harnessCatalog.harnesses.filter(
     (harness) => harness.launchable
   );
-  assert.equal(launchableCatalogEntries.length, 1);
   assert.deepEqual(
-    {
-      id: launchableCatalogEntries[0].id,
-      label: launchableCatalogEntries[0].label,
-      adapter: launchableCatalogEntries[0].adapter,
-      runtimeHarnessId: launchableCatalogEntries[0].runtime_harness_id,
-      boundary: launchableCatalogEntries[0].boundary,
-      configurable: launchableCatalogEntries[0].configurable
-    },
-    {
-      id: "null",
-      label: "Game agent",
-      adapter: "native",
-      runtimeHarnessId: "null",
-      boundary: "game-tools-only",
-      configurable: []
-    }
+    launchableCatalogEntries.map((entry) => entry.id),
+    ["codex", "null"]
   );
+  const codexHarness = launchableCatalogEntries.find((entry) => entry.id === "codex");
+  assert.deepEqual(codexHarness.default_config, {
+    disabled_tools: ["shell_tool"],
+    version: "0.144.5",
+    multi_agent: false
+  });
+  assert.equal(codexHarness.adapter, "native");
+  assert.equal(codexHarness.runtime_harness_id, "codex");
+  assert.equal(codexHarness.boundary, "game-tools-only");
+  assert.deepEqual(codexHarness.configurable, []);
 
   assert.equal(primeHarnessModelCompatible("openai/gpt-5.4", "null"), true);
   assert.equal(primeHarnessModelCompatible("anthropic/claude-sonnet-5", "default"), true);
@@ -201,7 +200,7 @@ try {
   const publicHarnesses = publicPrimeHarnesses();
   assert.deepEqual(
     publicHarnesses.filter((harness) => harness.launchable).map((harness) => harness.id),
-    ["null"]
+    ["codex", "null"]
   );
   const gameAgent = publicHarnesses.find((harness) => harness.id === "null");
   assert.equal(gameAgent.label, "Game agent");
@@ -216,7 +215,6 @@ try {
       "bash",
       "browser_use",
       "claude_code",
-      "codex",
       "kimi_code",
       "mini_swe_agent",
       "pi",
@@ -239,6 +237,11 @@ try {
     true
   );
   assert.deepEqual(normalizePrimeHarnessConfig({}, "default"), {});
+  assert.deepEqual(normalizePrimeHarnessConfig({}, "codex"), {
+    disabled_tools: ["shell_tool"],
+    version: "0.144.5",
+    multi_agent: false
+  });
   assert.throws(
     () => normalizePrimeHarnessConfig({ version: "untrusted" }, "null"),
     /Unsupported Game agent configuration/
@@ -265,7 +268,10 @@ try {
     filterPrimeCatalogForHarness(sampleCatalog, "default").models.map((model) => model.id),
     ["openai/gpt-5-codex", "anthropic/claude-sonnet-5", "google/gemini-3.5-flash"]
   );
-  assert.deepEqual(filterPrimeCatalogForHarness(sampleCatalog, "codex").models, []);
+  assert.deepEqual(
+    filterPrimeCatalogForHarness(sampleCatalog, "codex").models.map((model) => model.id),
+    ["openai/gpt-5-codex", "anthropic/claude-sonnet-5", "google/gemini-3.5-flash"]
+  );
   for (const modelId of [
     "openai/gpt-oss-20b",
     "openai/gpt-oss-120b",
@@ -308,11 +314,36 @@ try {
     "null"
   );
   const relayArgs = agenticHarnessArgs(parsedGameAgent);
-  assert.equal(argumentValue(relayArgs, "--env.agent.harness.id"), "null");
-  assert.equal(argumentValue(relayArgs, "--env.agent.runtime.type"), "prime");
+  assert.equal(relayArgs[0], "@");
+  assert.equal(relayArgs[1], path.join(runDir, "prime-harness.toml"));
+  const gameAgentConfig = fs.readFileSync(relayArgs[1], "utf8");
+  assert.match(gameAgentConfig, /\[env\.agent\.harness\]\nid = "null"/);
+  assert.match(gameAgentConfig, /\[env\.agent\.runtime\]\ntype = "prime"/);
   assert.equal(argumentValue(relayArgs, "--env.taskset.tools.colocated"), undefined);
   assert.equal(argumentValue(relayArgs, "--env.taskset.python-tools"), undefined);
   assert.equal(argumentValue(relayArgs, "--push"), "False");
+
+  const parsedCodexAgent = parseArgs([
+    "--env-dir",
+    environmentDir,
+    "--out",
+    runDir,
+    "--harness",
+    "codex",
+    "--model",
+    "openai/gpt-oss-20b"
+  ]);
+  assert.deepEqual(parsedCodexAgent.harnessConfig, {
+    disabled_tools: ["shell_tool"],
+    version: "0.144.5",
+    multi_agent: false
+  });
+  const codexArgs = agenticHarnessArgs(parsedCodexAgent);
+  const codexConfig = fs.readFileSync(codexArgs[1], "utf8");
+  assert.match(codexConfig, /id = "codex"/);
+  assert.match(codexConfig, /disabled_tools = \["shell_tool"\]/);
+  assert.match(codexConfig, /version = "0\.144\.5"/);
+  assert.match(codexConfig, /multi_agent = false/);
 
   const parsedVisionAgent = parseArgs([
     "--env-dir",
@@ -355,7 +386,6 @@ try {
   for (const harness of [
     "bash",
     "claude-code",
-    "codex",
     "kimi-code",
     "mini-swe-agent",
     "pi",
@@ -404,6 +434,20 @@ try {
         JSON.stringify({ version: "untrusted" })
       ]),
     /Unsupported null harness configuration/
+  );
+  assert.throws(
+    () =>
+      parseArgs([
+        "--env-dir",
+        environmentDir,
+        "--out",
+        runDir,
+        "--harness",
+        "codex",
+        "--harness-config-json",
+        JSON.stringify({ disabled_tools: [] })
+      ]),
+    /Unsupported codex harness variant/
   );
   assert.throws(
     () =>
@@ -470,21 +514,23 @@ try {
   fs.writeFileSync(
     artifactTrace,
     `${JSON.stringify({
-      nodes: [
-        { message: { role: "assistant", content: "", reasoning_content: "reasoned move" } },
-        { message: { role: "tool", content: `status\n${marker[0]}`, tool_call_id: "shell-1" } }
-      ],
-      info: {
-        maze_actions: [
-          {
-            turn: 1,
-            command: "up",
-            valid: true,
-            error: null,
-            status: { current_room: "level_HxI", gem_count: 0, moved: true }
-          }
-        ]
-      }
+      traces: [{
+        nodes: [
+          { message: { role: "assistant", content: "", reasoning_content: "reasoned move" } },
+          { message: { role: "tool", content: `status\n${marker[0]}`, tool_call_id: "shell-1" } }
+        ],
+        info: {
+          maze_actions: [
+            {
+              turn: 1,
+              command_text: "up",
+              valid: true,
+              error: null,
+              status: { current_room: "level_HxI", gem_count: 0, moved: true }
+            }
+          ]
+        }
+      }]
     })}\n`
   );
   assert.equal(writeMoveArtifacts(artifactTrace, runDir), 1);

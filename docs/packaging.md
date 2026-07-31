@@ -103,7 +103,8 @@ Notes:
 - External prerequisites the wheel cannot bundle: **Node.js** (always),
   **ffmpeg + a Chromium-family browser** (replay videos), and **prime / uv**
   (the stock framework harness and game Toolset run in separate Prime
-  Sandboxes). Local Codex, Claude, and Kimi coding-agent launch paths are retired.
+  Sandboxes). The stock Verifiers Codex harness is supported there; local
+  Codex, Claude, and Kimi coding-agent launch paths are retired.
 
 ## Note on the two `mazebench` packages
 

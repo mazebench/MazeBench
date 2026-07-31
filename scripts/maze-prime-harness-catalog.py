@@ -34,20 +34,29 @@ LABELS = {
     "terminus_2": "Terminus 2",
 }
 GAME_TOOLS_ONLY_ROUTES = {
+    "codex": {
+        "adapter": "native",
+        "runtime_harness_id": "codex",
+        "default_config": {
+            "disabled_tools": ["shell_tool"],
+            "version": "0.144.5",
+            "multi_agent": False,
+        },
+    },
     "null": {
         "adapter": "native",
         "runtime_harness_id": "null",
         "default_config": {},
-    }
+    },
 }
 
 
 def adapter_for(harness_id: str, harness_type: type[vf.Harness]) -> dict[str, Any]:
     del harness_type
-    if harness_id == "null":
+    if harness_id in GAME_TOOLS_ONLY_ROUTES:
         return {
             "adapter": "native",
-            "runtime_harness_id": "null",
+            "runtime_harness_id": harness_id,
         }
     return {
         "adapter": "unsupported",
@@ -70,10 +79,13 @@ def discover() -> dict[str, Any]:
         defaults = config.model_dump(exclude=COMMON_CONFIG_FIELDS)
         adapter = adapter_for(harness_id, harness_type)
         approved = GAME_TOOLS_ONLY_ROUTES.get(harness_id) or {}
-        game_tools_only = adapter == {
+        if approved:
+            config_type.model_validate({"id": harness_id, **approved["default_config"]})
+            defaults = approved["default_config"]
+        game_tools_only = bool(approved) and adapter == {
             "adapter": approved.get("adapter"),
             "runtime_harness_id": approved.get("runtime_harness_id"),
-        } and defaults == approved.get("default_config")
+        }
         if game_tools_only:
             # Only the generated, certified default variant is approved. An
             # arbitrary CLI version or feature toggle is a different boundary.
@@ -119,10 +131,10 @@ def discover() -> dict[str, Any]:
         "verifiers_version": version,
         "verifiers_revision": commit,
         "policy": (
-            "MazeBench uses unmodified Verifiers harnesses. The app launches the native "
-            "null harness because it advertises only the four MazeBench game tools; other "
-            "MCP-capable harnesses remain framework-compatible but are not approved when "
-            "they expose shell, filesystem, subprocess, or network tools."
+            "MazeBench uses unmodified Verifiers harnesses in isolated Prime runtimes. "
+            "Each approved route pins its standard harness configuration so the model can "
+            "reach the four MazeBench game tools without receiving shell, host filesystem, "
+            "or repository access."
         ),
         "harnesses": harnesses,
     }

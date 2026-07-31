@@ -39,6 +39,15 @@ const CERTIFIED_HARNESSES = new Set(
 const PRIME_HARNESSES = new Map(HARNESS_CATALOG.harnesses.map((entry) => [entry.id, entry]));
 const MAZEBENCH_ENV_DIR = path.join(ROOT_DIR, "environments", "mazebench");
 const ISOLATED_AGENT_ROUTES = new Map([
+  ["codex", {
+    adapter: "native",
+    runtimeHarnessId: "codex",
+    defaultConfig: {
+      disabled_tools: ["shell_tool"],
+      version: "0.144.5",
+      multi_agent: false
+    }
+  }],
   ["null", {
     adapter: "native",
     runtimeHarnessId: "null",
@@ -61,8 +70,7 @@ function requireIsolatedAgentRoute(harnessId, definition) {
     definition?.adapter !== route.adapter ||
     definition?.runtime_harness_id !== route.runtimeHarnessId ||
     definition?.boundary !== "game-tools-only" ||
-    Object.keys(definition?.default_config || {}).length !== Object.keys(route.defaultConfig).length ||
-    Object.entries(route.defaultConfig).some(([key, value]) => definition?.default_config?.[key] !== value)
+    JSON.stringify(definition?.default_config || {}) !== JSON.stringify(route.defaultConfig)
   ) {
     throw new Error(
       `Prime harness "${harnessId}" is not approved for MazeBench's game-tools-only agent boundary.`
@@ -527,11 +535,17 @@ function hostedRolloutError(samplesPayload) {
   return "";
 }
 
+function firstRolloutRow(resultsPath) {
+  const firstLine = fs.readFileSync(resultsPath, "utf8").split(/\r?\n/).find((line) => line.trim());
+  if (!firstLine) return null;
+  const payload = JSON.parse(firstLine);
+  return Array.isArray(payload.traces) ? payload.traces[0] || null : payload;
+}
+
 function localRolloutError(resultsPath) {
   if (!resultsPath || !fs.existsSync(resultsPath)) return "";
-  const firstLine = fs.readFileSync(resultsPath, "utf8").split(/\r?\n/).find((line) => line.trim());
-  if (!firstLine) return "The local Prime evaluation produced no result row.";
-  const row = JSON.parse(firstLine);
+  const row = firstRolloutRow(resultsPath);
+  if (!row) return "The local Prime evaluation produced no result row.";
   const errors = Array.isArray(row.errors) ? row.errors : [];
   const stopCondition = String(row.stop_condition || "");
   const actions = row.info?.maze_actions ?? row.state?.maze_actions;
@@ -704,15 +718,33 @@ function runHostedEval(opts) {
 
 function agenticHarnessArgs(opts) {
   const definition = requireIsolatedAgentRoute(opts.harness, harnessDefinition(opts.harness));
-  const argv = [
-    "--env.agent.harness.id",
-    definition.runtime_harness_id,
-    "--env.agent.runtime.type",
-    "prime",
+  const harnessConfigPath = path.join(opts.outDir, "prime-harness.toml");
+  const harnessConfig = {
+    id: definition.runtime_harness_id,
+    ...opts.harnessConfig
+  };
+  const tomlValue = (value) => {
+    if (["string", "boolean", "number"].includes(typeof value)) return JSON.stringify(value);
+    if (Array.isArray(value)) return `[${value.map(tomlValue).join(", ")}]`;
+    throw new Error(`Unsupported ${opts.harness} harness configuration value.`);
+  };
+  writeTextAtomic(
+    harnessConfigPath,
+    [
+      "[env.agent.harness]",
+      ...Object.entries(harnessConfig).map(([key, value]) => `${key} = ${tomlValue(value)}`),
+      "",
+      "[env.agent.runtime]",
+      'type = "prime"',
+      ""
+    ].join("\n")
+  );
+  return [
+    "@",
+    harnessConfigPath,
     "--push",
     "False"
   ];
-  return argv;
 }
 
 // mazebench is a Verifiers v1 taskset, run via `uv run eval` (NOT `prime eval
@@ -808,6 +840,7 @@ function runEval(opts) {
         MAZEBENCH_LIVE_USAGE_PATH: liveUsagePath,
         MAZEBENCH_LIVE_ACTIONS_PATH: liveActionsPath,
         MAZEBENCH_LIVE_REASONING_PATH: liveReasoningPath,
+        MAZEBENCH_PRIME_HARNESS: opts.harness,
         MAZEBENCH_RESUME_ACTION_COUNT: String(resumeActionCount)
       },
       stdio: ["ignore", "inherit", "inherit"]
@@ -1001,17 +1034,8 @@ function agenticConversationTurns(row) {
 // command_text, status incl. the text board) drives the board + move list, and
 // reasoning.json drives the per-move reasoning shown alongside each move.
 function writeMoveArtifacts(resultsPath, outDir) {
-  const firstLine = fs
-    .readFileSync(resultsPath, "utf8")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find(Boolean);
-
-  if (!firstLine) {
-    return 0;
-  }
-
-  const row = JSON.parse(firstLine);
+  const row = firstRolloutRow(resultsPath);
+  if (!row) return 0;
   const info = row.info || {};
   const mazeActions = (Array.isArray(info.maze_actions) ? info.maze_actions : []).filter(
     (action) => action && action.turn != null
@@ -1053,7 +1077,9 @@ function writeMoveArtifacts(resultsPath, outDir) {
       status.level = detail.board;
     }
 
-    const commandText = String(action.command || action.raw_response || detail.action || "").trim();
+    const commandText = String(
+      action.command_text || action.command || action.raw_response || detail.action || ""
+    ).trim();
 
     const timestamp = action.timestamp || action.created_at || detail.timestamp || null;
     actionLines.push(JSON.stringify({
@@ -1131,24 +1157,19 @@ async function main() {
   writeInitialStatus(opts);
   const code = await runEvalWithProviderRetry(opts);
 
-  const resultsPath = findResults(path.join(opts.outDir, "eval-output"));
+  let resultsPath = findResults(path.join(opts.outDir, "eval-output"));
 
   if (!resultsPath) {
     console.error("[mazebench] eval finished but no rollout JSONL was found; no resume checkpoint can be created.");
     process.exit(code || 1);
   }
 
-  try {
-    const initialStatus = JSON.parse(
-      fs.readFileSync(path.join(opts.outDir, "initial-status.json"), "utf8")
-    );
-    const { checkpoint } = writePrimeResumeCheckpoint(opts.outDir, {
-      initialStatus,
-      sourceRunId: opts.runId || path.basename(opts.outDir)
-    });
-    console.log(`[mazebench] saved a verified resume checkpoint at action ${checkpoint.action_count}`);
-  } catch (error) {
-    console.error(`[mazebench] could not create a safe resume checkpoint: ${error.message}`);
+  if (path.basename(resultsPath) === "traces.jsonl") {
+    const row = firstRolloutRow(resultsPath);
+    if (row) {
+      resultsPath = path.join(path.dirname(resultsPath), "results.jsonl");
+      writeTextAtomic(resultsPath, `${JSON.stringify(row)}\n`);
+    }
   }
 
   if (code !== 0) {
@@ -1167,6 +1188,19 @@ async function main() {
     console.log(`[mazebench] wrote ${moves} move${moves === 1 ? "" : "s"} (board + reasoning) from the eval`);
   } catch (error) {
     console.error(`[mazebench] could not build the move feed: ${error.message}`);
+  }
+
+  try {
+    const initialStatus = JSON.parse(
+      fs.readFileSync(path.join(opts.outDir, "initial-status.json"), "utf8")
+    );
+    const { checkpoint } = writePrimeResumeCheckpoint(opts.outDir, {
+      initialStatus,
+      sourceRunId: opts.runId || path.basename(opts.outDir)
+    });
+    console.log(`[mazebench] saved a verified resume checkpoint at action ${checkpoint.action_count}`);
+  } catch (error) {
+    console.error(`[mazebench] could not create a safe resume checkpoint: ${error.message}`);
   }
 
   console.log("\n=== Rendering replay video from the eval ===");

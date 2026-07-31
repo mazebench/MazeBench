@@ -295,20 +295,22 @@ Kimi runners are retired because their subprocess, host, and repository-aware
 paths cannot satisfy the benchmark isolation boundary. Use the Agent page or
 `scripts/maze-prime-run.js` with the `mazebench-tools` taskset.
 
-The local `/agent` page permits one catalog-certified route: a fixed model loop
-running inside the trusted evaluator. It advertises only the four game tools;
-coding harnesses and tools with shell, filesystem, subprocess, or network
-capabilities are rejected. The task sent to the model contains no repository
-or checkpoint path. Only the isolated tool server can update trusted game state
-through Verifiers' per-rollout state channel.
+The local `/agent` page permits catalog-certified stock Verifiers harnesses. The
+native `null` harness advertises only the four game tools. The native Codex
+harness uses its standard `disabled_tools = ["shell_tool"]` configuration; its
+other built-in bookkeeping tools remain available, but it has no shell or host
+filesystem path. Both run in a fresh Prime sandbox. The task sent to the model
+contains no repository or checkpoint path.
+Only the isolated tool server can update trusted game state through Verifiers'
+per-rollout state channel.
 
 For every agentic rollout, `mazebench-tools` declares a bounded
 `PrimeConfig` as its Toolset runtime. Verifiers provisions that separate
 sandbox, installs the packaged environment, launches the MCP server there, and
 destroys the sandbox with the rollout. The Node game runs inside the same
-sandbox as its trusted tool server. The model never receives the server URL and
-the relay advertises only `game_start`, `game_observe`, `game_action`, and
-`game_action_sequence`.
+sandbox as its trusted tool server. Verifiers connects that server to the agent
+harness as `game_start`, `game_observe`, `game_action`, and
+`game_action_sequence`; the game remains outside the agent sandbox.
 
 Scoring is finalized after the model exits. The agent-facing server exposes
 start, observe, action, and action-sequence tools, but no scorecard or

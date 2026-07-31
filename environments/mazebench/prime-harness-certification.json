@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "catalog_fingerprint": "b558004feeb54a6c2c6359feb38472bca9b1ca2d3a1ef65410cb0e66233966d2",
+  "catalog_fingerprint": "3648cb8915a7117e9339bb9de5f30781d68b21137e9bf02b57b689077e487b19",
   "verifiers_version": "0.2.2.dev56",
   "verifiers_revision": "b3b8f51ed470e3c46c12bb858ad18d257dc50c5e",
   "boundary": {
@@ -19,6 +19,18 @@
     ]
   },
   "harnesses": [
+    {
+      "id": "codex",
+      "adapter": "native",
+      "runtime_harness_id": "codex",
+      "checks": [
+        "framework-owned-harness",
+        "isolated-harness-runtime",
+        "shell-tool-disabled",
+        "evaluator-owned-tool-server"
+      ],
+      "status": "certified"
+    },
     {
       "id": "null",
       "adapter": "native",

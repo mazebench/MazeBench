@@ -138,10 +138,10 @@ try {
   const harnessRegistry = service.listPrimeHarnesses();
   assert.deepEqual(
     harnessRegistry.harnesses.filter((harness) => harness.launchable).map((harness) => harness.id),
-    ["null"]
+    ["codex", "null"]
   );
   assert.equal(harnessRegistry.harnesses.find((harness) => harness.id === "null").adapter, "native");
-  assert.equal(harnessRegistry.harnesses.find((harness) => harness.id === "codex").launchable, false);
+  assert.equal(harnessRegistry.harnesses.find((harness) => harness.id === "codex").launchable, true);
   const [customPrime] = service.launchRuns({
     kind: "prime",
     harness: "null",
