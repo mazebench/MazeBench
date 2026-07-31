@@ -118,6 +118,21 @@ capabilities must run in an approved isolated runtime. The direct native `mazebe
 taskset is retired because it bypasses the separate game server. The Hub environment
 identifier remains available to the distinct Hosted Training workflow described below.
 
+Complete game-only Prime Sandbox examples for the stock Pi, Claude Code, and
+Codex harnesses live in `configs/eval/` at the repository root. Each one uses
+the harness's `disabled_tools` contract to remove its standard tools and a
+framework-only runtime network policy, leaving only the evaluator-owned game
+MCP server and model interception route reachable. Run one from a checkout with:
+
+```bash
+uv run --project environments/mazebench eval \
+  @ configs/eval/mazebench-codex-game-only.toml
+```
+
+Override `model`, taskset settings, sampling, or run limits on the command line
+as usual. Keep the harness `disabled_tools` list, `runtime.vm = true`, and
+`runtime.allow = []` intact for the game-only boundary.
+
 The saved `results.jsonl` trace contains:
 
 - `info.maze_actions` — normalized action records and per-action game status

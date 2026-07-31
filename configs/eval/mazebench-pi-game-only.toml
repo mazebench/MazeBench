@@ -1,0 +1,30 @@
+# Run with:
+# uv run --project environments/mazebench eval @ configs/eval/mazebench-pi-game-only.toml
+model = "openai/gpt-5.4"
+num_tasks = 1
+num_rollouts = 1
+max_concurrent = 1
+push = false
+rich = false
+
+[env.taskset]
+id = "mazebench-tools"
+num_examples = 1
+start_level_id = "level_HxI"
+game_won_gem_count = 100
+max_actions = 40
+observation_mode = "ascii"
+allow_quit = true
+
+[env.agent]
+max_turns = 160
+
+[env.agent.harness]
+id = "pi"
+version = "0.80.10"
+disabled_tools = ["read", "bash", "edit", "write", "grep", "find", "ls"]
+
+[env.agent.runtime]
+type = "prime"
+vm = true
+allow = []
