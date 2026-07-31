@@ -788,7 +788,7 @@ function transitionLayerBlocksElevation(
   const type = layer.type || "empty";
   const layerElevation = layer.elevation ?? 0;
 
-  if (type === "wall" || type === "ice_block") {
+  if (type === "wall" || type === "ice_block" || type === "block_asset") {
     return layerElevation === elevation;
   }
 
@@ -807,7 +807,7 @@ function transitionLayerBlocksElevation(
     return elevation >= layerElevation && elevation < layerElevation + 3;
   }
 
-  if (type === "shrub" || type === "block_asset") {
+  if (type === "shrub") {
     return elevation >= layerElevation && elevation <= layerElevation + 1;
   }
 

@@ -368,6 +368,44 @@ function assertMove(move, yaw, expected) {
 }
 
 {
+  const [firstUp, bridgeCrossing, continuedUp, closed] = runBridge(
+    [
+      { command: "move", direction: "up" },
+      { command: "move", direction: "up" },
+      { command: "move", direction: "up" },
+      { command: "close" }
+    ],
+    ["--level", "level_CxI", "--view", "top"]
+  );
+
+  assert.equal(firstUp.current_room, "level_CxI");
+  assert.deepEqual(firstUp.player, {
+    elevation: 4,
+    type: "player",
+    x: 2,
+    y: 0
+  });
+
+  assert.equal(bridgeCrossing.current_room, "level_CxH");
+  assert.equal(bridgeCrossing.room_changed, true);
+  assert.deepEqual(bridgeCrossing.player, {
+    elevation: 4,
+    type: "player",
+    x: 2,
+    y: 15
+  });
+
+  assert.equal(continuedUp.current_room, "level_CxH");
+  assert.deepEqual(continuedUp.player, {
+    elevation: 4,
+    type: "player",
+    x: 2,
+    y: 14
+  });
+  assert.equal(closed.ok, true);
+}
+
+{
   const secretBoard = "maze level_HxI | view=top\nASCII-BOARD-SECRET";
   const source = {
     _render_state: { actors: [{ type: "player", x: 1, y: 2, elevation: 0 }] },
