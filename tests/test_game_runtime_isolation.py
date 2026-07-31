@@ -294,7 +294,12 @@ class GameRuntimeIsolationTests(unittest.TestCase):
                     side_effect=local_tool_runtime,
                 )
             )
-            with runtime_patch:
+            tunnel_patch = (
+                contextlib.nullcontext()
+                if real_prime
+                else patch.object(environment, "_requires_tunnel", return_value=False)
+            )
+            with runtime_patch, tunnel_patch:
                 async with environment.serving():
                     traces = await environment.episode(
                         task,
