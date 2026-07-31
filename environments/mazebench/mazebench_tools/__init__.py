@@ -227,11 +227,11 @@ of transcribing the tool result."""
     )
     return f"""Play the hidden 3D grid game using only the supplied game controls.
 
-Call `game_start` exactly once first. Inspect its sanitized {mode} observation, then call
-`game_action` for a single action. A saved solver may instead call `game_action_sequence`
+Call `start` exactly once first. Inspect its sanitized {mode} observation, then call
+`action` for a single action. A saved solver may instead call `action_sequence`
 with an ordered `actions` array of at most 1,000 items. By default the
 sequence result contains compact step summaries plus `final_observation`.
-{sequence_observation_policy} Use `game_observe` only when you need to inspect the current state without
+{sequence_observation_policy} Use `observe` only when you need to inspect the current state without
 consuming an action. Valid actions include up, down, left, right,
 rotate camera up, rotate camera down, rotate camera left, rotate camera right, undo, reset,
 and go to level X Y.{mode_policy}
@@ -269,7 +269,7 @@ checkpoint. Here is the tail of the prior model conversation for context:
 
 {context}
 
-Continue using the isolated controls below. `game_start` returns the restored state and must
+Continue using the isolated controls below. `start` returns the restored state and must
 still be called exactly once by this new harness process.
 
 {instructions}"""
@@ -278,7 +278,7 @@ still be called exactly once by this new harness process.
 class MazeBenchToolset(vf.Toolset[MazeBenchToolsetConfig, MazeBenchToolTraceState]):
     """Four model controls backed by a game in this tool-server sandbox."""
 
-    TOOL_PREFIX = "game"
+    TOOL_PREFIX = None
 
     async def setup_task(self, task: MazeBenchTaskData) -> None:
         if not self.config.artifact_nonce:

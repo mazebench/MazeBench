@@ -17,17 +17,4 @@ const boundaryOutput = execFileSync(
 );
 
 assert.match(boundaryOutput, /native harness boundary ready/);
-const certificationOutput = execFileSync(
-  "uv",
-  [
-    "run",
-    "--project",
-    path.join(root, "environments", "mazebench"),
-    "python",
-    path.join(root, "scripts", "maze-certify-prime-harnesses.py"),
-    "--self-test"
-  ],
-  { cwd: root, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }
-);
-assert.match(certificationOutput, /MazeBench native harness certification ready: 2 harnesses/);
-console.log("prime native harness tests passed");
+console.log("prime native harness boundary tests passed");

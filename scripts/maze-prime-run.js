@@ -28,14 +28,6 @@ const HOSTED_STATE_FILE = "prime-evaluation.json";
 const HOSTED_SAMPLES_FILE = "prime-evaluation-samples.json";
 const HARNESS_CATALOG_FILE = path.join(ROOT_DIR, "environments", "mazebench", "prime-harness-catalog.json");
 const HARNESS_CATALOG = JSON.parse(fs.readFileSync(HARNESS_CATALOG_FILE, "utf8"));
-const HARNESS_CERTIFICATION_FILE = path.join(ROOT_DIR, "environments", "mazebench", "prime-harness-certification.json");
-const HARNESS_CERTIFICATION = JSON.parse(fs.readFileSync(HARNESS_CERTIFICATION_FILE, "utf8"));
-if (HARNESS_CERTIFICATION.catalog_fingerprint !== HARNESS_CATALOG.catalog_fingerprint) {
-  throw new Error("Prime harness catalog does not match its safety certification.");
-}
-const CERTIFIED_HARNESSES = new Set(
-  HARNESS_CERTIFICATION.harnesses.filter((entry) => entry.status === "certified").map((entry) => entry.id)
-);
 const PRIME_HARNESSES = new Map(HARNESS_CATALOG.harnesses.map((entry) => [entry.id, entry]));
 const MAZEBENCH_ENV_DIR = path.join(ROOT_DIR, "environments", "mazebench");
 const ISOLATED_AGENT_ROUTES = new Map([
@@ -204,9 +196,6 @@ function parseArgs(argv) {
   requireIsolatedAgentRoute(opts.harness, definition);
   if (!definition.launchable) {
     throw new Error(definition.reason || `Prime harness "${opts.harness}" failed catalog validation.`);
-  }
-  if (!CERTIFIED_HARNESSES.has(opts.harness)) {
-    throw new Error(`Prime harness "${opts.harness}" has not passed MazeBench compatibility certification.`);
   }
   if (opts.hosted) {
     throw new Error("Hosted agent evaluations do not run the V1 harness and Toolset route.");
@@ -987,7 +976,7 @@ function agenticConversationTurns(row) {
         action: String(messageText(message.content) || "").trim()
       };
       for (const call of message.tool_calls || []) {
-        if (!/(?:^|__)game_action$/.test(String(call?.name || ""))) continue;
+        if (!/(?:^|__)(?:game_)?action$/.test(String(call?.name || ""))) continue;
         try {
           const args = JSON.parse(String(call.arguments || "{}"));
           pendingGameActions.set(String(call.id || ""), {

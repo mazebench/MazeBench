@@ -22,7 +22,6 @@ const MIRRORED_FILES = [
   "LICENSE",
   "THIRD_PARTY_NOTICES.md",
   "environments/mazebench/prime-harness-catalog.json",
-  "environments/mazebench/prime-harness-certification.json",
   "games/maze/level_parsing.json",
   "games/maze/toolbox.json",
   "games/maze/world_map.json",

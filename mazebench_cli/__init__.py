@@ -553,7 +553,7 @@ def run_prime(
         if flags:
             raise CliError(
                 "Raw eval flags are unavailable because they could replace the "
-                "certified game-only harness."
+                "approved game-only harness."
             )
         try:
             moves = int(pairs.get("max_turns", "8" if action == "vision" else "20"))

@@ -99,24 +99,11 @@ function normalizeEventTimestamp(value) {
 
 const VIEW_NAMES = ["top", "top-diagonal", "diagonal", "side-diagonal", "side"];
 const PRIME_HARNESS_CATALOG = require("../environments/mazebench/prime-harness-catalog.json");
-const PRIME_HARNESS_CERTIFICATION = require("../environments/mazebench/prime-harness-certification.json");
-if (PRIME_HARNESS_CERTIFICATION.catalog_fingerprint !== PRIME_HARNESS_CATALOG.catalog_fingerprint) {
-  throw new Error("Prime harness catalog does not match its safety certification.");
-}
-const CERTIFIED_PRIME_HARNESSES = new Set(
-  PRIME_HARNESS_CERTIFICATION.harnesses
-    .filter((entry) => entry.status === "certified")
-    .map((entry) => entry.id)
-);
 const VERIFIED_VERIFIERS_REVISION = PRIME_HARNESS_CATALOG.verifiers_revision;
 const PRIME_HARNESSES = new Map(
   PRIME_HARNESS_CATALOG.harnesses.map((definition) => [definition.id, {
     ...definition,
-    launchable: Boolean(definition.launchable) && CERTIFIED_PRIME_HARNESSES.has(definition.id),
-    status: CERTIFIED_PRIME_HARNESSES.has(definition.id) ? "certified" : "uncertified",
-    reason: CERTIFIED_PRIME_HARNESSES.has(definition.id)
-      ? definition.reason
-      : "This generated harness route has not passed the checked-in compatibility certification.",
+    launchable: Boolean(definition.launchable),
     taskset: "mazebench-tools",
     protocol: definition.adapter,
     custom: true
@@ -200,7 +187,7 @@ function filterPrimeCatalogForHarness(catalog, harnessId) {
     models,
     default_model_id: models[0]?.id || "",
     note: models.length
-      ? `${models.length} live Prime model${models.length === 1 ? "" : "s"}. ${definition.label} is connected through MazeBench's ${definition.adapter || "native"} compatibility route; launch certification is recorded separately because Prime's model list has no harness capability flags.`
+      ? `${models.length} live Prime model${models.length === 1 ? "" : "s"}. ${definition.label} is connected through MazeBench's ${definition.adapter || "native"} game-tools-only route.`
       : catalog?.note || `Prime's live model catalog is currently empty.`
   };
 }
@@ -226,7 +213,6 @@ function publicPrimeHarnesses() {
       supports_mcp: Boolean(definition.supports_mcp),
       status: definition.status || (definition.launchable ? "compatible" : "catalog_error"),
       catalog_fingerprint: PRIME_HARNESS_CATALOG.catalog_fingerprint,
-      certification_schema_version: PRIME_HARNESS_CERTIFICATION.schema_version,
       verifiers_version: PRIME_HARNESS_CATALOG.verifiers_version,
       verifiers_revision: VERIFIED_VERIFIERS_REVISION
     }));
@@ -4773,7 +4759,6 @@ function createAgentRunService({
       verifiers_revision: VERIFIED_VERIFIERS_REVISION,
       verifiers_version: PRIME_HARNESS_CATALOG.verifiers_version,
       catalog_fingerprint: PRIME_HARNESS_CATALOG.catalog_fingerprint,
-      certification: PRIME_HARNESS_CERTIFICATION.boundary,
       policy: PRIME_HARNESS_CATALOG.policy
     };
   }

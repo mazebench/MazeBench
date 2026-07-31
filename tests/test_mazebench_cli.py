@@ -113,5 +113,5 @@ class CliCommandTests(TestCase):
         )
         self.assertNotIn("--env.taskset.tools.colocated", command)
         self.assertNotIn("--env.taskset.python-tools", command)
-        with self.assertRaisesRegex(mazebench_cli.CliError, "replace the certified"):
+        with self.assertRaisesRegex(mazebench_cli.CliError, "replace the approved"):
             mazebench_cli.run_prime(root, ["eval"], {}, ["--harness.id", "bash"])

@@ -69,7 +69,7 @@ const CLAUDE_RESTRICTED_BUILTIN_TOOLS = [
 
 // Kimi Code evaluates deny policies before allow policies, so an overlapping
 // catch-all deny would also block MazeBench MCP. Deny every built-in exposed by
-// the certified CLI version instead, allow exact MCP tools, and reject any
+// the pinned CLI version instead, allow exact MCP tools, and reject any
 // unreviewed Kimi version before launch. mcp.json also pins the exact tool list.
 const KIMI_RESTRICTED_BUILTIN_TOOLS = [
   "Agent",

@@ -27,10 +27,10 @@ from verifiers.v1.types import Sampling
 
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_GAME_TOOLS = {
-    "game_start",
-    "game_observe",
-    "game_action",
-    "game_action_sequence",
+    "start",
+    "observe",
+    "action",
+    "action_sequence",
 }
 
 
@@ -271,7 +271,7 @@ class GameRuntimeIsolationTests(unittest.TestCase):
                                 "id": "game-call",
                                 "type": "function",
                                 "function": {
-                                    "name": "game_start",
+                                    "name": "start",
                                     "arguments": "{}",
                                 },
                             }

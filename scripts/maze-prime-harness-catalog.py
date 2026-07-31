@@ -87,7 +87,7 @@ def discover() -> dict[str, Any]:
             "runtime_harness_id": approved.get("runtime_harness_id"),
         }
         if game_tools_only:
-            # Only the generated, certified default variant is approved. An
+            # Only the generated default variant is approved. An
             # arbitrary CLI version or feature toggle is a different boundary.
             configurable = []
         harnesses.append(

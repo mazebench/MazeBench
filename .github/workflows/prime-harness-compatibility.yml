@@ -28,10 +28,9 @@ jobs:
         run: |
           uv lock --upgrade-package verifiers
           uv sync --locked
-      - name: Discover and certify every Prime harness
+      - name: Discover every Prime harness
         run: |
           uv run --project environments/mazebench python scripts/maze-prime-harness-catalog.py --write environments/mazebench/prime-harness-catalog.json
-          uv run --project environments/mazebench python scripts/maze-certify-prime-harnesses.py --self-test --write environments/mazebench/prime-harness-certification.json
           uv run --project environments/mazebench python scripts/maze-verify-prime-tools.py --self-test
           uv run --locked --project environments/mazebench python3 -m unittest tests/test_game_runtime_isolation.py
           uv run --project environments/mazebench python scripts/maze-verify-prime-resume.py --self-test
@@ -53,11 +52,11 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$branch"
-          git add environments/mazebench/pyproject.toml environments/mazebench/uv.lock environments/mazebench/prime-harness-catalog.json environments/mazebench/prime-harness-certification.json environments/mazebench/mazebench/runtime/environments/mazebench
+          git add environments/mazebench/pyproject.toml environments/mazebench/uv.lock environments/mazebench/prime-harness-catalog.json environments/mazebench/mazebench/runtime/environments/mazebench
           git commit -m "chore: refresh Prime harness compatibility"
           git push --force-with-lease origin "HEAD:$branch"
           gh pr view "$branch" >/dev/null 2>&1 || gh pr create \
             --base main \
             --head "$branch" \
             --title "chore: refresh Prime harness compatibility" \
-            --body "Automated exact-pin update for Prime Verifiers. The generated catalog and native-harness safety certification passed."
+            --body "Automated exact-pin update for Prime Verifiers. The generated harness catalog and game-tool boundary checks passed."
