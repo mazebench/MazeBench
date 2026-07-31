@@ -5,7 +5,7 @@
   "verifiers_revision": "653bb14003b87e39588bde308fa8626d1038ce15",
   "boundary": {
     "model_runtime": "trusted-evaluator-relay",
-    "game_runtime": "networkless-evaluator-owned-docker-tool-server",
+    "game_runtime": "evaluator-owned-prime-sandbox-tool-server",
     "allowed_controls": [
       "game_action",
       "game_action_sequence",

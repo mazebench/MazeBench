@@ -259,8 +259,8 @@ const solverExports = createSolverExportService({
   rootDir: ROOT_DIR
 });
 
-// The game relay needs Prime, uv, and a live Docker daemon. Cache the probe for
-// 15 seconds so starting Docker and reloading is reflected quickly.
+// Prime agent runs need Prime and uv. Docker is still reported separately for
+// local container-mode runs.
 let agentEnvironmentCache = null;
 let agentEnvironmentPromise = null;
 

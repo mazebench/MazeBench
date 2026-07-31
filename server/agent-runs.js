@@ -577,12 +577,6 @@ function createAgentRunService({
     if (!environment.uv) {
       throw new Error("uv is required before launching an agent run.");
     }
-    if (!environment.docker_installed) {
-      throw new Error("Docker is required for the separate game sandbox.");
-    }
-    if (!environment.docker_running) {
-      throw new Error("Docker must be running before launching the game sandbox.");
-    }
   }
 
   // Launch the Docker daemon when it is installed but stopped. The daemon takes
@@ -4961,8 +4955,8 @@ function createAgentRunService({
     return { args, model, levelId, moves, gems, view, toolUse, autoRunTools, autoRunAllFrames, swarm, unlimited, allowQuit, autoQuit, mode, omniscient, hideNames, hideNamesSeed };
   }
 
-  // Agent Runner uses the local trusted evaluator so it can own the relay and
-  // the separate game sandbox for the entire rollout.
+  // Agent Runner uses the local trusted evaluator for the model relay. Verifiers
+  // provisions the game tool server in a separate Prime Sandbox per rollout.
   function buildPrimeCommand(params, runDir, runId, game) {
     const harness = normalizePrimeHarness(params.harness);
     const definition = PRIME_HARNESSES.get(harness);
@@ -4988,7 +4982,7 @@ function createAgentRunService({
     const hideNames = mode !== "vision" && (params.hide_names === true || params.hide_names === "true");
     const hideNamesSeed = resolvedHideNamesSeed(hideNames, params.hide_names_seed);
     if (params.hosted === true || params.hosted === "true") {
-      throw new Error("Hosted agent evaluations cannot provide the separate game sandbox.");
+      throw new Error("Hosted agent evaluations cannot provide the trusted model relay.");
     }
     const hosted = false;
     const requestedToolUse = String(params.tool_use || "").trim().toLowerCase();
@@ -5245,7 +5239,7 @@ function createAgentRunService({
             ? Math.max(0, Number(loadJson(path.join(runDir, PRIME_RESUME_CHECKPOINT_FILE), {})?.action_count) || 0)
             : 0,
           prime_execution: "local",
-          note: `${command.harnessLabel} uses a trusted evaluator-side model relay and receives only MazeBench's four game tools. The authoritative game server runs in a separate networkless Docker sandbox.`
+          note: `${command.harnessLabel} uses a trusted evaluator-side model relay and receives only MazeBench's four game tools. The authoritative game server runs in a separate Prime Sandbox.`
         };
       } else {
         let effectiveParams = params;

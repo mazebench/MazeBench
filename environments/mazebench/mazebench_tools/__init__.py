@@ -1,22 +1,20 @@
 """MazeBench taskset for untrusted harnesses using isolated MCP game controls.
 
-The harness and game run in separate sandboxes. This evaluator-owned toolset
-proxies four narrow controls to a disposable game container and mirrors only
-the trusted scoring snapshot. Nothing from MazeBench is copied into the harness.
+Prime runs this evaluator-owned tool server in a sandbox separate from the
+trusted model relay. The game lives in the tool-server sandbox and only four
+narrow controls cross that boundary.
 """
 
 from __future__ import annotations
 
 import asyncio
-import atexit
-import base64
 import hashlib
-import io
 import json
-import math
 import os
+import shlex
+import shutil
 import subprocess
-import tarfile
+import sys
 import tempfile
 import threading
 import time
@@ -26,6 +24,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal
 
 import verifiers.v1 as vf
+import verifiers.v1.mcp.launch as mcp_launch
 from mazebench.mazebench import (
     GAME_WON_GEM_COUNT,
     MazeBenchConfig,
@@ -34,27 +33,21 @@ from mazebench.mazebench import (
     MazeBenchTaskConfig,
     MazeBenchTaskData,
     MazeBenchTaskset,
-    VisionSession,
     evaluate_auto_quit,
     find_bridge_root,
     load_prime_resume_checkpoint,
     run_blocking,
     slim_status,
     target_text_for_row,
-    valid_action_commands,
-    write_live_actions,
 )
-from mcp.types import CallToolResult, ImageContent, TextContent
-from pydantic import Field, model_validator
-from verifiers.v1.errors import SandboxError
-from verifiers.v1.runtimes import Runtime, register
-from verifiers.v1.runtimes.docker import DockerRuntime, docker
+from pydantic import Field
+from verifiers.v1.mcp.server import ServerBase
+from verifiers.v1.runtimes import register
+from verifiers.v1.runtimes.prime import PrimeRuntime
 from verifiers.v1.runtimes.subprocess import SubprocessRuntime
 
 KIMI_CODE_IDENTICAL_ACTION_INTERVAL = 5
-GAME_FINALIZATION_WAIT_SECONDS = 10
-GAME_SANDBOX_FINALIZATION_SECONDS = 4
-GAME_CLEANUP_TIMEOUT_SECONDS = 4
+GAME_SANDBOX_FINALIZATION_SECONDS = 30
 MAX_ACTION_LENGTH = 128
 MAX_ACTION_SEQUENCE_LENGTH = 1_000
 BoundedAction = Annotated[str, Field(min_length=1, max_length=MAX_ACTION_LENGTH)]
@@ -62,135 +55,6 @@ BoundedActionSequence = Annotated[
     list[BoundedAction], Field(min_length=1, max_length=MAX_ACTION_SEQUENCE_LENGTH)
 ]
 _game_only_pairing = threading.local()
-
-
-def _game_container_name(artifact_nonce: str) -> str:
-    digest = hashlib.sha256(artifact_nonce.encode()).hexdigest()[:12]
-    return f"mazebench-game-{digest}"
-
-
-def _remove_game_container(name: str) -> None:
-    removed = subprocess.run(
-        ["docker", "rm", "--force", name],
-        capture_output=True,
-        text=True,
-        timeout=GAME_CLEANUP_TIMEOUT_SECONDS,
-        check=False,
-    )
-    if removed.returncode == 0:
-        return
-    listed = subprocess.run(
-        [
-            "docker",
-            "ps",
-            "-a",
-            "--filter",
-            f"name=^/{name}$",
-            "--format",
-            "{{.Names}}",
-        ],
-        capture_output=True,
-        text=True,
-        timeout=GAME_CLEANUP_TIMEOUT_SECONDS,
-        check=False,
-    )
-    if listed.returncode == 0 and name not in listed.stdout.split():
-        return
-    detail = (removed.stderr or removed.stdout or listed.stderr).strip()
-    raise RuntimeError(f"MazeBench could not remove the game sandbox: {detail[:500]}")
-
-
-class MazeBenchGameRuntime(DockerRuntime):
-    """A disposable game container with no host mounts or network."""
-
-    is_local = False
-
-    async def start(self) -> None:
-        try:
-            version = await docker("version", "--format", "{{.Server.Version}}")
-        except FileNotFoundError as error:
-            raise RuntimeError(
-                "MazeBench requires Docker for the isolated game sandbox."
-            ) from error
-        if version.exit_code != 0:
-            detail = (version.stderr or version.stdout).strip()
-            raise RuntimeError(
-                f"MazeBench could not reach Docker for the game sandbox: {detail}"
-            )
-
-        self._container = self.name
-        memory_mib = int(float(self.config.memory or 0) * 1024)
-        disk_mib = int(float(self.config.disk or 0) * 1024)
-        run = await docker(
-            "run",
-            "--detach",
-            "--network",
-            "none",
-            "--read-only",
-            "--tmpfs",
-            f"/app:rw,exec,nosuid,nodev,size={disk_mib}m",
-            "--tmpfs",
-            "/tmp:rw,noexec,nosuid,nodev,size=64m",
-            "--cap-drop",
-            "ALL",
-            "--security-opt",
-            "no-new-privileges",
-            "--pids-limit",
-            "256",
-            "--cpus",
-            str(self.config.cpu),
-            "--memory",
-            f"{memory_mib}m",
-            "--workdir",
-            self.config.workdir,
-            "--entrypoint",
-            "sleep",
-            "--name",
-            self._container,
-            self.config.image,
-            "infinity",
-        )
-        if run.exit_code != 0:
-            self._container = None
-            raise SandboxError(f"MazeBench game sandbox failed: {run.stderr.strip()}")
-        self.info.id = run.stdout.strip()[:12]
-
-    def cleanup(self) -> None:
-        """Remove the game container and report any unconfirmed cleanup."""
-
-        if self._container is None or self._stopped:
-            return
-        _remove_game_container(self._container)
-        self._stopped = True
-
-
-def _make_game_runtime(config: vf.DockerConfig, *, name: str) -> MazeBenchGameRuntime:
-    runtime = MazeBenchGameRuntime(config, name=name)
-    register(runtime)
-    return runtime
-
-
-def _game_runtime_archive() -> bytes:
-    """Package only the installed MazeBench runtime, never its source checkout."""
-
-    runtime = Path(__file__).resolve().parents[1] / "mazebench" / "runtime"
-    required = (
-        runtime / "scripts" / "maze-mcp-server.js",
-        runtime / "scripts" / "maze-mcp-client.js",
-        runtime / "scripts" / "codex-play.js",
-    )
-    if not all(path.is_file() for path in required):
-        raise RuntimeError("The packaged MazeBench game runtime is incomplete.")
-
-    archive = io.BytesIO()
-    with tarfile.open(fileobj=archive, mode="w:gz") as bundle:
-        for path in sorted(runtime.rglob("*")):
-            if path.is_symlink():
-                raise RuntimeError(
-                    "The packaged MazeBench game runtime contains a symlink."
-                )
-            bundle.add(path, arcname=path.relative_to(runtime), recursive=False)
-    return archive.getvalue()
 
 
 def _prime_harness_id() -> str:
@@ -220,51 +84,56 @@ def _bind_game_only_harness(harness: vf.Harness) -> None:
 
 
 class MazeBenchToolsetConfig(vf.ToolsetConfig):
-    """Private evaluator-owned paths supplied when a rollout tool server starts."""
+    """A dedicated Prime sandbox for one rollout's game tool server."""
 
     colocated: Literal[False] = False
-    runtime: vf.SubprocessConfig = Field(default_factory=vf.SubprocessConfig)
-    url: None = None
-    game_runtime: vf.DockerConfig = Field(
-        default_factory=lambda: vf.DockerConfig(
-            image="node:24-bookworm-slim",
+    runtime: vf.PrimeConfig = Field(
+        default_factory=lambda: vf.PrimeConfig(
+            image="python:3.13-slim",
             workdir="/app",
+            # Bootstrap and the authenticated rollout-state channel need egress.
+            # The model has no code-execution path inside this trusted sandbox.
+            network_access=True,
+            region="us",
             cpu=1,
             memory=2,
-            disk=4,
+            disk=5,
+            idle_timeout=1_800,
         )
     )
-    snapshot_path: str = ""
-    finalized_path: str = ""
+    url: None = None
     artifact_nonce: str = ""
-    resume_checkpoint_path: str = ""
+    resume_checkpoint: dict[str, Any] | None = None
     python_workspace_path: str = ""
     python_state_path: str = ""
     python_activity_path: str = ""
 
-    @model_validator(mode="after")
-    def validate_game_runtime(self) -> MazeBenchToolsetConfig:
-        runtime = self.game_runtime
-        if runtime.image != "node:24-bookworm-slim":
-            raise ValueError("The MazeBench game sandbox image is fixed.")
-        if runtime.workdir != "/app":
-            raise ValueError("The MazeBench game sandbox workdir must be /app.")
-        limits = (
-            (runtime.cpu, 0.1, 4),
-            (runtime.memory, 0.25, 8),
-            (runtime.disk, 0.25, 8),
-        )
-        if any(
-            value is None
-            or not math.isfinite(float(value))
-            or value < minimum
-            or value > maximum
-            for value, minimum, maximum in limits
-        ):
-            raise ValueError("The MazeBench game sandbox must have bounded resources.")
-        if runtime.gpu is not None:
-            raise ValueError("The MazeBench game sandbox does not allow GPU access.")
-        return self
+
+class MazeBenchPrimeRuntime(PrimeRuntime):
+    """Prime runtime whose MCP port uses the native TCP exposure."""
+
+    async def expose(self, port: int) -> str:
+        exposed = await self._client.expose(self.info.id, port, protocol="TCP")
+        endpoint = exposed.external_endpoint
+        if not endpoint:
+            raise RuntimeError("Prime did not return a TCP endpoint for MazeBench.")
+        return f"http://{endpoint}"
+
+
+_verifiers_make_runtime = mcp_launch.make_runtime
+
+
+def _make_mazebench_runtime(
+    config: vf.RuntimeConfig, name: str | None = None
+) -> vf.Runtime:
+    if not isinstance(config, vf.PrimeConfig):
+        return _verifiers_make_runtime(config, name)
+    runtime = MazeBenchPrimeRuntime(config, name)
+    register(runtime)
+    return runtime
+
+
+mcp_launch.make_runtime = _make_mazebench_runtime
 
 
 _current_rollout_tool_config: ContextVar[
@@ -278,14 +147,8 @@ class MazeBenchToolConfig(MazeBenchConfig):
     tools: MazeBenchToolsetConfig = Field(default_factory=MazeBenchToolsetConfig)
 
 
-class MazeBenchToolTraceState(vf.State):
-    """Deliberately empty while the harness is alive.
-
-    A CLI harness knows its interception bearer, so it can reach Verifiers'
-    state endpoint. Keeping this schema empty prevents it from reading or
-    forging authoritative game fields. Finalize replaces it after the harness
-    exits with the evaluator-owned MazeBenchState snapshot.
-    """
+class MazeBenchToolTraceState(MazeBenchState):
+    """State written only by the isolated evaluator-owned tool server."""
 
 
 def _atomic_json(path: str, value: dict[str, Any]) -> None:
@@ -327,30 +190,6 @@ def _public_observation(status: dict[str, Any], mode: str) -> dict[str, Any]:
             or ["undo", "reset", "go to level X Y"]
         ]
     return common
-
-
-def _vision_tool_result(result: dict[str, Any], frame: str) -> CallToolResult:
-    prefix = "data:image/png;base64,"
-    if not frame.startswith(prefix):
-        raise RuntimeError("MazeBench vision renderer did not return a PNG image")
-    encoded = frame[len(prefix) :]
-    base64.b64decode(encoded, validate=True)
-    observation = result.get("observation") or result.get("final_observation")
-    if not isinstance(observation, dict):
-        raise TypeError("MazeBench vision result did not contain an observation")
-    observation["frame_image"] = "attached:image/png"
-    return CallToolResult(
-        content=[
-            TextContent(type="text", text=json.dumps(result, indent=2)),
-            ImageContent(
-                type="image",
-                data=encoded,
-                mimeType="image/png",
-            ),
-        ],
-        structuredContent=result,
-        isError=False,
-    )
 
 
 def _tool_prompt(task: MazeBenchTaskData, *, python_tools: bool = False) -> str:
@@ -475,24 +314,17 @@ still be called exactly once by this new harness process.
 {instructions}"""
 
 
-class MazeBenchToolset(vf.Toolset[MazeBenchToolsetConfig]):
-    """Four model controls plus evaluator-only teardown for a game sandbox."""
+class MazeBenchToolset(vf.Toolset[MazeBenchToolsetConfig, MazeBenchToolTraceState]):
+    """Four model controls backed by a game in this tool-server sandbox."""
 
     TOOL_PREFIX = "game"
 
     async def setup_task(self, task: MazeBenchTaskData) -> None:
-        if not (
-            self.config.snapshot_path
-            and self.config.finalized_path
-            and self.config.artifact_nonce
-        ):
-            raise RuntimeError(
-                "MazeBench trusted scoring artifacts require a rollout binding."
-            )
+        if not self.config.artifact_nonce:
+            raise RuntimeError("MazeBench game tools require a rollout binding.")
         self.task = task
         self._lock = asyncio.Lock()
         self._closed = False
-        self._game_runtime: Runtime | None = None
         self._actions: list[dict[str, Any]] = []
         self._identical_action_interval = (
             KIMI_CODE_IDENTICAL_ACTION_INTERVAL
@@ -504,219 +336,113 @@ class MazeBenchToolset(vf.Toolset[MazeBenchToolsetConfig]):
         self._auto_quit: dict[str, Any] = {}
         self._scorecard: dict[str, Any] = {}
         self._status_error = ""
-        self._vision_session: VisionSession | None = None
-        runtime = _make_game_runtime(
-            self.config.game_runtime,
-            name=_game_container_name(self.config.artifact_nonce),
+        self._runtime_root = (
+            Path(__file__).resolve().parents[1] / "mazebench" / "runtime"
         )
-        self._game_runtime = runtime
-        try:
-            await runtime.start()
-            self._exit_stack.push_async_callback(runtime.stop)
-            await runtime.write(
-                "/tmp/mazebench-runtime.tar.gz", _game_runtime_archive()
+        required = (
+            self._runtime_root / "scripts" / "codex-play.js",
+            self._runtime_root / "scripts" / "maze-bridge.js",
+        )
+        if not all(path.is_file() for path in required):
+            raise RuntimeError("The packaged MazeBench game runtime is incomplete.")
+        self._node = Path(sys.executable).with_name("node")
+        if not self._node.is_file():
+            raise RuntimeError(
+                "The MazeBench tool sandbox has no packaged Node runtime."
             )
-            unpacked = await runtime.run(
-                [
-                    "sh",
-                    "-c",
-                    (
-                        "tar --no-same-owner -xzf /tmp/mazebench-runtime.tar.gz -C /app "
-                        "&& rm -f /tmp/mazebench-runtime.tar.gz && mkdir -p /app/run"
-                    ),
-                ],
-                {},
-            )
-            if unpacked.exit_code != 0:
-                raise RuntimeError("The MazeBench game runtime could not be installed.")
+        digest = hashlib.sha256(self.config.artifact_nonce.encode()).hexdigest()[:16]
+        self._run_dir = Path(tempfile.mkdtemp(prefix=f"mazebench-game-{digest}-"))
+        self._state_path = self._run_dir / "session.json"
+        self._exit_stack.callback(shutil.rmtree, self._run_dir, True)
 
-            token = uuid.uuid4().hex
-            self._game_env = {
-                "MAZEBENCH_ALLOW_QUIT": "1" if task.allow_quit else "0",
-                "MAZEBENCH_GAME_ID": task.game_id,
-                "MAZEBENCH_HIDE_NAMES": "1" if task.hide_names else "0",
-                "MAZEBENCH_HIDE_NAMES_SEED": task.hide_names_seed,
-                "MAZEBENCH_LEVEL_ID": task.level_id,
-                "MAZEBENCH_MCP_HTTP_TOKEN": token,
-                "MAZEBENCH_MODE": (
-                    task.observation_mode
-                    if task.observation_mode != "vision"
-                    else "text"
-                ),
-                "MAZEBENCH_MOVE_BUDGET": (
-                    "unlimited" if task.max_actions is None else str(task.max_actions)
-                ),
-                "MAZEBENCH_OMNISCIENT": "1" if task.omniscient else "0",
-                "MAZEBENCH_REPO_ROOT": "/app",
-                "MAZEBENCH_RESTRICTED_MODE": "1",
-                "MAZEBENCH_RUN_DIR": "/app/run",
-                "MAZEBENCH_SESSION_FILE": "/app/run/session.json",
-                "MAZEBENCH_VIEW": task.view,
-                "MAZEBENCH_YAW": str(task.yaw),
-            }
-            await runtime.run_background(
-                [
-                    "node",
-                    "/app/scripts/maze-mcp-server.js",
-                    "--http",
-                    "--port-file",
-                    "/app/run/mcp-http.json",
-                ],
-                self._game_env,
-                "/app/run/mcp-server.log",
-            )
+        args = [
+            "start",
+            "--repo-root",
+            str(self._runtime_root),
+            "--state",
+            str(self._state_path),
+            "--game",
+            task.game_id,
+            "--level",
+            task.level_id,
+            "--view",
+            task.view,
+            "--yaw",
+            str(task.yaw),
+            "--max-actions",
+            "unlimited" if task.max_actions is None else str(task.max_actions),
+        ]
+        if task.observation_mode == "json":
+            args.append("--json-observation")
+            if task.omniscient:
+                args.append("--omniscient")
+        if task.hide_names:
+            args.extend(["--hide-names", "--hide-names-seed", task.hide_names_seed])
+        if not task.allow_quit:
+            args.append("--no-quit")
+        await self._run_game(args)
+        self._sync_game_state()
+        if self.config.resume_checkpoint:
+            await self._restore_checkpoint(self.config.resume_checkpoint)
 
-            port_info: dict[str, Any] | None = None
-            for _attempt in range(200):
-                try:
-                    port_info = json.loads(
-                        (await runtime.read("/app/run/mcp-http.json")).decode()
-                    )
-                    break
-                except (SandboxError, UnicodeDecodeError, json.JSONDecodeError):
-                    await asyncio.sleep(0.05)
-            if not port_info or not int(port_info.get("port") or 0):
-                try:
-                    log = (await runtime.read("/app/run/mcp-server.log")).decode()
-                except (SandboxError, UnicodeDecodeError):
-                    log = ""
-                detail = log.strip().splitlines()[-1:] or ["no startup log"]
-                raise RuntimeError(
-                    f"The MazeBench game tool server did not start: {detail[0][:500]}"
-                )
-            self._game_url = f"http://127.0.0.1:{int(port_info['port'])}/{token}/lead"
-
-            await self._game_request(
-                "initialize",
-                {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": {"name": "mazebench-evaluator", "version": "1"},
-                },
-            )
-            listed = await self._game_request("tools/list")
-            names = {tool.get("name") for tool in listed.get("tools", [])}
-            expected = {
-                "game_start",
-                "game_observe",
-                "game_action",
-                "game_action_sequence",
-            }
-            if names != expected:
-                raise RuntimeError(
-                    "The MazeBench game tool server exposed unsafe tools."
-                )
-
-            started = await self._game_call("game_start")
-            if started.isError:
-                raise RuntimeError(
-                    "The MazeBench game sandbox could not start the game."
-                )
-            await self._sync_game_state()
-            self._exit_stack.push_async_callback(self._snapshot_before_game_stop)
-            self._atexit_callback = self.close_session
-            atexit.register(self._atexit_callback)
-            if self.config.resume_checkpoint_path:
-                await self._restore_checkpoint(self.config.resume_checkpoint_path)
-            self._write_snapshot()
-        except BaseException:  # cleanup must also survive task cancellation
-            await runtime.stop()
-            self._game_runtime = None
-            raise
-
-    def close_game_session(self) -> None:
-        runtime = getattr(self, "_game_runtime", None)
-        if runtime is not None:
-            runtime.cleanup()
-            self._game_runtime = None
-
-    def close_vision_session(self) -> None:
-        session = getattr(self, "_vision_session", None)
-        if isinstance(session, VisionSession):
-            session.close()
-            self._vision_session = None
-
-    def close_session(self) -> None:
-        self.close_game_session()
-        self.close_vision_session()
-        callback = getattr(self, "_atexit_callback", None)
-        if callback is not None:
-            atexit.unregister(callback)
-            self._atexit_callback = None
-
-    async def _game_request(
-        self, method: str, params: dict[str, Any] | None = None
+    async def _run_game(
+        self,
+        args: list[str],
+        *,
+        input_value: dict[str, Any] | None = None,
+        trusted_env: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        runtime = self._game_runtime
-        if runtime is None:
-            raise RuntimeError("The MazeBench game sandbox is not running.")
-        request = {
-            "jsonrpc": "2.0",
-            "id": uuid.uuid4().hex,
-            "method": method,
-            **({"params": params} if params is not None else {}),
+        env = {
+            "HOME": os.environ.get("HOME", "/tmp"),
+            "PATH": os.environ.get("PATH", ""),
+            "TMPDIR": os.environ.get("TMPDIR", "/tmp"),
+            **(trusted_env or {}),
         }
-        request_path = "/app/run/evaluator-request.json"
-        await runtime.write(request_path, json.dumps(request).encode())
-        result = await runtime.run(
+        completed = await asyncio.to_thread(
+            subprocess.run,
             [
-                "node",
-                "/app/scripts/maze-mcp-client.js",
-                self._game_url,
-                request_path,
+                str(self._node),
+                str(self._runtime_root / "scripts" / "codex-play.js"),
+                *args,
             ],
-            {},
+            cwd=self._runtime_root,
+            env=env,
+            input=(json.dumps(input_value) if input_value is not None else None),
+            text=True,
+            capture_output=True,
+            timeout=max(30, int(self.task.timeout_seconds)),
+            check=False,
         )
-        if result.exit_code != 0:
-            raise RuntimeError("The MazeBench game sandbox did not answer.")
-        try:
-            response = json.loads(result.stdout)
-        except json.JSONDecodeError as error:
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout).strip().splitlines()
             raise RuntimeError(
-                "The MazeBench game sandbox returned invalid data."
-            ) from error
-        if response.get("error"):
-            raise RuntimeError(
-                str(response["error"].get("message") or "game request failed")
+                (detail[-1] if detail else "MazeBench game command failed.")[:500]
             )
-        payload = response.get("result")
+        output = completed.stdout.strip()
+        if not output:
+            return {}
+        try:
+            payload = json.loads(output)
+        except json.JSONDecodeError as error:
+            raise RuntimeError("The MazeBench game returned invalid data.") from error
         if not isinstance(payload, dict):
-            raise TypeError("The MazeBench game sandbox returned invalid data.")
+            raise TypeError("The MazeBench game returned invalid data.")
         return payload
 
-    async def _game_call(
-        self, name: str, arguments: dict[str, Any] | None = None
-    ) -> CallToolResult:
-        result = await self._game_request(
-            "tools/call",
-            {"name": name, "arguments": arguments or {}},
-        )
-        return CallToolResult.model_validate(result)
-
-    async def _sync_game_state(self) -> None:
-        runtime = self._game_runtime
-        if runtime is None:
-            raise RuntimeError("The MazeBench game sandbox is not running.")
+    def _sync_game_state(self) -> None:
         try:
-            session = json.loads((await runtime.read("/app/run/session.json")).decode())
+            session = json.loads(self._state_path.read_text(encoding="utf-8"))
             initial = session["initial"]
             status = session["lastStatus"]
             actions = session["actions"]
-        except (
-            SandboxError,
-            UnicodeDecodeError,
-            json.JSONDecodeError,
-            KeyError,
-        ) as error:
-            raise RuntimeError(
-                "The MazeBench game sandbox state is unavailable."
-            ) from error
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, KeyError) as error:
+            raise RuntimeError("The MazeBench game state is unavailable.") from error
         if (
             not isinstance(initial, dict)
             or not isinstance(status, dict)
             or not isinstance(actions, list)
         ):
-            raise TypeError("The MazeBench game sandbox state is invalid.")
+            raise TypeError("The MazeBench game state is invalid.")
         self._initial = initial
         self._status = status
         self._actions = actions
@@ -724,8 +450,7 @@ class MazeBenchToolset(vf.Toolset[MazeBenchToolsetConfig]):
         scorecard = session.get("scorecard")
         self._scorecard = scorecard if isinstance(scorecard, dict) else {}
 
-    async def _restore_checkpoint(self, checkpoint_path: str) -> None:
-        checkpoint = load_prime_resume_checkpoint(checkpoint_path)
+    async def _restore_checkpoint(self, checkpoint: dict[str, Any]) -> None:
         expected_initial_hash = str(checkpoint.get("initial_board_state_hash") or "")
         if not expected_initial_hash or self._initial_hash != expected_initial_hash:
             raise ValueError(
@@ -737,31 +462,24 @@ class MazeBenchToolset(vf.Toolset[MazeBenchToolsetConfig]):
             if int(saved.get("turn") or 0) != index:
                 raise ValueError(f"Prime checkpoint is missing action {index}")
             if saved.get("valid", True) is not False and not saved.get("error"):
-                result = await self._game_call(
-                    "game_action",
-                    {"action": str(saved.get("command_text") or "")},
-                )
-                if result.isError:
-                    raise ValueError(f"Prime checkpoint action {index} was rejected")
-            else:
-                runtime = self._game_runtime
-                if runtime is None:
-                    raise RuntimeError("The MazeBench game sandbox is not running.")
-                recorded = await runtime.run(
+                await self._run_game(
                     [
-                        "node",
-                        "/app/scripts/codex-play.js",
+                        "action",
+                        "--state",
+                        str(self._state_path),
+                        str(saved.get("command_text") or ""),
+                    ]
+                )
+            else:
+                await self._run_game(
+                    [
                         "record-no-move",
                         "--state",
-                        "/app/run/session.json",
+                        str(self._state_path),
                     ],
-                    {**self._game_env, "MAZEBENCH_TRUSTED_NO_MOVE": "1"},
+                    trusted_env={"MAZEBENCH_TRUSTED_NO_MOVE": "1"},
                 )
-                if recorded.exit_code != 0:
-                    raise ValueError(
-                        f"Prime checkpoint action {index} could not be restored"
-                    )
-            await self._sync_game_state()
+            self._sync_game_state()
             status = self._status
             expected_hash = str(saved.get("status", {}).get("board_state_hash") or "")
             if (
@@ -818,38 +536,23 @@ class MazeBenchToolset(vf.Toolset[MazeBenchToolsetConfig]):
         )
         return state.model_dump()
 
-    def _write_snapshot(self) -> None:
-        if self.config.snapshot_path:
-            _atomic_json(
-                self.config.snapshot_path,
-                {
-                    "version": 1,
-                    "artifact_nonce": self.config.artifact_nonce,
-                    "state": self._state_payload(),
-                },
-            )
-        write_live_actions(list(self._actions))
+    def _publish_state(self) -> None:
+        for key, value in self._state_payload().items():
+            setattr(self.state, key, value)
 
     async def _finalize_game(self) -> None:
-        runtime = self._game_runtime
-        if runtime is None or self._scorecard:
+        if self._scorecard:
             return
         async with asyncio.timeout(GAME_SANDBOX_FINALIZATION_SECONDS):
-            finalized = await runtime.run(
+            await self._run_game(
                 [
-                    "node",
-                    "/app/scripts/codex-play.js",
                     "finalize",
                     "--state",
-                    "/app/run/session.json",
+                    str(self._state_path),
                 ],
-                {**self._game_env, "MAZEBENCH_TRUSTED_FINALIZE": "1"},
+                trusted_env={"MAZEBENCH_TRUSTED_FINALIZE": "1"},
             )
-            if finalized.exit_code != 0:
-                raise RuntimeError(
-                    "The MazeBench game sandbox could not finalize the run."
-                )
-            await self._sync_game_state()
+            self._sync_game_state()
 
     def _invalidate_scoring(self, error: Exception | str) -> None:
         self._status_error = str(error)
@@ -858,24 +561,11 @@ class MazeBenchToolset(vf.Toolset[MazeBenchToolsetConfig]):
         self._auto_quit = {}
 
     async def _snapshot_before_game_stop(self) -> None:
-        if self._game_runtime is None and not self._scorecard:
-            self._invalidate_scoring(
-                "The MazeBench game sandbox stopped before finalization."
-            )
-        elif self._game_runtime is not None:
-            try:
-                await self._finalize_game()
-            except Exception as error:  # noqa: BLE001 - scoring must fail closed
-                self._invalidate_scoring(error)
-        self._write_snapshot()
-        if self.config.finalized_path:
-            _atomic_json(
-                self.config.finalized_path,
-                {
-                    "version": 1,
-                    "artifact_nonce": self.config.artifact_nonce,
-                },
-            )
+        try:
+            await self._finalize_game()
+        except Exception as error:  # noqa: BLE001 - scoring must fail closed
+            self._invalidate_scoring(error)
+        self._publish_state()
 
     async def _finish_if_needed(self) -> None:
         if not self._terminal() or self._scorecard:
@@ -884,8 +574,6 @@ class MazeBenchToolset(vf.Toolset[MazeBenchToolsetConfig]):
             await self._finalize_game()
         except Exception as error:  # noqa: BLE001 - evaluator detail stays private
             self._invalidate_scoring(error)
-        finally:
-            await asyncio.to_thread(self.close_game_session)
 
     def _result(self, *, error: str = "") -> dict[str, Any]:
         result = {
@@ -919,22 +607,8 @@ class MazeBenchToolset(vf.Toolset[MazeBenchToolsetConfig]):
         observation_workspace = self._sync_python_observation(result)
         if observation_workspace:
             result["observation_workspace"] = observation_workspace
-        if self.task.observation_mode != "vision":
-            return result
-        try:
-            if not isinstance(self._vision_session, VisionSession):
-                self._vision_session = await run_blocking(VisionSession, task=self.task)
-            frame = await run_blocking(
-                self._vision_session.frame_for_actions,
-                valid_action_commands(self._actions),
-            )
-        except Exception as error:
-            await run_blocking(self.close_vision_session)
-            raise RuntimeError("MazeBench vision renderer is unavailable") from error
-        response = _vision_tool_result(result, frame)
-        if result.get("ended"):
-            await run_blocking(self.close_vision_session)
-        return response
+        self._publish_state()
+        return result
 
     def _sync_python_observation(self, result: dict[str, Any]) -> dict[str, Any] | None:
         workspace_value = self.config.python_workspace_path
@@ -987,20 +661,12 @@ class MazeBenchToolset(vf.Toolset[MazeBenchToolsetConfig]):
 
     @vf.tool
     async def finalize(self) -> dict[str, bool]:
-        """Finalize trusted scoring and stop the game sandbox. Evaluator use only."""
+        """Finalize trusted scoring. Evaluator use only."""
 
         async with self._lock:
-            try:
-                if not self._closed:
-                    await self._snapshot_before_game_stop()
-            except BaseException:  # noqa: BLE001 - cleanup must survive cancellation
-                self._closed = True
-                try:
-                    await asyncio.to_thread(self.close_session)
-                finally:
-                    raise
+            if not self._closed:
+                await self._snapshot_before_game_stop()
             self._closed = True
-            await asyncio.to_thread(self.close_session)
             return {"finalized": True}
 
     @vf.tool
@@ -1044,15 +710,13 @@ class MazeBenchToolset(vf.Toolset[MazeBenchToolsetConfig]):
         if not self.task.allow_quit and raw.strip().casefold() == "quit":
             return "Quit is disabled for this run.", False
 
-        response = await self._game_call("game_action", {"action": raw})
-        await self._sync_game_state()
         error = ""
-        if response.isError:
-            content = response.content[0] if response.content else None
-            error = str(getattr(content, "text", "Game action failed.")).splitlines()[
-                0
-            ][:300]
+        try:
+            await self._run_game(["action", "--state", str(self._state_path), raw])
+        except RuntimeError as action_error:
+            error = str(action_error).splitlines()[0][:300]
             self._status_error = error
+        self._sync_game_state()
 
         if not self._terminal():
             evaluation = evaluate_auto_quit(
@@ -1066,7 +730,6 @@ class MazeBenchToolset(vf.Toolset[MazeBenchToolsetConfig]):
             if evaluation is not None:
                 self._auto_quit = evaluation
         await self._finish_if_needed()
-        self._write_snapshot()
         return error, len(self._actions) > action_count_before
 
     @vf.tool
@@ -1116,32 +779,59 @@ class MazeBenchToolset(vf.Toolset[MazeBenchToolsetConfig]):
                     normalized, include_intermediate_observations
                 )
             else:
-                response = await self._game_call(
-                    "game_action_sequence",
-                    {
+                action_count_before = len(self._actions)
+                response = await self._run_game(
+                    ["action-sequence", "--state", str(self._state_path)],
+                    input_value={
                         "actions": normalized,
                         "include_intermediate_observations": (
                             include_intermediate_observations
                         ),
                     },
                 )
-                await self._sync_game_state()
-                if response.isError or not isinstance(response.structuredContent, dict):
-                    content = response.content[0] if response.content else None
-                    error = str(
-                        getattr(content, "text", "Game action sequence failed.")
+                self._sync_game_state()
+                raw_steps = response.get("steps")
+                if not isinstance(raw_steps, list):
+                    raise TypeError(
+                        "The MazeBench action sequence returned invalid data."
                     )
-                    result = {
-                        "requested_count": len(normalized),
-                        "attempted_count": 0,
-                        "completed_count": 0,
-                        "stopped_early": True,
-                        "stop_reason": "action_error",
-                        "steps": [],
-                        "error": error.splitlines()[0][:300],
-                    }
-                else:
-                    result = dict(response.structuredContent)
+                result = {
+                    "requested_count": len(normalized),
+                    "attempted_count": int(response.get("attempted_count") or 0),
+                    "completed_count": len(self._actions) - action_count_before,
+                    "stopped_early": int(response.get("attempted_count") or 0)
+                    < len(normalized),
+                    "stop_reason": str(response.get("stop_reason") or "completed"),
+                    "steps": [
+                        {
+                            key: step[key]
+                            for key in (
+                                "index",
+                                "action",
+                                "recorded",
+                                "action_count_before",
+                                "action_count_after",
+                                "error",
+                            )
+                            if key in step
+                        }
+                        for step in raw_steps
+                        if isinstance(step, dict)
+                    ],
+                }
+                if include_intermediate_observations:
+                    new_actions = self._actions[action_count_before:]
+                    result["intermediate_observations"] = [
+                        {
+                            "index": index,
+                            "action": str(record.get("command_text") or ""),
+                            "observation": _public_observation(
+                                record.get("status") or {},
+                                self.task.observation_mode,
+                            ),
+                        }
+                        for index, record in enumerate(new_actions[:-1], start=1)
+                    ]
 
             if not self._terminal():
                 evaluation = evaluate_auto_quit(
@@ -1155,7 +845,6 @@ class MazeBenchToolset(vf.Toolset[MazeBenchToolsetConfig]):
                 if evaluation is not None:
                     self._auto_quit = evaluation
             await self._finish_if_needed()
-            self._write_snapshot()
             if self.task.observation_mode == "vision":
                 result.pop("intermediate_observations", None)
             result["final_observation"] = _public_observation(
@@ -1222,6 +911,47 @@ MazeBenchToolset.action.__annotations__["action"] = BoundedAction
 MazeBenchToolset.action_sequence.__annotations__["actions"] = BoundedActionSequence
 
 
+_verifiers_install_in_sandbox = mcp_launch._install_in_sandbox
+
+
+async def _install_mazebench_in_sandbox(server: ServerBase, runtime: vf.Runtime) -> str:
+    """Install this packaged environment without requiring a Verifiers checkout."""
+
+    if not isinstance(server, MazeBenchToolset):
+        return await _verifiers_install_in_sandbox(server, runtime)
+    source_dir = mcp_launch._source_dir(type(server))
+    if source_dir is None:
+        raise RuntimeError("The MazeBench tool server package source is unavailable.")
+    source = Path(source_dir)
+    root = "/tmp/vf-src"
+    await runtime.write(
+        f"{root}/{source.name}.tar.gz",
+        mcp_launch._tar_source(source),
+    )
+    venv = "/tmp/vf-venv"
+    extras = ",".join(type(server).EXTRAS)
+    package = f"{root}/{source.name}" + (f"[{extras}]" if extras else "")
+    setup = (
+        f"{mcp_launch._ENSURE_UV}; set -e; "
+        "command -v git >/dev/null 2>&1 || "
+        "(apt-get update -qq && apt-get install -y -qq git ca-certificates); "
+        f"tar -xzf {root}/{shlex.quote(source.name)}.tar.gz -C {root} && "
+        f"uv venv {venv} && "
+        f"uv pip install --python {venv} {shlex.quote(package)}"
+    )
+    result = await runtime.run(["sh", "-c", setup], {})
+    if result.exit_code != 0:
+        detail = (result.stderr or result.stdout).strip()[-2_000:]
+        raise RuntimeError(f"MazeBench tool server install failed: {detail}")
+    return f"{venv}/bin/python"
+
+
+# The pinned Verifiers launcher only uploads Verifiers from a source checkout.
+# MazeBench is self-contained and pins Verifiers itself, so scope that bootstrap
+# exception to this server while leaving every other server on the stock path.
+mcp_launch._install_in_sandbox = _install_mazebench_in_sandbox
+
+
 def _workspace_snapshot(
     workspace: Path, limit: int = 2_000
 ) -> dict[str, tuple[int, int]]:
@@ -1271,19 +1001,15 @@ class MazeBenchToolsetWithPython(MazeBenchToolset):
     async def setup_task(self, task: MazeBenchTaskData) -> None:
         await super().setup_task(task)
         self._python_lock = asyncio.Lock()
-        try:
-            report = await run_blocking(self._python_request, "preflight", "", 5)
-            _atomic_json(
-                str(
-                    Path(self.config.python_activity_path).with_name(
-                        "python-sandbox-preflight.json"
-                    )
-                ),
-                report,
-            )
-        except Exception:
-            self.close_session()
-            raise
+        report = await run_blocking(self._python_request, "preflight", "", 5)
+        _atomic_json(
+            str(
+                Path(self.config.python_activity_path).with_name(
+                    "python-sandbox-preflight.json"
+                )
+            ),
+            report,
+        )
 
     def _python_request(
         self, operation: str, code: str, timeout_seconds: int
@@ -1316,8 +1042,7 @@ class MazeBenchToolsetWithPython(MazeBenchToolset):
             cwd=root,
             input=json.dumps(request),
             text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
             timeout=timeout_seconds + 15,
             check=False,
         )
@@ -1342,7 +1067,7 @@ class MazeBenchToolsetWithPython(MazeBenchToolset):
                 "Isolated Python scratchpad returned invalid output."
             ) from error
         if not isinstance(result, dict):
-            raise RuntimeError("Isolated Python scratchpad returned invalid output.")
+            raise TypeError("Isolated Python scratchpad returned invalid output.")
         return result
 
     @vf.tool
@@ -1455,18 +1180,7 @@ class MazeBenchToolTask(
                 "MazeBench tool tasks require the fixed evaluator-side model relay."
             )
 
-        if not self.config.tools.snapshot_path or not self.config.tools.finalized_path:
-            raise RuntimeError("MazeBench trusted artifact storage is not configured.")
-        artifact_root = Path(self.config.tools.snapshot_path).parent
-        rollout_root = artifact_root / f"rollout-{trace.id}"
-        rollout_root.mkdir(parents=True, mode=0o700, exist_ok=False)
-        tool_config = self.config.tools.model_copy(
-            update={
-                "snapshot_path": str(rollout_root / "trusted-state.json"),
-                "finalized_path": str(rollout_root / "trusted-finalized.json"),
-                "artifact_nonce": trace.id,
-            }
-        )
+        tool_config = self.config.tools.model_copy(update={"artifact_nonce": trace.id})
         _current_rollout_tool_config.set((self, trace.id, tool_config))
 
     def tool_servers(self) -> list[vf.Toolset]:
@@ -1489,37 +1203,11 @@ class MazeBenchToolTask(
         return False
 
     async def finalize(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
-        try:
-            artifact_root = Path(self.config.tools.snapshot_path).parent
-            rollout_root = artifact_root / f"rollout-{trace.id}"
-            snapshot_path = rollout_root / "trusted-state.json"
-            finalized_path = rollout_root / "trusted-finalized.json"
-            deadline = time.monotonic() + GAME_FINALIZATION_WAIT_SECONDS
-            while not finalized_path.is_file() and time.monotonic() < deadline:
-                await asyncio.sleep(0.05)
-            finalized = json.loads(finalized_path.read_text(encoding="utf-8"))
-            expected_marker = {
-                "version": 1,
-                "artifact_nonce": trace.id,
-            }
-            if finalized != expected_marker:
-                raise ValueError("trusted game finalization marker is invalid")
-            payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
-            if payload.get("artifact_nonce") != trace.id:
-                raise ValueError("trusted game snapshot belongs to another rollout")
-            trusted_state = MazeBenchState.model_validate(payload["state"])
-            snapshot_path.unlink()
-            finalized_path.unlink()
-            rollout_root.rmdir()
-        except Exception:  # noqa: BLE001 - unavailable trusted state must score zero
-            trusted_state = MazeBenchState(
+        if not trace.state.maze_scorecard:
+            trace.state = MazeBenchToolTraceState(
                 game_lost=True,
                 maze_status_error="trusted game state unavailable",
             )
-
-        # The harness knows the interception bearer and could forge /state.
-        # Replace it unconditionally with evaluator-owned data before scoring.
-        trace.state = trusted_state
         await MazeBenchTaskBehavior.finalize(self, trace, runtime)
 
 
@@ -1550,6 +1238,15 @@ class MazeBenchToolTaskset(vf.Taskset[MazeBenchToolTask, MazeBenchToolConfig]):
                 "MazeBench tool tasks require the fixed evaluator-side model relay."
             )
         tasks = MazeBenchTaskset(self.config, _trusted_task_generation=True).load()
+        checkpoint = (
+            load_prime_resume_checkpoint(self.config.resume_checkpoint_path)
+            if self.config.resume_checkpoint_path
+            else None
+        )
+        if checkpoint:
+            checkpoint = {
+                key: value for key, value in checkpoint.items() if key != "_path"
+            }
         live_actions_path = os.environ.get("MAZEBENCH_LIVE_ACTIONS_PATH", "").strip()
         if live_actions_path and len(tasks) == 1:
             base = Path(live_actions_path).resolve().parent
@@ -1567,14 +1264,9 @@ class MazeBenchToolTaskset(vf.Taskset[MazeBenchToolTask, MazeBenchToolConfig]):
         )
         for task in tasks:
             data = task.data
-            artifact_root = base / f"trusted-tool-{data.idx}"
             tool_config = self.config.tools.model_copy(
                 update={
-                    "snapshot_path": str(artifact_root / "state-template.json"),
-                    "finalized_path": str(artifact_root / "marker-template.json"),
-                    "resume_checkpoint_path": str(
-                        self.config.resume_checkpoint_path or ""
-                    ),
+                    "resume_checkpoint": checkpoint,
                     "python_workspace_path": (
                         str(python_workspace) if self.config.python_tools else ""
                     ),

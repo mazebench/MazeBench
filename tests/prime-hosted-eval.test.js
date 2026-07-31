@@ -126,7 +126,7 @@ print("chat blank retry ready")`
 
   assert.throws(
     () => parseArgs(["--hosted", "--env-dir", environmentDir, "--out", outDir]),
-    /Hosted agent evaluations cannot provide the separate game sandbox/
+    /Hosted agent evaluations cannot provide the trusted model relay/
   );
   const options = parseArgs([
     "--env-dir",

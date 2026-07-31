@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+import socket
 from contextlib import AsyncExitStack
 from typing import Literal
 from urllib.parse import urlsplit
 
 import httpx
-import mazebench_tools
+from mazebench.mazebench import (
+    VisionSession,
+    run_blocking,
+    valid_action_commands,
+    write_live_actions,
+)
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from openai import AsyncOpenAI
@@ -73,13 +80,20 @@ class MazeBenchCodexHarness(Harness[MazeBenchRelayHarnessConfig]):
                 "The MazeBench model relay must run in the trusted evaluator."
             )
         endpoint_url = urlsplit(endpoint)
-        if endpoint_url.scheme != "http" or endpoint_url.hostname not in {
+        local_endpoint = endpoint_url.scheme == "http" and endpoint_url.hostname in {
             "127.0.0.1",
             "localhost",
             "::1",
-        }:
+        }
+        tunneled_endpoint = (
+            endpoint_url.scheme == "https"
+            and bool(endpoint_url.hostname)
+            and endpoint_url.username is None
+            and endpoint_url.password is None
+        )
+        if not local_endpoint and not tunneled_endpoint:
             raise RuntimeError(
-                "The MazeBench model relay requires a local interception endpoint."
+                "The MazeBench model relay requires a local or framework HTTPS endpoint."
             )
         if set(mcp_urls) != {"game"}:
             raise RuntimeError(
@@ -87,13 +101,27 @@ class MazeBenchCodexHarness(Harness[MazeBenchRelayHarnessConfig]):
             )
         game_url = mcp_urls["game"]
         parsed_game_url = urlsplit(game_url)
-        if parsed_game_url.scheme != "http" or parsed_game_url.hostname not in {
-            "127.0.0.1",
-            "localhost",
-            "::1",
-        }:
+        local_game_url = (
+            parsed_game_url.scheme == "http"
+            and parsed_game_url.hostname in {"127.0.0.1", "localhost", "::1"}
+        )
+        prime_tcp_game_url = (
+            parsed_game_url.scheme == "http"
+            and bool(parsed_game_url.hostname)
+            and parsed_game_url.hostname.endswith(".l4.sandbox.pinfra.io")
+            and parsed_game_url.port is not None
+            and parsed_game_url.username is None
+            and parsed_game_url.password is None
+        )
+        remote_game_url = prime_tcp_game_url or (
+            parsed_game_url.scheme == "https"
+            and bool(parsed_game_url.hostname)
+            and parsed_game_url.username is None
+            and parsed_game_url.password is None
+        )
+        if not local_game_url and not remote_game_url:
             raise RuntimeError(
-                "The MazeBench game capability must remain evaluator-local."
+                "The MazeBench game capability must use a local or Prime endpoint."
             )
 
         system_prompt, prompt = self.resolve_prompt(trace.task.data)
@@ -107,26 +135,41 @@ class MazeBenchCodexHarness(Harness[MazeBenchRelayHarnessConfig]):
 
         async with AsyncExitStack() as stack:
             game_finalized = False
-            container_name = mazebench_tools._game_container_name(trace.id)
+            vision_session: VisionSession | None = None
 
-            async def remove_unfinalized_game() -> None:
-                if not game_finalized:
-                    await asyncio.to_thread(
-                        mazebench_tools._remove_game_container, container_name
-                    )
+            async def close_vision() -> None:
+                nonlocal vision_session
+                if vision_session is not None:
+                    await run_blocking(vision_session.close)
+                    vision_session = None
 
-            stack.push_async_callback(remove_unfinalized_game)
+            stack.push_async_callback(close_vision)
             http_client = await stack.enter_async_context(
                 httpx.AsyncClient(
-                    timeout=httpx.Timeout(30.0, read=300.0),
+                    timeout=httpx.Timeout(5.0, read=300.0),
                     follow_redirects=False,
                     trust_env=False,
                 )
             )
+            if remote_game_url:
+                connection_deadline = asyncio.get_running_loop().time() + 90
+                while True:
+                    try:
+                        await asyncio.to_thread(
+                            socket.getaddrinfo,
+                            parsed_game_url.hostname,
+                            parsed_game_url.port or 443,
+                        )
+                        break
+                    except socket.gaierror:
+                        if asyncio.get_running_loop().time() >= connection_deadline:
+                            raise
+                        await asyncio.sleep(1)
             read, write, *_ = await stack.enter_async_context(
                 streamable_http_client(game_url, http_client=http_client)
             )
             session = await stack.enter_async_context(ClientSession(read, write))
+            await session.initialize()
             finalization_deadline: float | None = None
 
             async def finalize_game() -> None:
@@ -143,10 +186,10 @@ class MazeBenchCodexHarness(Harness[MazeBenchRelayHarnessConfig]):
                         raise RuntimeError(
                             "The MazeBench game sandbox did not finalize."
                         )
+                write_live_actions(list(trace.state.maze_actions))
                 game_finalized = True
 
             stack.push_async_callback(finalize_game)
-            await session.initialize()
             listed = (await session.list_tools()).tools
             listed_names = {tool.name for tool in listed}
             if listed_names != SERVER_TOOL_NAMES:
@@ -217,11 +260,14 @@ class MazeBenchCodexHarness(Harness[MazeBenchRelayHarnessConfig]):
                                     result = await session.call_tool(
                                         dispatch[name], arguments
                                     )
+                                    write_live_actions(list(trace.state.maze_actions))
                                     text_parts: list[str] = []
+                                    returned_image = False
                                     for block in result.content:
                                         if block.type == "text":
                                             text_parts.append(block.text)
                                         elif block.type == "image":
+                                            returned_image = True
                                             image_parts.extend(
                                                 [
                                                     {
@@ -236,6 +282,47 @@ class MazeBenchCodexHarness(Harness[MazeBenchRelayHarnessConfig]):
                                                     },
                                                 ]
                                             )
+                                    if (
+                                        not returned_image
+                                        and getattr(
+                                            trace.task.data,
+                                            "observation_mode",
+                                            "",
+                                        )
+                                        == "vision"
+                                    ):
+                                        if vision_session is None:
+                                            vision_session = await run_blocking(
+                                                VisionSession,
+                                                task=trace.task.data,
+                                            )
+                                        frame = await run_blocking(
+                                            vision_session.frame_for_actions,
+                                            valid_action_commands(
+                                                trace.state.maze_actions
+                                            ),
+                                        )
+                                        prefix = "data:image/png;base64,"
+                                        if not frame.startswith(prefix):
+                                            raise RuntimeError(
+                                                "MazeBench vision renderer did not return a PNG image"
+                                            )
+                                        encoded = frame[len(prefix) :]
+                                        base64.b64decode(encoded, validate=True)
+                                        image_parts.extend(
+                                            [
+                                                {
+                                                    "type": "text",
+                                                    "text": f"Image returned by {name}:",
+                                                },
+                                                {
+                                                    "type": "image_url",
+                                                    "image_url": {
+                                                        "url": frame,
+                                                    },
+                                                },
+                                            ]
+                                        )
                                     content = "\n".join(text_parts) or (
                                         json.dumps(result.structuredContent)
                                         if result.structuredContent is not None

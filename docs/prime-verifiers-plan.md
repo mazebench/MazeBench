@@ -37,9 +37,9 @@ The Python `games/maze/player.py` implementation is useful but currently behind 
 The JavaScript engine remains the source of truth. Local model evaluations use
 the `mazebench-tools` taskset and a fixed evaluator-side relay that advertises
 only `game_start`, `game_observe`, `game_action`, and
-`game_action_sequence`. Each rollout starts an independent networkless Docker
-container for the authoritative Node tool server. The container has no host
-mounts; the model receives only sanitized tool schemas and results.
+`game_action_sequence`. Each Toolset declares an independent Prime Sandbox
+runtime for the authoritative Node game and MCP server. The model receives
+only sanitized tool schemas and results.
 
 The direct native `mazebench` taskset and arbitrary coding harnesses are
 retired. Hosted Training still uses the separate classic `load_environment()`

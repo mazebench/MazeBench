@@ -201,7 +201,7 @@ function parseArgs(argv) {
     throw new Error(`Prime harness "${opts.harness}" has not passed MazeBench compatibility certification.`);
   }
   if (opts.hosted) {
-    throw new Error("Hosted agent evaluations cannot provide the separate game sandbox.");
+    throw new Error("Hosted agent evaluations cannot provide the trusted model relay.");
   }
   if (opts.toolUse === "offline") {
     throw new Error("Agent computation tools are unavailable in the game-tools-only boundary.");

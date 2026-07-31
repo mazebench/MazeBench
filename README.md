@@ -31,7 +31,7 @@ The site opens at `http://localhost:3000`.
 
 The Agent page sends model turns through a fixed evaluator-side relay that
 advertises exactly four game-control tools. The authoritative game and its MCP
-server run in a separate, networkless Docker sandbox with no host mounts. The
+server run in a separate Prime Sandbox configured as the Toolset runtime. The
 model receives no shell, filesystem, subprocess, network, repository, hidden
 state, or scoring capability. Replay video also requires a Chromium-family
 browser and `ffmpeg`. Run `mazebench --help` for commands and options.

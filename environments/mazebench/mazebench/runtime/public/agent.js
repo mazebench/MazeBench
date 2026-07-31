@@ -752,27 +752,7 @@
       });
       return "uv setup is needed.";
     }
-    if (!environment.docker_installed) {
-      presentProviderSetup({
-        logo: '<img src="/logos/prime.png" alt="" width="128" height="128">',
-        title: "Install Docker Desktop",
-        message: "MazeBench runs the game tool server in a separate networkless Docker sandbox.",
-        command: "open https://docs.docker.com/desktop/setup/install/mac-install/",
-        docs: "https://docs.docker.com/desktop/setup/install/mac-install/",
-        retry: checkPrimeAvailability
-      });
-      return "Docker setup is needed.";
-    }
-    presentProviderSetup({
-      logo: '<img src="/logos/prime.png" alt="" width="128" height="128">',
-      title: "Start Docker Desktop",
-      message: "Docker is installed, but its daemon is not running yet.",
-      command: "open -a Docker",
-      note: "Wait until Docker finishes starting, then check again.",
-      docs: "https://docs.docker.com/desktop/setup/install/mac-install/",
-      retry: checkPrimeAvailability
-    });
-    return "Docker must be running.";
+    return "Prime and uv are ready.";
   }
 
   function closeProviderSetup() {
@@ -800,11 +780,11 @@
     try {
       const environment = await refreshEnvironment();
       if (requestId !== primeAvailabilityRequest || state.execution !== "prime") return environment;
-      if (!environment.prime || !environment.uv || !environment.docker_running) {
+      if (!environment.prime || !environment.uv) {
         setStatus(showPrimeSetup(environment), true);
         return environment;
       }
-      setStatus("Prime, uv, and Docker are ready.");
+      setStatus("Prime and uv are ready.");
       return environment;
     } catch (error) {
       if (requestId !== primeAvailabilityRequest || state.execution !== "prime") return null;
@@ -1762,7 +1742,7 @@
     try {
       if (body.kind === "prime") {
         const environment = await refreshEnvironment();
-        if (!environment?.prime || !environment?.uv || !environment?.docker_running) {
+        if (!environment?.prime || !environment?.uv) {
           setStatus(showPrimeSetup(environment), true);
           return;
         }

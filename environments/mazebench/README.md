@@ -104,6 +104,13 @@ uv run eval mazebench-tools \
   --rich false
 ```
 
+`MazeBenchToolsetConfig.runtime` is a typed `PrimeConfig`, so Verifiers—not a
+shell environment variable—owns sandbox provisioning and teardown. The default
+uses a 1 CPU, 2 GB RAM, 5 GB disk Prime Sandbox in the `us` region. No Docker
+daemon is involved. Select the observation surface independently with
+`--taskset.observation-mode ascii`, `json`, or `vision`; add
+`--taskset.omniscient true` only for omniscient JSON.
+
 The direct native `mazebench` taskset is retired because arbitrary harnesses
 could bypass the separate game server. The Hub environment identifier remains
 available to the distinct Hosted Training workflow described below.
@@ -293,16 +300,16 @@ The local `/agent` page permits one catalog-certified route: a fixed model loop
 running inside the trusted evaluator. It advertises only the four game tools;
 coding harnesses and tools with shell, filesystem, subprocess, or network
 capabilities are rejected. The task sent to the model contains no repository
-or checkpoint path, the live trace state is an empty strict schema, and final
-scoring replaces it with an evaluator-owned snapshot after the model exits.
+or checkpoint path. Only the isolated tool server can update trusted game state
+through Verifiers' per-rollout state channel.
 
-For every agentic rollout, `mazebench-tools` creates a second, bounded Docker
-sandbox for the authoritative Node game server. It uploads only the packaged
-game runtime, attaches no host or repository mounts, verifies that the server
-advertises exactly `game_start`, `game_observe`, `game_action`, and
-`game_action_sequence`, and proxies those controls through the trusted relay.
-The model never receives the container URL or token. The evaluator copies back
-only the trusted state needed for scoring before destroying the game container.
+For every agentic rollout, `mazebench-tools` declares a bounded
+`PrimeConfig` as its Toolset runtime. Verifiers provisions that separate
+sandbox, installs the packaged environment, launches the MCP server there, and
+destroys the sandbox with the rollout. The Node game runs inside the same
+sandbox as its trusted tool server. The model never receives the server URL and
+the relay advertises only `game_start`, `game_observe`, `game_action`, and
+`game_action_sequence`.
 
 Scoring is finalized after the model exits. The agent-facing server exposes
 start, observe, action, and action-sequence tools, but no scorecard or

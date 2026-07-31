@@ -151,11 +151,14 @@ try {
     toolsTasksetSource,
     /Field\(min_length=1, max_length=MAX_ACTION_SEQUENCE_LENGTH\)/
   );
-  assert.match(toolsTasksetSource, /class MazeBenchToolTraceState\(vf\.State\)/);
-  assert.match(toolsTasksetSource, /class MazeBenchGameRuntime\(DockerRuntime\)/);
-  assert.match(toolsTasksetSource, /"--network",\s*"none"/);
+  assert.match(toolsTasksetSource, /class MazeBenchToolTraceState\(MazeBenchState\)/);
   assert.match(toolsTasksetSource, /colocated: Literal\[False\] = False/);
-  assert.match(toolsTasksetSource, /runtime: vf\.SubprocessConfig/);
+  assert.match(toolsTasksetSource, /runtime: vf\.PrimeConfig/);
+  assert.match(toolsTasksetSource, /region="us"/);
+  assert.match(toolsTasksetSource, /class MazeBenchPrimeRuntime\(PrimeRuntime\)/);
+  assert.match(toolsTasksetSource, /protocol="TCP"/);
+  assert.match(toolsTasksetSource, /mcp_launch\._install_in_sandbox = _install_mazebench_in_sandbox/);
+  assert.doesNotMatch(toolsTasksetSource, /DockerRuntime|game_runtime:/);
   assert.match(toolsTasksetSource, /url: None = None/);
   assert.match(toolsTasksetSource, /python_tools: Literal\[False\] = False/);
   assert.match(toolsTasksetSource, /class MazeBenchToolTask\(/);
@@ -175,7 +178,7 @@ try {
   );
   assert.equal((codexHarnessSource.match(/trust_env=False/g) || []).length, 2);
   assert.equal((codexHarnessSource.match(/follow_redirects=False/g) || []).length, 2);
-  assert.match(codexHarnessSource, /scheme != "http"/);
+  assert.match(codexHarnessSource, /remote_game_url/);
   assert.match(codexHarnessSource, /streamable_http_client\(game_url/);
   assert.match(codexHarnessSource, /if set\(dispatch\) != GAME_TOOL_NAMES/);
   assert.match(codexHarnessSource, /if type\(runtime\) is not SubprocessRuntime/);
@@ -356,7 +359,7 @@ try {
         runDir,
         "--hosted"
       ]),
-    /Hosted agent evaluations cannot provide the separate game sandbox/
+    /Hosted agent evaluations cannot provide the trusted model relay/
   );
   assert.throws(
     () =>

@@ -37,10 +37,9 @@ view. Names are not hidden unless `--hide-names` is passed explicitly. JSON
 arrays are kept on one line in the terminal. Pipe the output or pass `--once`
 to print a single snapshot instead of starting an interactive session.
 
-Agent runs require Docker. The model receives four game tools through a trusted
-relay, while the authoritative game runs in a separate networkless container
-with no host mounts. Replay video requires a Chromium-family browser and
-`ffmpeg`.
+Agent runs require Prime Sandbox access. The model receives four game tools
+through a trusted relay, while the authoritative game and tool server run in a
+separate sandbox. Replay video requires a Chromium-family browser and `ffmpeg`.
 
 [Website](https://mazebench.com) ·
 [Source](https://github.com/mazebench/MazeBenchEngine)

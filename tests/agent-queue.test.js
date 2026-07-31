@@ -114,10 +114,12 @@ try {
     /uv is required/
   );
   agentEnvironmentState = { ...agentEnvironmentState, uv: true, docker: false, docker_running: false };
-  assert.throws(
-    () => service.launchRuns({ kind: "prime", model_name: "preflight-test", max_turns: 1 }),
-    /Docker must be running/
-  );
+  const [sandboxRun] = service.launchRuns({
+    kind: "prime",
+    model_name: "preflight-test",
+    max_turns: 1
+  });
+  launchedIds.push(sandboxRun.id);
   agentEnvironmentState = { ...agentEnvironmentState, docker: true, docker_running: true };
 
   assert.deepEqual(replayMessageForCommandText("up"), { command: "move", direction: "up" });
@@ -505,7 +507,7 @@ try {
       hosted: true,
       video: false
     }),
-    /Hosted agent evaluations cannot provide the separate game sandbox/
+    /Hosted agent evaluations cannot provide the trusted model relay/
   );
 
   const [visionPrime] = service.launchRuns({
