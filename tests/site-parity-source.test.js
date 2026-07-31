@@ -446,6 +446,56 @@ assert.match(playCore, /`\$\{nextPath\}\$\{window\.location\.search \|\| ""\}\$\
 assert.match(playCore, /\{ \.\.\.\(window\.history\.state \|\| \{\}\), levelId: app\.currentLevelId \}/);
 assert.match(playScript, /if \(app\.hostOwnsWorldMapNavigation === true\) return;/);
 assert.match(playScript, /function playWorldMapTransitionSnapshot\(\)/);
+assert.match(playScript, /function playWorldMapResetSnapshot\(outgoingLevel\)/);
+assert.match(
+  playScript,
+  /app\.rememberHorizontalNeighborLevelState\?\.\(outgoingResetLevel\)/
+);
+assert.match(playScript, /outgoingResetLevel,\s*incomingLevel/);
+assert.doesNotMatch(playScript, /outgoingResetLevel:\s*outgoingLevel/);
+
+const resetSnapshotStart = playScript.indexOf(
+  "function playWorldMapResetSnapshot(outgoingLevel)"
+);
+const resetSnapshotEnd = playScript.indexOf(
+  "function finishPlayWorldMapSwitch",
+  resetSnapshotStart
+);
+assert.notEqual(resetSnapshotStart, -1, "missing world-map reset snapshot helper");
+assert.notEqual(resetSnapshotEnd, -1, "missing world-map reset snapshot helper boundary");
+const resetSnapshotSource = playScript
+  .slice(resetSnapshotStart, resetSnapshotEnd)
+  .trim();
+const outgoingRoomState = { levelId: "level_AxA", actors: [{ type: "box", x: 8, y: 2 }] };
+const roomEntryState = { levelId: "level_AxA", actors: [{ type: "box", x: 3, y: 2 }] };
+const preparedEntryState = { ...roomEntryState, prepared: true };
+let preparedResetInput = null;
+const playWorldMapResetSnapshot = vm.runInNewContext(`(${resetSnapshotSource})`, {
+  app: {
+    levelEntrySnapshot: roomEntryState,
+    prepareLevelRenderState: (snapshot) => {
+      preparedResetInput = snapshot;
+      return preparedEntryState;
+    }
+  }
+});
+assert.equal(
+  playWorldMapResetSnapshot(outgoingRoomState),
+  preparedEntryState,
+  "teleport exits must reset the outgoing room to its entry state"
+);
+assert.equal(preparedResetInput, roomEntryState);
+
+const fallbackWorldMapResetSnapshot = vm.runInNewContext(`(${resetSnapshotSource})`, {
+  app: {
+    levelEntrySnapshot: null,
+    prepareLevelRenderState: () => {
+      throw new Error("a missing room-entry snapshot must use the outgoing state");
+    }
+  }
+});
+assert.equal(fallbackWorldMapResetSnapshot(outgoingRoomState), outgoingRoomState);
+
 assert.match(playScript, /const roomDistance = Math\.hypot\(dx, dy\)/);
 assert.match(playScript, /prewarmAdjacentLevelTransition\?\.\(transitionData, durationMs\)/);
 assert.match(playScript, /startLevelTransition\(null, null, dx, dy/);
