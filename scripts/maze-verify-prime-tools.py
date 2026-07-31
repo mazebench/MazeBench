@@ -18,7 +18,23 @@ from mazebench_tools import (
 from verifiers.v1.decorators import discover_decorated
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_TOOLS = {"start", "observe", "action", "action_sequence"}
+EXPECTED_TOOLS = {
+    "start",
+    "observe",
+    "up",
+    "down",
+    "left",
+    "right",
+    "rotate_camera_up",
+    "rotate_camera_down",
+    "rotate_camera_left",
+    "rotate_camera_right",
+    "undo",
+    "reset",
+    "go_to_level",
+    "quit",
+    "action_sequence",
+}
 
 
 async def verify() -> None:
@@ -55,7 +71,7 @@ async def verify() -> None:
     try:
         await toolset.setup_task(task.data)
         started = await toolset.start()
-        moved = await toolset.action("up")
+        moved = await toolset.up()
         assert started["observation"]["observation_mode"] == "ascii"
         assert moved["actions_used"] == 1
         assert toolset.state.maze_scorecard

@@ -5224,7 +5224,7 @@ function createAgentRunService({
             ? Math.max(0, Number(loadJson(path.join(runDir, PRIME_RESUME_CHECKPOINT_FILE), {})?.action_count) || 0)
             : 0,
           prime_execution: "local",
-          note: `${command.harnessLabel} is an unmodified Verifiers harness in its own Prime Sandbox and receives MazeBench's four game tools from a separate Prime Sandbox.`
+          note: `${command.harnessLabel} is an unmodified Verifiers harness in its own Prime Sandbox and receives only MazeBench's named game controls from a separate Prime Sandbox.`
         };
       } else {
         let effectiveParams = params;

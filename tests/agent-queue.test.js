@@ -225,7 +225,7 @@ try {
   assert.match(livePrimeMeta.command, /--max-turns 750/);
   assert.equal(livePrimeMeta.harness, "null");
   assert.equal(livePrimeMeta.harness_taskset, "mazebench-tools");
-  assert.match(livePrimeMeta.note, /four game tools/);
+  assert.match(livePrimeMeta.note, /named game controls/);
   const livePrimeRunDir = path.join(rootDir, "outputs", "maze-local", "site", livePrime.id);
   fs.writeFileSync(
     path.join(livePrimeRunDir, "actions.jsonl"),
