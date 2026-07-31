@@ -43,6 +43,13 @@ function iceBlockCell(elevation = 0) {
   };
 }
 
+function blockAssetCell(elevation = 0) {
+  return {
+    type: "block_asset",
+    layers: [{ type: "block_asset", elevation }]
+  };
+}
+
 function iceSlopeCell(direction = "right", elevation = 0) {
   return {
     type: "ice_slope",
@@ -1151,6 +1158,83 @@ asyncTests.push(
   assert.equal(transition?.sourceType, "wall");
   assert.equal(transition?.sourceElevation, 3);
 }
+
+asyncTests.push(
+  (async () => {
+    const width = 16;
+    const height = 16;
+    const edgePlayer = { type: "player", x: 2, y: 0, elevation: 4, removed: false };
+    const terrain = createTerrain(width, height);
+    const nextTerrain = createTerrain(width, height);
+    terrain[0][2] = blockAssetCell(3);
+    nextTerrain[height - 1][2] = blockAssetCell(3);
+    const app = createGameplayApp([edgePlayer], {
+      currentLevelId: "level_CxI",
+      height,
+      terrain,
+      width,
+      loadLevelState: async (levelId) => ({
+        levelId,
+        levelLabel: levelId,
+        width,
+        height,
+        terrain: nextTerrain,
+        actors: []
+      })
+    });
+    const transition = app.edgeTransitionForMove(0, -1);
+
+    assert.equal(transition?.nextLevelId, "level_CxH");
+    assert.deepEqual([transition?.targetX, transition?.targetY], [2, height - 1]);
+    assert.equal(transition?.sourceType, "block_asset");
+    assert.equal(transition?.sourceElevation, 4);
+
+    const didTransition = await app.transitionToAdjacentLevel(transition);
+    const incomingPlayer = app.state.actors.find((actor) => app.isPlayerActor(actor));
+
+    assert.equal(didTransition, true);
+    assert.equal(app.currentLevelId, "level_CxH");
+    assert.deepEqual(
+      [incomingPlayer.x, incomingPlayer.y, incomingPlayer.elevation],
+      [2, height - 1, 4]
+    );
+  })()
+);
+
+asyncTests.push(
+  (async () => {
+    const edgePlayer = { type: "player", x: 7, y: 2, elevation: 3, removed: false };
+    const nextTerrain = createTerrain(8, 8);
+    nextTerrain[2][0] = blockAssetCell(3);
+    const app = createGameplayApp([edgePlayer], {
+      currentLevelId: "level_AxA",
+      loadLevelState: async (levelId) => ({
+        levelId,
+        levelLabel: levelId,
+        width: 8,
+        height: 8,
+        terrain: nextTerrain,
+        actors: []
+      })
+    });
+
+    const didTransition = await app.transitionToAdjacentLevel({
+      player: edgePlayer,
+      nextLevelId: "level_BxA",
+      sourceType: "punch",
+      sourceElevation: 3,
+      targetElevation: 3,
+      dx: 1,
+      dy: 0,
+      targetX: 0,
+      targetY: 2,
+      continuePunchSlide: true
+    });
+
+    assert.equal(didTransition, false);
+    assert.equal(app.currentLevelId, "level_AxA");
+  })()
+);
 
 {
   const edgePlayer = { type: "player", x: 7, y: 3, elevation: 0, removed: false };

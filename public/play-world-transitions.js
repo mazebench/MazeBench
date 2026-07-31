@@ -345,7 +345,8 @@
         layer?.type === "wall" ||
         layer?.type === "ice_block" ||
         layer?.type === "ice_slope" ||
-        layer?.type === "shrub"
+        layer?.type === "shrub" ||
+        layer?.type === "block_asset"
       ) {
         return elevation + 1;
       }
@@ -376,7 +377,11 @@
     function transitionTerrainLayerBlocksElevation(layer, x, y, elevation, options = {}) {
       const layerElevation = layer?.elevation ?? 0;
 
-      if (layer?.type === "wall" || layer?.type === "ice_block") {
+      if (
+        layer?.type === "wall" ||
+        layer?.type === "ice_block" ||
+        layer?.type === "block_asset"
+      ) {
         return layerElevation === elevation;
       }
 
