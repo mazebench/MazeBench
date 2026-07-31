@@ -1,5 +1,4 @@
 const assert = require("node:assert/strict");
-const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -57,48 +56,11 @@ try {
     /except Exception as error:/,
     "Prime live telemetry failures must not fail the model request"
   );
-  const mazeHarnessSource = fs.readFileSync(
-    path.join(__dirname, "..", "environments", "mazebench", "mazebench", "harness.py"),
-    "utf8"
+  assert.equal(
+    fs.existsSync(path.join(environmentDir, "mazebench", "harness.py")),
+    false,
+    "MazeBench must use framework-owned harnesses"
   );
-  assert.match(mazeHarnessSource, /from verifiers\.v1\.harnesses\.null\.harness import/);
-  assert.match(mazeHarnessSource, /PROGRAM_SOURCE/);
-  assert.doesNotMatch(mazeHarnessSource, /client\.responses\.create\(/);
-  const retryProbe = execFileSync(
-    "uv",
-    [
-      "run",
-      "--project",
-      path.join(__dirname, "..", "environments", "mazebench"),
-      "python",
-      "-c",
-      `import asyncio
-from types import SimpleNamespace
-from mazebench.harness import PROGRAM_SOURCE
-scope = {"__name__": "maze_harness_test"}
-exec(compile(PROGRAM_SOURCE, "maze-harness-program.py", "exec"), scope)
-class Completions:
-    def __init__(self, contents): self.contents, self.calls = iter(contents), 0
-    async def create(self, **kwargs):
-        self.calls += 1
-        message = SimpleNamespace(content=next(self.contents), tool_calls=None, refusal=None)
-        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
-async def probe():
-    completions = Completions(["", "", "up"])
-    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
-    message = await scope["chat"](client, "openai/gpt-5.6-sol", [], [])
-    assert message.content == "up" and completions.calls == 3
-    completions = Completions(["", "", ""])
-    client = SimpleNamespace(chat=SimpleNamespace(completions=completions))
-    try: await scope["chat"](client, "openai/gpt-5.6-sol", [], [])
-    except RuntimeError as error: assert "not sent to the environment" in str(error)
-    else: raise AssertionError("three blank responses must fail before the environment")
-asyncio.run(probe())
-print("chat blank retry ready")`
-    ],
-    { encoding: "utf8" }
-  );
-  assert.match(retryProbe, /chat blank retry ready/);
 
   assert.equal(
     providerReasoningText([
@@ -126,7 +88,7 @@ print("chat blank retry ready")`
 
   assert.throws(
     () => parseArgs(["--hosted", "--env-dir", environmentDir, "--out", outDir]),
-    /Hosted agent evaluations cannot provide the trusted model relay/
+    /Hosted agent evaluations do not run the V1 harness and Toolset route/
   );
   const options = parseArgs([
     "--env-dir",
@@ -200,7 +162,7 @@ print("chat blank retry ready")`
   const sampling = JSON.parse(argv[argv.indexOf("-S") + 1]);
   assert.deepEqual(sampling, { max_tokens: 512, reasoning_effort: "low" });
   assert.deepEqual(verifierTurnBudgetArgs(options), [
-    "--taskset.max-actions", "750", "--max-turns", "3000"
+    "--env.taskset.max-actions", "750", "--env.agent.max-turns", "3000"
   ]);
 
   const unlimitedOptions = parseArgs([
@@ -210,7 +172,7 @@ print("chat blank retry ready")`
   ]);
   assert.equal(unlimitedOptions.unlimited, true);
   assert.deepEqual(verifierTurnBudgetArgs(unlimitedOptions), [
-    "--taskset.max-actions", "None", "--max-turns", "None"
+    "--env.taskset.max-actions", "None", "--env.agent.max-turns", "None"
   ]);
   const unlimitedArgv = hostedEvalArgs(unlimitedOptions);
   const unlimitedEnvArgs = JSON.parse(unlimitedArgv[unlimitedArgv.indexOf("-a") + 1]);

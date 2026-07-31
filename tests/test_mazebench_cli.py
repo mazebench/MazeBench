@@ -91,7 +91,7 @@ class CliCommandTests(TestCase):
 
     @mock.patch.object(mazebench_cli, "_run", return_value=0)
     @mock.patch.object(mazebench_cli, "_require")
-    def test_prime_eval_uses_only_the_fixed_game_relay(self, _require, run_command):
+    def test_prime_eval_uses_the_native_framework_harness(self, _require, run_command):
         root = Path("/maze")
 
         result = mazebench_cli.run_prime(
@@ -105,15 +105,13 @@ class CliCommandTests(TestCase):
         command = run_command.call_args.args[0]
         self.assertIn("mazebench-tools", command)
         self.assertEqual(
-            command[command.index("--harness.id") + 1],
-            "mazebench_codex_harness",
+            command[command.index("--env.agent.harness.id") + 1],
+            "null",
         )
         self.assertEqual(
-            command[command.index("--harness.runtime.type") + 1], "subprocess"
+            command[command.index("--env.agent.runtime.type") + 1], "prime"
         )
-        self.assertEqual(
-            command[command.index("--taskset.tools.colocated") + 1], "false"
-        )
-        self.assertEqual(command[command.index("--taskset.python-tools") + 1], "false")
+        self.assertNotIn("--env.taskset.tools.colocated", command)
+        self.assertNotIn("--env.taskset.python-tools", command)
         with self.assertRaisesRegex(mazebench_cli.CliError, "replace the certified"):
             mazebench_cli.run_prime(root, ["eval"], {}, ["--harness.id", "bash"])

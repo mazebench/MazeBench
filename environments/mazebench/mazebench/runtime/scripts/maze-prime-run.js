@@ -40,8 +40,8 @@ const PRIME_HARNESSES = new Map(HARNESS_CATALOG.harnesses.map((entry) => [entry.
 const MAZEBENCH_ENV_DIR = path.join(ROOT_DIR, "environments", "mazebench");
 const ISOLATED_AGENT_ROUTES = new Map([
   ["null", {
-    adapter: "trusted_model_relay",
-    runtimeHarnessId: "mazebench_codex_harness",
+    adapter: "native",
+    runtimeHarnessId: "null",
     defaultConfig: {}
   }]
 ]);
@@ -201,7 +201,7 @@ function parseArgs(argv) {
     throw new Error(`Prime harness "${opts.harness}" has not passed MazeBench compatibility certification.`);
   }
   if (opts.hosted) {
-    throw new Error("Hosted agent evaluations cannot provide the trusted model relay.");
+    throw new Error("Hosted agent evaluations do not run the V1 harness and Toolset route.");
   }
   if (opts.toolUse === "offline") {
     throw new Error("Agent computation tools are unavailable in the game-tools-only boundary.");
@@ -379,16 +379,16 @@ function hostedEvalArgs(opts) {
 
 function verifierTurnBudgetArgs(opts) {
   if (opts.unlimited) {
-    return ["--taskset.max-actions", "None", "--max-turns", "None"];
+    return ["--env.taskset.max-actions", "None", "--env.agent.max-turns", "None"];
   }
   // Verifiers counts every sampled graph branch against max_turns. Provider
   // continuation-state retokenization can fork the graph without advancing
   // the user simulator, so keep this as a safety ceiling and let the
   // environment's exact max_actions value enforce the requested move budget.
   return [
-    "--taskset.max-actions",
+    "--env.taskset.max-actions",
     String(opts.maxTurns),
-    "--max-turns",
+    "--env.agent.max-turns",
     String(Math.max(opts.maxTurns + 16, opts.maxTurns * 4))
   ];
 }
@@ -705,14 +705,10 @@ function runHostedEval(opts) {
 function agenticHarnessArgs(opts) {
   const definition = requireIsolatedAgentRoute(opts.harness, harnessDefinition(opts.harness));
   const argv = [
-    "--harness.id",
+    "--env.agent.harness.id",
     definition.runtime_harness_id,
-    "--harness.runtime.type",
-    "subprocess",
-    "--taskset.tools.colocated",
-    "False",
-    "--taskset.python-tools",
-    "False",
+    "--env.agent.runtime.type",
+    "prime",
     "--push",
     "False"
   ];
@@ -720,7 +716,7 @@ function agenticHarnessArgs(opts) {
 }
 
 // mazebench is a Verifiers v1 taskset, run via `uv run eval` (NOT `prime eval
-// run`, the legacy env-module loader). --max-turns is the per-rollout move
+// run`, the legacy env-module loader). --env.agent.max-turns is the per-rollout move
 // budget; we fix examples/rollouts at 1 (one maze, one attempt) so the run is
 // simply "make N moves and stop". -o keeps results inside the run dir.
 function runEval(opts) {
@@ -750,11 +746,11 @@ function runEval(opts) {
   argv.push(
     "-r",
     "1",
-    "--taskset.num-examples",
+    "--env.taskset.num-examples",
     "1",
-    "--taskset.start-level-id",
+    "--env.taskset.start-level-id",
     opts.levelId,
-    "--taskset.game-won-gem-count",
+    "--env.taskset.game-won-gem-count",
     String(opts.gameWonGemCount),
     ...verifierTurnBudgetArgs(opts),
     "--rich",
@@ -764,34 +760,34 @@ function runEval(opts) {
   );
 
   if (opts.resumeCheckpoint) {
-    argv.push("--taskset.resume-checkpoint-path", opts.resumeCheckpoint);
+    argv.push("--env.taskset.resume-checkpoint-path", opts.resumeCheckpoint);
   }
 
   argv.push(...agenticHarnessArgs(opts));
 
   if (opts.vision) {
-    argv.push("--taskset.observation-mode", "vision");
+    argv.push("--env.taskset.observation-mode", "vision");
   } else if (opts.observationMode === "json") {
-    argv.push("--taskset.observation-mode", "json");
-    if (opts.omniscient) argv.push("--taskset.omniscient", "True");
+    argv.push("--env.taskset.observation-mode", "json");
+    if (opts.omniscient) argv.push("--env.taskset.omniscient", "True");
   }
   if (!opts.vision && opts.hideNames) {
-    argv.push("--taskset.hide-names", "True");
-    if (opts.hideNamesSeed) argv.push("--taskset.hide-names-seed", opts.hideNamesSeed);
+    argv.push("--env.taskset.hide-names", "True");
+    if (opts.hideNamesSeed) argv.push("--env.taskset.hide-names-seed", opts.hideNamesSeed);
   }
 
   if (!opts.allowQuit) {
-    argv.push("--taskset.allow-quit", "False");
+    argv.push("--env.taskset.allow-quit", "False");
   }
   if (opts.autoQuit) {
     argv.push(
-      "--taskset.auto-quit",
+      "--env.taskset.auto-quit",
       "True",
-      "--taskset.auto-quit-threshold",
+      "--env.taskset.auto-quit-threshold",
       String(opts.autoQuitThreshold),
-      "--taskset.auto-quit-mode",
+      "--env.taskset.auto-quit-mode",
       opts.autoQuitMode,
-      "--taskset.auto-quit-window",
+      "--env.taskset.auto-quit-window",
       String(opts.autoQuitWindow)
     );
   }

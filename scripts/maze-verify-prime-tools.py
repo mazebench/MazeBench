@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-"""Smoke-test the isolated Prime Sandbox game-tool boundary."""
+"""Smoke-test the harness-agnostic Prime Sandbox game Toolset."""
 
 from __future__ import annotations
 
@@ -10,20 +9,16 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import verifiers.v1 as vf
-from mazebench_harnesses.codex import (
-    MazeBenchCodexHarness,
-    MazeBenchRelayHarnessConfig,
-)
 from mazebench_tools import (
     MazeBenchToolConfig,
     MazeBenchToolsetConfig,
+    MazeBenchToolTask,
     MazeBenchToolTaskset,
 )
 from verifiers.v1.decorators import discover_decorated
-from verifiers.v1.runtimes.subprocess import SubprocessRuntime
 
 ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_TOOLS = {"start", "observe", "action", "action_sequence", "finalize"}
+EXPECTED_TOOLS = {"start", "observe", "action", "action_sequence"}
 
 
 async def verify() -> None:
@@ -45,19 +40,14 @@ async def verify() -> None:
             max_actions=2,
         )
     )
-    harness = MazeBenchCodexHarness(MazeBenchRelayHarnessConfig())
     task = taskset.load()[0]
+    assert isinstance(task, MazeBenchToolTask)
+    assert task.NEEDS_CONTAINER is True
     assert task.data.repo_root == ""
     assert task.data.resume_checkpoint_path == ""
     assert str(ROOT) not in task.data.model_dump_json()
 
-    await task.setup(
-        SimpleNamespace(
-            id="prime-sandbox-self-test",
-            agent=SimpleNamespace(harness=harness.config),
-        ),
-        SubprocessRuntime(vf.SubprocessConfig(), name="trusted-relay-self-test"),
-    )
+    await task.setup(SimpleNamespace(id="prime-sandbox-self-test"), SimpleNamespace())
     toolset = task.tool_servers()[0]
     names = {function.__name__ for function in discover_decorated(toolset, "tool")}
     assert names == EXPECTED_TOOLS
@@ -66,10 +56,8 @@ async def verify() -> None:
         await toolset.setup_task(task.data)
         started = await toolset.start()
         moved = await toolset.action("up")
-        finalized = await toolset.finalize()
         assert started["observation"]["observation_mode"] == "ascii"
         assert moved["actions_used"] == 1
-        assert finalized == {"finalized": True}
         assert toolset.state.maze_scorecard
         assert str(ROOT) not in json.dumps(started)
     finally:
@@ -81,7 +69,7 @@ def main() -> None:
     parser.add_argument("--self-test", action="store_true")
     parser.parse_args()
     asyncio.run(verify())
-    print("MazeBench isolated custom harness boundary ready (Prime Sandbox).")
+    print("MazeBench native harness boundary ready (Prime Sandbox).")
 
 
 if __name__ == "__main__":

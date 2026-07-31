@@ -34,22 +34,23 @@ The Python `games/maze/player.py` implementation is useful but currently behind 
 
 ## Current Benchmark Architecture
 
-The JavaScript engine remains the source of truth. Local model evaluations use
-the `mazebench-tools` taskset and a fixed evaluator-side relay that advertises
-only `game_start`, `game_observe`, `game_action`, and
-`game_action_sequence`. Each Toolset declares an independent Prime Sandbox
-runtime for the authoritative Node game and MCP server. The model receives
-only sanitized tool schemas and results.
+The JavaScript engine remains the source of truth. Model evaluations use the
+`mazebench-tools` taskset with an unmodified, framework-selected harness. The
+Toolset advertises only `game_start`, `game_observe`, `game_action`, and
+`game_action_sequence` and declares an independent Prime Sandbox runtime for
+the authoritative Node game and MCP server. The model receives only sanitized
+tool schemas and results.
 
-The direct native `mazebench` taskset and arbitrary coding harnesses are
-retired. Hosted Training still uses the separate classic `load_environment()`
-adapter because the model is remote and receives messages rather than a host
-agent runtime.
+The direct native `mazebench` taskset is retired. The app currently approves
+the stock `null` harness because it has MCP support and no agent shell or
+filesystem tools; MazeBench itself contains no harness adapter. Hosted Training
+still uses the separate classic `load_environment()` adapter because the model
+is remote and receives messages rather than a host agent runtime.
 
 Before publishing to the Environments Hub:
    - Ensure `environments/mazebench/pyproject.toml` includes all package files and data.
    - Run `prime env install mazebench`.
-   - Run the certified local game-relay smoke tests.
+   - Run the native-harness and isolated-Toolset smoke tests.
    - Update the package version.
    - Push with `prime env push --path ./environments/mazebench --visibility PUBLIC` or `PRIVATE`.
 

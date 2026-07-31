@@ -1,42 +1,27 @@
-#!/usr/bin/env python3
-"""Certify MazeBench's sole game-tools-only model route."""
+"""Certify the native Verifiers harness route used by MazeBench."""
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 from pathlib import Path
-from unittest.mock import patch
 
 from mazebench.mazebench import MazeBenchConfig, MazeBenchTaskset
-from mazebench_harnesses.claude import MazeBenchClaudeCodeHarness
-from mazebench_harnesses.cli import MazeBenchCLIHarness
-from mazebench_harnesses.codex import (
-    GAME_TOOL_NAMES,
-    MazeBenchCodexHarness,
-    MazeBenchRelayHarnessConfig,
+from mazebench_tools import (
+    MazeBenchToolConfig,
+    MazeBenchToolset,
+    MazeBenchToolsetConfig,
+    MazeBenchToolTask,
+    MazeBenchToolTaskset,
 )
-from mazebench_harnesses.kimi import MazeBenchKimiCodeHarness
-from mazebench_tools import MazeBenchToolConfig, MazeBenchToolTaskset
-from pydantic import ValidationError
-from verifiers.v1.env import EnvConfig, Environment
+from verifiers.v1.configs.agent import AgentConfig
+from verifiers.v1.decorators import discover_decorated
+from verifiers.v1.envs.single_agent import SingleAgentEnv, SingleAgentEnvConfig
 from verifiers.v1.harness import HarnessConfig
-from verifiers.v1.runtimes import SubprocessConfig
+from verifiers.v1.runtimes import PrimeConfig
 
 ROOT = Path(__file__).resolve().parents[1]
 CATALOG_PATH = ROOT / "environments" / "mazebench" / "prime-harness-catalog.json"
-
-
-def paired_taskset() -> tuple[MazeBenchCodexHarness, MazeBenchToolTaskset]:
-    taskset = MazeBenchToolTaskset(MazeBenchToolConfig(num_examples=1, max_actions=1))
-    harness = MazeBenchCodexHarness(
-        MazeBenchRelayHarnessConfig(
-            id="mazebench_codex_harness",
-            runtime=SubprocessConfig(),
-        )
-    )
-    return harness, taskset
 
 
 def certify() -> dict:
@@ -45,10 +30,9 @@ def certify() -> dict:
     assert len(launchable) == 1
     entry = launchable[0]
     assert entry["id"] == "null"
-    assert entry["adapter"] == "trusted_model_relay"
-    assert entry["runtime_harness_id"] == "mazebench_codex_harness"
+    assert entry["adapter"] == "native"
+    assert entry["runtime_harness_id"] == "null"
     assert entry["default_config"] == {}
-    assert entry["configurable"] == []
 
     try:
         MazeBenchTaskset(MazeBenchConfig(num_examples=1))
@@ -57,68 +41,27 @@ def certify() -> dict:
     else:
         raise AssertionError("the direct in-process game taskset was accepted")
 
-    with patch.dict(
-        os.environ,
-        {
-            "MAZEBENCH_PRIME_HARNESS": "codex",
-            "MAZEBENCH_PRIME_HARNESS_ADAPTER": "codex_mcp",
-            "MAZEBENCH_PRIME_HARNESS_CATALOG": "forged",
-        },
-    ):
-        unbound = MazeBenchToolTaskset(
-            MazeBenchToolConfig(num_examples=1, max_actions=1)
-        )
-        try:
-            unbound.load()
-        except RuntimeError as error:
-            assert "fixed evaluator-side model relay" in str(error)
-        else:
-            raise AssertionError("an unbound MazeBench tool taskset was accepted")
-
-    for harness_id in ("bash", "null", "codex"):
-        try:
-            environment = Environment(
-                EnvConfig(
-                    taskset=MazeBenchToolConfig(num_examples=1, max_actions=1),
-                    harness=HarnessConfig(id=harness_id),
-                )
-            )
-            environment.taskset.select(1)
-        except (RuntimeError, ValueError):
-            pass
-        else:
-            raise AssertionError(f"unsafe builtin harness {harness_id!r} was accepted")
-
-    harness, taskset = paired_taskset()
-    assert harness.SUPPORTS_MCP is True
-    assert type(harness.config.runtime) is SubprocessConfig
-    assert taskset._bound_game_only_harness is harness
+    taskset = MazeBenchToolTaskset(MazeBenchToolConfig(num_examples=1, max_actions=1))
+    assert MazeBenchToolTask.NEEDS_CONTAINER is True
     assert taskset.config.tools.colocated is False
     assert taskset.config.tools.url is None
 
-    try:
-        MazeBenchRelayHarnessConfig.model_validate(
-            {
-                "id": "mazebench_codex_harness",
-                "runtime": {"type": "prime"},
-            }
+    environment = SingleAgentEnv(
+        SingleAgentEnvConfig(
+            taskset=MazeBenchToolConfig(num_examples=1, max_actions=1),
+            agent=AgentConfig(
+                harness=HarnessConfig(id="null"),
+                runtime=PrimeConfig(image="python:3.13-slim"),
+            ),
         )
-    except ValidationError:
-        pass
-    else:
-        raise AssertionError("the trusted relay accepted an agent sandbox runtime")
+    )
+    harness = environment._harnesses["agent"]
+    assert harness.config.id == "null"
+    assert harness.SUPPORTS_MCP is True
 
-    for retired in (
-        MazeBenchClaudeCodeHarness,
-        MazeBenchKimiCodeHarness,
-        MazeBenchCLIHarness,
-    ):
-        try:
-            retired(HarnessConfig(id="retired"))
-        except RuntimeError as error:
-            assert "retired" in str(error)
-        else:
-            raise AssertionError(f"retired adapter {retired.__name__} was accepted")
+    toolset = MazeBenchToolset(MazeBenchToolsetConfig())
+    controls = {fn.__name__ for fn in discover_decorated(toolset, "tool")}
+    assert controls == {"start", "observe", "action", "action_sequence"}
 
     return {
         "schema_version": 1,
@@ -126,27 +69,24 @@ def certify() -> dict:
         "verifiers_version": catalog["verifiers_version"],
         "verifiers_revision": catalog["verifiers_revision"],
         "boundary": {
-            "model_runtime": "trusted-evaluator-relay",
-            "game_runtime": "networkless-evaluator-owned-docker-tool-server",
-            "allowed_controls": sorted(GAME_TOOL_NAMES),
+            "model_runtime": "framework-harness-sandbox",
+            "game_runtime": "prime-tool-server-sandbox",
+            "allowed_controls": sorted(f"game_{name}" for name in controls),
             "forbidden_capabilities": [
-                "filesystem",
+                "host-filesystem",
                 "host-shell",
-                "network-tool",
                 "repository",
-                "subprocess",
             ],
         },
         "harnesses": [
             {
                 "id": "null",
-                "adapter": "trusted_model_relay",
-                "runtime_harness_id": "mazebench_codex_harness",
+                "adapter": "native",
+                "runtime_harness_id": "null",
                 "checks": [
-                    "exact-taskset-binding",
-                    "fixed-local-relay-runtime",
+                    "framework-owned-harness",
+                    "isolated-harness-runtime",
                     "four-game-tools-only",
-                    "retired-coding-adapters",
                     "evaluator-owned-tool-server",
                 ],
                 "status": "certified",
@@ -166,7 +106,7 @@ def main() -> None:
             json.dumps(payload, indent=2) + "\n", encoding="utf-8"
         )
     if args.self_test:
-        print("MazeBench game-agent certification ready: 1 harness")
+        print("MazeBench native harness certification ready: 1 harness")
     elif not args.write:
         print(json.dumps(payload, indent=2))
 

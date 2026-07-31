@@ -140,7 +140,7 @@ try {
     harnessRegistry.harnesses.filter((harness) => harness.launchable).map((harness) => harness.id),
     ["null"]
   );
-  assert.equal(harnessRegistry.harnesses.find((harness) => harness.id === "null").adapter, "trusted_model_relay");
+  assert.equal(harnessRegistry.harnesses.find((harness) => harness.id === "null").adapter, "native");
   assert.equal(harnessRegistry.harnesses.find((harness) => harness.id === "codex").launchable, false);
   const [customPrime] = service.launchRuns({
     kind: "prime",
@@ -160,9 +160,9 @@ try {
   assert.equal(customPrimeMeta.harness_source, "pinned-prime-verifiers");
   assert.deepEqual(customPrimeMeta.harness_config, {});
   assert.equal(customPrimeMeta.harness_boundary, "game-tools-only");
-  assert.equal(customPrimeMeta.harness_adapter, "trusted_model_relay");
+  assert.equal(customPrimeMeta.harness_adapter, "native");
   assert.equal(customPrimeMeta.harness_taskset, "mazebench-tools");
-  assert.equal(customPrimeMeta.verifiers_revision, "653bb14003b87e39588bde308fa8626d1038ce15");
+  assert.equal(customPrimeMeta.verifiers_revision, "b3b8f51ed470e3c46c12bb858ad18d257dc50c5e");
   assert.match(customPrimeMeta.harness_catalog_fingerprint, /^[0-9a-f]{64}$/);
   assert.deepEqual(customPrimeMeta.launch_params.harness_config, {});
   assert.match(customPrimeMeta.command, /--harness null/);
@@ -507,7 +507,7 @@ try {
       hosted: true,
       video: false
     }),
-    /Hosted agent evaluations cannot provide the trusted model relay/
+    /Hosted agent evaluations do not run the V1 harness and Toolset route/
   );
 
   const [visionPrime] = service.launchRuns({

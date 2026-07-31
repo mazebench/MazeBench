@@ -1,4 +1,3 @@
-from .harness import MazeBenchHarness
 from .legacy import LegacyMazeEnv, load_environment
 from .mazebench import (
     MazeBenchConfig,
@@ -9,7 +8,6 @@ from .mazebench import (
 __all__ = [
     "LegacyMazeEnv",
     "MazeBenchConfig",
-    "MazeBenchHarness",
     "MazeBenchTaskset",
     "load_environment",
     "load_taskset",

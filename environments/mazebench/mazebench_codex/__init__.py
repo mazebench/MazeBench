@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from mazebench_codex_harness import MazeBenchCodexHarness
 from mazebench_tools import MazeBenchToolConfig, MazeBenchToolTaskset
 
 RETIRED_MESSAGE = (
     "mazebench_codex is retired because its default subprocess runtime can expose "
-    "repository or host files. Use scripts/maze-prime-run.js with mazebench-tools."
+    "repository or host files. Use mazebench-tools with an isolated framework harness."
 )
 
 
@@ -28,7 +27,6 @@ def load_taskset(config: MazeBenchCodexConfig) -> MazeBenchCodexTaskset:
 
 __all__ = [
     "MazeBenchCodexConfig",
-    "MazeBenchCodexHarness",
     "MazeBenchCodexTaskset",
     "load_taskset",
 ]

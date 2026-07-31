@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Verify a Prime checkpoint by replaying it locally without model inference."""
 
 from __future__ import annotations
@@ -8,21 +7,21 @@ import asyncio
 import json
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
 from mazebench.mazebench import (
-    MazeBenchConfig,
-    MazeBenchTaskset,
     MazeSession,
     load_prime_resume_checkpoint,
     prime_resume_prompt,
     slim_status,
 )
+from mazebench_tools import MazeBenchToolConfig, MazeBenchToolTaskset
 
 
-def config_for_checkpoint(path: Path) -> MazeBenchConfig:
+def config_for_checkpoint(path: Path) -> MazeBenchToolConfig:
     checkpoint = load_prime_resume_checkpoint(str(path))
     task = checkpoint["task"]
-    return MazeBenchConfig(
+    return MazeBenchToolConfig(
         num_examples=1,
         allow_quit=bool(task.get("allow_quit")),
         auto_quit=bool(task.get("auto_quit")),
@@ -42,31 +41,28 @@ def config_for_checkpoint(path: Path) -> MazeBenchConfig:
         yaw=int(task.get("yaw") or 0),
         max_actions=None,
         resume_checkpoint_path=str(path),
-        system_prompt=str(checkpoint.get("system_prompt") or ""),
+        game_system_prompt=str(checkpoint.get("system_prompt") or ""),
     )
 
 
 async def verify(path: Path) -> dict:
     checkpoint = load_prime_resume_checkpoint(str(path))
-    taskset = MazeBenchTaskset(
-        config=config_for_checkpoint(path), _trusted_task_generation=True
-    )
+    taskset = MazeBenchToolTaskset(config=config_for_checkpoint(path))
     task = taskset.load()[0]
-    user = task.user_server()
-    if user is None:
-        raise AssertionError("MazeBench task did not declare its user simulator")
+    await task.setup(SimpleNamespace(id="resume-verification"), SimpleNamespace())
+    toolset = task.tool_servers()[0]
     try:
-        await user.setup_task(task.data)
-        actual_hash = str((user._resume_status or {}).get("board_state_hash") or "")
+        await toolset.setup_task(task.data)
+        actual_hash = str((toolset._status or {}).get("board_state_hash") or "")
         expected_hash = str(checkpoint.get("final_board_state_hash") or "")
         if actual_hash != expected_hash:
             raise AssertionError("replay reached the wrong final board hash")
-        action_count = len(user._resume_actions or [])
+        action_count = len(toolset._actions)
         if action_count != int(checkpoint.get("action_count") or 0):
             raise AssertionError("replay restored the wrong number of actions")
         return {"action_count": action_count, "final_board_state_hash": actual_hash}
     finally:
-        user.close_session()
+        await toolset._exit_stack.aclose()
 
 
 def self_test() -> None:

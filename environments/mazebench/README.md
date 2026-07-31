@@ -85,7 +85,7 @@ Install a specific version for reproducibility:
 prime env install mazebench/mazebench@0.1.15
 ```
 
-## Evaluate locally
+## Evaluate with Prime Sandboxes
 
 MazeBench uses the Verifiers v1 evaluator:
 
@@ -94,12 +94,10 @@ uv run eval mazebench-tools \
   -m openai/gpt-4.1-mini \
   -n 1 \
   -r 1 \
-  --taskset.max-actions 40 \
-  --max-turns 160 \
-  --harness.id mazebench_codex_harness \
-  --harness.runtime.type subprocess \
-  --taskset.tools.colocated false \
-  --taskset.python-tools false \
+  --env.taskset.max-actions 40 \
+  --env.agent.max-turns 160 \
+  --env.agent.harness.id null \
+  --env.agent.runtime.type prime \
   --push false \
   --rich false
 ```
@@ -107,13 +105,18 @@ uv run eval mazebench-tools \
 `MazeBenchToolsetConfig.runtime` is a typed `PrimeConfig`, so Verifiers—not a
 shell environment variable—owns sandbox provisioning and teardown. The default
 uses a 1 CPU, 2 GB RAM, 5 GB disk Prime Sandbox in the `us` region. No Docker
-daemon is involved. Select the observation surface independently with
-`--taskset.observation-mode ascii`, `json`, or `vision`; add
-`--taskset.omniscient true` only for omniscient JSON.
+daemon is involved. The selected framework harness runs in its own sandbox and
+receives the Toolset through Verifiers' standard MCP wiring. Select the
+observation surface independently with
+`--env.taskset.observation-mode ascii`, `json`, or `vision`; add
+`--env.taskset.omniscient true` only for omniscient JSON.
 
-The direct native `mazebench` taskset is retired because arbitrary harnesses
-could bypass the separate game server. The Hub environment identifier remains
-available to the distinct Hosted Training workflow described below.
+MazeBench does not implement or wrap a harness. Any framework harness that supports
+MCP can consume the game Toolset; the harness remains responsible for its model
+protocol and sampling behavior. Harnesses that expose agent shell or filesystem
+capabilities must run in an approved isolated runtime. The direct native `mazebench`
+taskset is retired because it bypasses the separate game server. The Hub environment
+identifier remains available to the distinct Hosted Training workflow described below.
 
 The saved `results.jsonl` trace contains:
 
@@ -265,29 +268,25 @@ farther away.
 
 Vision mode uses the same persistent game state, commands, stop conditions, rewards, and metrics as ASCII mode. Instead of an ASCII board, the model receives a short non-positional status message and a perspective PNG frame.
 
-It currently requires a full MazeBench checkout with Node dependencies plus a compatible Chrome or Chromium binary:
+The game Toolset installs its renderer and Chromium inside the game sandbox for vision runs:
 
 ```bash
-npm install
-
 uv run --project environments/mazebench eval mazebench-tools \
   -m openai/gpt-4.1-mini \
   -n 1 \
   -r 1 \
-  --taskset.max-actions 8 \
-  --max-turns 32 \
-  --taskset.observation-mode vision \
-  --taskset.vision-width 512 \
-  --taskset.vision-height 512 \
-  --harness.id mazebench_codex_harness \
-  --harness.runtime.type subprocess \
-  --taskset.tools.colocated false \
-  --taskset.python-tools false \
+  --env.taskset.max-actions 8 \
+  --env.agent.max-turns 32 \
+  --env.taskset.observation-mode vision \
+  --env.taskset.vision-width 512 \
+  --env.taskset.vision-height 512 \
+  --env.agent.harness.id null \
+  --env.agent.runtime.type prime \
   --push false \
   --rich false
 ```
 
-Do not select vision for Hosted Training until the environment publishes a self-contained renderer runtime and the Hub action includes a real frame-render smoke test.
+The resulting PNG is returned as ordinary MCP image content, so MazeBench does not need a vision-specific harness.
 
 ## Agent tooling
 

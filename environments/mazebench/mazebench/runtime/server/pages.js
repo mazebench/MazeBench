@@ -877,7 +877,7 @@ function createPageRenderer({
               <div class="custom-harness-panel__status">
                 <strong id="custom-harness-status">Loading harnesses…</strong>
                 <p id="custom-harness-note" class="muted"></p>
-                <p class="custom-harness-panel__security">The model receives exactly four game tools through a trusted relay. The authoritative game server runs in a separate networkless sandbox; source, state, checkpoints, and scoring remain with the evaluator.</p>
+                <p class="custom-harness-panel__security">The framework harness receives exactly four game tools through standard MCP wiring. The authoritative game server runs in a separate sandbox; source, state, checkpoints, and scoring remain with the evaluator.</p>
               </div>
             </div>
           </section>

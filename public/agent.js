@@ -497,7 +497,7 @@
     const note = document.getElementById("execution-note");
     if (note) {
       note.textContent = state.harness === "custom"
-        ? "The trusted evaluator relays model turns while the game runs in a separate networkless sandbox."
+        ? "The selected framework harness and game Toolset run in separate Prime Sandboxes."
         : state.harness && state.harness !== "none" && state.execution === "prime"
         ? `${HARNESSES.find((entry) => entry.id === state.harness)?.name || "This harness"} is hosted by Prime and connected to MazeBench's isolated game controls.`
         : "Prime supplies inference through the isolated Verifiers environment.";
@@ -585,7 +585,7 @@
     }
 
     const routeLabels = {
-      trusted_model_relay: "trusted game relay"
+      native: "native Verifiers harness"
     };
     status.textContent = selected.launchable
       ? `${selected.label} · ${routeLabels[selected.adapter] || "isolated gateway"}`

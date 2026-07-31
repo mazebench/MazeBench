@@ -36,7 +36,7 @@ jobs:
           uv run --locked --project environments/mazebench python3 -m unittest tests/test_game_runtime_isolation.py
           uv run --project environments/mazebench python scripts/maze-verify-prime-resume.py --self-test
           npm run sync-runtime
-          node tests/prime-custom-harness.test.js
+          node tests/prime-native-harness.test.js
           node tests/prime-harnesses.test.js
           node tests/runtime-drift.test.js
       - name: Open compatibility update
@@ -60,4 +60,4 @@ jobs:
             --base main \
             --head "$branch" \
             --title "chore: refresh Prime harness compatibility" \
-            --body "Automated exact-pin update for Prime Verifiers. The generated catalog and local safety certification passed for every discovered built-in harness."
+            --body "Automated exact-pin update for Prime Verifiers. The generated catalog and native-harness safety certification passed."

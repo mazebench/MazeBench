@@ -7,7 +7,7 @@ license = "MIT"
 requires-python = ">=3.11,<3.14"
 dependencies = [
     "nodejs-wheel==24.16.0",
-    "verifiers @ git+https://github.com/PrimeIntellect-ai/verifiers.git@653bb14003b87e39588bde308fa8626d1038ce15",
+    "verifiers @ git+https://github.com/PrimeIntellect-ai/verifiers.git@b3b8f51ed470e3c46c12bb858ad18d257dc50c5e",
 ]
 
 [build-system]
@@ -21,11 +21,6 @@ include = [
     "mazebench/runtime/**/*",
     "mazebench_codex/**/*.py",
     "mazebench_tools/**/*.py",
-    "mazebench_harnesses/**/*.py",
-    "mazebench_claude_harness.py",
-    "mazebench_codex_harness.py",
-    "mazebench_cli_harness.py",
-    "mazebench_kimi_harness.py",
     "README.md",
     "pyproject.toml",
 ]

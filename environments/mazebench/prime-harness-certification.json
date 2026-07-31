@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
-  "catalog_fingerprint": "1af566e20050655337fc1d4d5653b3728f51807361502717a905683e6be1bfa8",
-  "verifiers_version": "0.2.1.dev62",
-  "verifiers_revision": "653bb14003b87e39588bde308fa8626d1038ce15",
+  "catalog_fingerprint": "b558004feeb54a6c2c6359feb38472bca9b1ca2d3a1ef65410cb0e66233966d2",
+  "verifiers_version": "0.2.2.dev56",
+  "verifiers_revision": "b3b8f51ed470e3c46c12bb858ad18d257dc50c5e",
   "boundary": {
-    "model_runtime": "trusted-evaluator-relay",
-    "game_runtime": "evaluator-owned-prime-sandbox-tool-server",
+    "model_runtime": "framework-harness-sandbox",
+    "game_runtime": "prime-tool-server-sandbox",
     "allowed_controls": [
       "game_action",
       "game_action_sequence",
@@ -13,23 +13,20 @@
       "game_start"
     ],
     "forbidden_capabilities": [
-      "filesystem",
+      "host-filesystem",
       "host-shell",
-      "network-tool",
-      "repository",
-      "subprocess"
+      "repository"
     ]
   },
   "harnesses": [
     {
       "id": "null",
-      "adapter": "trusted_model_relay",
-      "runtime_harness_id": "mazebench_codex_harness",
+      "adapter": "native",
+      "runtime_harness_id": "null",
       "checks": [
-        "exact-taskset-binding",
-        "fixed-local-relay-runtime",
+        "framework-owned-harness",
+        "isolated-harness-runtime",
         "four-game-tools-only",
-        "retired-coding-adapters",
         "evaluator-owned-tool-server"
       ],
       "status": "certified"

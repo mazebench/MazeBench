@@ -157,7 +157,7 @@ function primeHarnessModelCompatible(modelId, harnessId) {
   const harness = normalizePrimeHarness(harnessId);
   const id = String(modelId || "").trim();
   if (!id) return false;
-  // The fixed relay uses Prime's OpenAI-compatible interception endpoint, so
+  // The native null harness uses Prime's OpenAI-compatible interception endpoint, so
   // it is provider-neutral and does not infer compatibility from model names.
   return true;
 }
@@ -4955,8 +4955,8 @@ function createAgentRunService({
     return { args, model, levelId, moves, gems, view, toolUse, autoRunTools, autoRunAllFrames, swarm, unlimited, allowQuit, autoQuit, mode, omniscient, hideNames, hideNamesSeed };
   }
 
-  // Agent Runner uses the local trusted evaluator for the model relay. Verifiers
-  // provisions the game tool server in a separate Prime Sandbox per rollout.
+  // Verifiers provisions the native harness and game Toolset in separate Prime
+  // Sandboxes for each rollout.
   function buildPrimeCommand(params, runDir, runId, game) {
     const harness = normalizePrimeHarness(params.harness);
     const definition = PRIME_HARNESSES.get(harness);
@@ -4982,7 +4982,7 @@ function createAgentRunService({
     const hideNames = mode !== "vision" && (params.hide_names === true || params.hide_names === "true");
     const hideNamesSeed = resolvedHideNamesSeed(hideNames, params.hide_names_seed);
     if (params.hosted === true || params.hosted === "true") {
-      throw new Error("Hosted agent evaluations cannot provide the trusted model relay.");
+      throw new Error("Hosted agent evaluations do not run the V1 harness and Toolset route.");
     }
     const hosted = false;
     const requestedToolUse = String(params.tool_use || "").trim().toLowerCase();
@@ -5239,7 +5239,7 @@ function createAgentRunService({
             ? Math.max(0, Number(loadJson(path.join(runDir, PRIME_RESUME_CHECKPOINT_FILE), {})?.action_count) || 0)
             : 0,
           prime_execution: "local",
-          note: `${command.harnessLabel} uses a trusted evaluator-side model relay and receives only MazeBench's four game tools. The authoritative game server runs in a separate Prime Sandbox.`
+          note: `${command.harnessLabel} is an unmodified Verifiers harness in its own Prime Sandbox and receives MazeBench's four game tools from a separate Prime Sandbox.`
         };
       } else {
         let effectiveParams = params;

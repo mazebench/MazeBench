@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Discover the harnesses shipped by the pinned Verifiers distribution."""
 
 from __future__ import annotations
@@ -13,10 +12,6 @@ from typing import Any
 
 import verifiers.v1 as vf
 import verifiers.v1.harnesses as builtin_harnesses
-from mazebench_harnesses.codex import (
-    MazeBenchCodexHarness,
-    MazeBenchRelayHarnessConfig,
-)
 from verifiers.v1.loaders import harness_class, harness_config_type
 from verifiers.v1.utils.version import verifiers_commit
 
@@ -25,7 +20,7 @@ COMMON_CONFIG_FIELDS = {
     "env",
     "forward_env",
     "id",
-    "runtime",
+    "skills",
 }
 LABELS = {
     "bash": "Bash",
@@ -40,8 +35,8 @@ LABELS = {
 }
 GAME_TOOLS_ONLY_ROUTES = {
     "null": {
-        "adapter": "trusted_model_relay",
-        "runtime_harness_id": "mazebench_codex_harness",
+        "adapter": "native",
+        "runtime_harness_id": "null",
         "default_config": {},
     }
 }
@@ -51,8 +46,8 @@ def adapter_for(harness_id: str, harness_type: type[vf.Harness]) -> dict[str, An
     del harness_type
     if harness_id == "null":
         return {
-            "adapter": "trusted_model_relay",
-            "runtime_harness_id": "mazebench_codex_harness",
+            "adapter": "native",
+            "runtime_harness_id": "null",
         }
     return {
         "adapter": "unsupported",
@@ -66,33 +61,10 @@ def discover() -> dict[str, Any]:
         pkgutil.iter_modules(builtin_harnesses.__path__), key=lambda item: item.name
     ):
         harness_id = module.name
-        try:
-            harness_type = harness_class(harness_id)
-            config_type = harness_config_type(harness_id)
-            config = config_type.model_validate({"id": harness_id})
-        except Exception as error:
-            harnesses.append(
-                {
-                    "id": harness_id,
-                    "label": LABELS.get(
-                        harness_id, harness_id.replace("_", " ").title()
-                    ),
-                    "launchable": False,
-                    "status": "catalog_error",
-                    "reason": str(error).splitlines()[0][:500],
-                }
-            )
-            continue
-
-        effective_type = MazeBenchCodexHarness if harness_id == "null" else harness_type
-        effective_config_type = (
-            MazeBenchRelayHarnessConfig if harness_id == "null" else config_type
-        )
-        if harness_id == "null":
-            config = effective_config_type.model_validate(
-                {"id": "mazebench_codex_harness"}
-            )
-        schema = effective_config_type.model_json_schema()
+        harness_type = harness_class(harness_id)
+        config_type = harness_config_type(harness_id)
+        config = config_type.model_validate({"id": harness_id})
+        schema = config_type.model_json_schema()
         properties = schema.get("properties") or {}
         configurable = sorted(set(properties) - COMMON_CONFIG_FIELDS)
         defaults = config.model_dump(exclude=COMMON_CONFIG_FIELDS)
@@ -110,8 +82,8 @@ def discover() -> dict[str, Any]:
             {
                 "id": harness_id,
                 "label": LABELS.get(harness_id, harness_id.replace("_", " ").title()),
-                "description": (effective_type.__doc__ or "").strip().splitlines()[0]
-                if (effective_type.__doc__ or "").strip()
+                "description": (harness_type.__doc__ or "").strip().splitlines()[0]
+                if (harness_type.__doc__ or "").strip()
                 else f"Prime-provided {harness_id.replace('_', ' ')} harness.",
                 "launchable": game_tools_only,
                 "status": "compatible" if game_tools_only else "unsafe_agent_tools",
@@ -129,9 +101,7 @@ def discover() -> dict[str, Any]:
                     "json",
                     *(["vision"] if harness_id == "null" else []),
                 ],
-                "supports_mcp": bool(effective_type.SUPPORTS_MCP),
-                "supports_message_prompt": bool(effective_type.SUPPORTS_MESSAGE_PROMPT),
-                "supports_user_sim": bool(effective_type.SUPPORTS_USER_SIM),
+                "supports_mcp": bool(harness_type.SUPPORTS_MCP),
                 "configurable": configurable,
                 "default_config": defaults,
                 "config_schema": {
@@ -149,9 +119,10 @@ def discover() -> dict[str, Any]:
         "verifiers_version": version,
         "verifiers_revision": commit,
         "policy": (
-            "Only the fixed evaluator-side model relay is launchable. It advertises the "
-            "four MazeBench game tools and no shell, filesystem, subprocess, or network "
-            "tools. Game state and scoring remain inside the evaluator-owned sandbox."
+            "MazeBench uses unmodified Verifiers harnesses. The app launches the native "
+            "null harness because it advertises only the four MazeBench game tools; other "
+            "MCP-capable harnesses remain framework-compatible but are not approved when "
+            "they expose shell, filesystem, subprocess, or network tools."
         ),
         "harnesses": harnesses,
     }

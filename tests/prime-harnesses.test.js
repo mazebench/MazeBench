@@ -27,7 +27,8 @@ const runDir = fs.mkdtempSync(path.join(os.tmpdir(), "mazebench-prime-harness-")
 const statePath = path.join(runDir, "session.json");
 
 function argumentValue(argv, name) {
-  return argv[argv.indexOf(name) + 1];
+  const index = argv.indexOf(name);
+  return index === -1 ? undefined : argv[index + 1];
 }
 
 try {
@@ -47,26 +48,6 @@ try {
   );
   const toolsTasksetSource = fs.readFileSync(
     path.join(environmentDir, "mazebench_tools", "__init__.py"),
-    "utf8"
-  );
-  const codexHarnessSource = fs.readFileSync(
-    path.join(environmentDir, "mazebench_harnesses", "codex.py"),
-    "utf8"
-  );
-  const claudeHarnessSource = fs.readFileSync(
-    path.join(environmentDir, "mazebench_harnesses", "claude.py"),
-    "utf8"
-  );
-  const kimiHarnessSource = fs.readFileSync(
-    path.join(environmentDir, "mazebench_harnesses", "kimi.py"),
-    "utf8"
-  );
-  const cliHarnessSource = fs.readFileSync(
-    path.join(environmentDir, "mazebench_harnesses", "cli.py"),
-    "utf8"
-  );
-  const commonHarnessSource = fs.readFileSync(
-    path.join(environmentDir, "mazebench_harnesses", "common.py"),
     "utf8"
   );
   const mazeTasksetSource = fs.readFileSync(
@@ -104,15 +85,17 @@ try {
 
   assert.match(
     runSource,
-    /\["null", \{\s*adapter: "trusted_model_relay",\s*runtimeHarnessId: "mazebench_codex_harness"/
+    /\["null", \{\s*adapter: "native",\s*runtimeHarnessId: "null"/
   );
-  assert.match(runSource, /"--harness\.runtime\.type",\s*"subprocess"/);
-  assert.match(runSource, /"--taskset\.tools\.colocated",\s*"False"/);
-  assert.match(runSource, /"--taskset\.python-tools",\s*"False"/);
-  assert.doesNotMatch(runSource, /"--harness\.runtime\.type",\s*"prime"/);
+  assert.match(runSource, /"--env\.agent\.runtime\.type",\s*"prime"/);
+  assert.doesNotMatch(runSource, /"--env\.taskset\.(?:tools\.colocated|python-tools)"/);
+  assert.doesNotMatch(runSource, /"--env\.agent\.runtime\.type",\s*"subprocess"/);
   assert.match(runSource, /const taskset = "mazebench-tools"/);
   assert.doesNotMatch(runSource, /const taskset = .*"mazebench"/);
-  assert.match(runSource, /\["--taskset\.max-actions", "None", "--max-turns", "None"\]/);
+  assert.match(
+    runSource,
+    /\["--env\.taskset\.max-actions", "None", "--env\.agent\.max-turns", "None"\]/
+  );
   assert.match(runSource, /runEvalWithProviderRetry/);
   assert.match(runSource, /eval-output-provider-failure/);
   assert.match(liveSource, /MAZEBENCH_EVENT_V1/);
@@ -124,7 +107,7 @@ try {
 
   assert.match(
     project,
-    /verifiers @ git\+https:\/\/github\.com\/PrimeIntellect-ai\/verifiers\.git@653bb14003b87e39588bde308fa8626d1038ce15/
+    /verifiers @ git\+https:\/\/github\.com\/PrimeIntellect-ai\/verifiers\.git@b3b8f51ed470e3c46c12bb858ad18d257dc50c5e/
   );
   assert.match(retiredTasksetSource, /__all__ = \["MazeBenchAgentTaskset"\]/);
   assert.match(retiredTasksetSource, /raise RuntimeError\(UNSAFE_HARNESS_MESSAGE\)/);
@@ -163,35 +146,18 @@ try {
   assert.match(toolsTasksetSource, /python_tools: Literal\[False\] = False/);
   assert.match(toolsTasksetSource, /class MazeBenchToolTask\(/);
   assert.match(toolsTasksetSource, /class MazeBenchToolTaskset\(/);
-  assert.match(toolsTasksetSource, /_bind_game_only_harness/);
+  assert.match(toolsTasksetSource, /NEEDS_CONTAINER = True/);
+  assert.doesNotMatch(toolsTasksetSource, /_bind_game_only_harness/);
   assert.match(toolsTasksetSource, /"colocated": False/);
   assert.match(toolsTasksetSource, /__all__ = \["MazeBenchToolTaskset"\]/);
 
-  assert.match(
-    codexHarnessSource,
-    /GAME_TOOL_NAMES = \{\s*"game_start",\s*"game_observe",\s*"game_action",\s*"game_action_sequence",?\s*\}/
+  assert.match(toolsTasksetSource, /CallToolResult/);
+  assert.match(toolsTasksetSource, /ImageContent/);
+  assert.doesNotMatch(toolsTasksetSource, /async def finalize\(self\)/);
+  assert.equal(
+    fs.existsSync(path.join(environmentDir, "mazebench_harnesses", "codex.py")),
+    false
   );
-  assert.match(codexHarnessSource, /SERVER_TOOL_NAMES = .*"finalize"/);
-  assert.match(
-    codexHarnessSource,
-    /AsyncOpenAI\(\s*base_url=endpoint,\s*api_key=secret,/
-  );
-  assert.equal((codexHarnessSource.match(/trust_env=False/g) || []).length, 2);
-  assert.equal((codexHarnessSource.match(/follow_redirects=False/g) || []).length, 2);
-  assert.match(codexHarnessSource, /remote_game_url/);
-  assert.match(codexHarnessSource, /streamable_http_client\(game_url/);
-  assert.match(codexHarnessSource, /if set\(dispatch\) != GAME_TOOL_NAMES/);
-  assert.match(codexHarnessSource, /if type\(runtime\) is not SubprocessRuntime/);
-  assert.match(codexHarnessSource, /_bind_game_only_harness\(self\)/);
-  assert.doesNotMatch(codexHarnessSource, /codex exec|--allowedTools|--tools/);
-  assert.match(commonHarnessSource, /class RetiredMazeBenchHarness/);
-  assert.match(commonHarnessSource, /coding-agent adapter was retired/);
-  assert.match(
-    claudeHarnessSource,
-    /class MazeBenchClaudeCodeHarness\(RetiredMazeBenchHarness\)/
-  );
-  assert.match(kimiHarnessSource, /class MazeBenchKimiCodeHarness\(RetiredMazeBenchHarness\)/);
-  assert.match(cliHarnessSource, /class MazeBenchCLIHarness\(RetiredMazeBenchHarness\)/);
 
   const launchableCatalogEntries = harnessCatalog.harnesses.filter(
     (harness) => harness.launchable
@@ -209,8 +175,8 @@ try {
     {
       id: "null",
       label: "Game agent",
-      adapter: "trusted_model_relay",
-      runtimeHarnessId: "mazebench_codex_harness",
+      adapter: "native",
+      runtimeHarnessId: "null",
       boundary: "game-tools-only",
       configurable: []
     }
@@ -239,19 +205,30 @@ try {
   );
   const gameAgent = publicHarnesses.find((harness) => harness.id === "null");
   assert.equal(gameAgent.label, "Game agent");
-  assert.equal(gameAgent.adapter, "trusted_model_relay");
-  assert.equal(gameAgent.runtime_harness_id, "mazebench_codex_harness");
+  assert.equal(gameAgent.adapter, "native");
+  assert.equal(gameAgent.runtime_harness_id, "null");
   assert.equal(gameAgent.boundary, "game-tools-only");
   assert.deepEqual(gameAgent.configurable, []);
   assert.deepEqual(gameAgent.observation_modes, ["text", "json", "vision"]);
   assert.deepEqual(
     publicHarnesses.filter((harness) => !harness.launchable).map((harness) => harness.id),
-    ["bash", "claude_code", "codex", "kimi_code", "mini_swe_agent", "pi", "rlm", "terminus_2"]
+    [
+      "bash",
+      "browser_use",
+      "claude_code",
+      "codex",
+      "kimi_code",
+      "mini_swe_agent",
+      "pi",
+      "pool",
+      "rlm",
+      "terminus_2"
+    ]
   );
   assert.equal(
     publicHarnesses.every(
       (harness) =>
-        harness.verifiers_revision === "653bb14003b87e39588bde308fa8626d1038ce15"
+        harness.verifiers_revision === "b3b8f51ed470e3c46c12bb858ad18d257dc50c5e"
     ),
     true
   );
@@ -331,10 +308,10 @@ try {
     "null"
   );
   const relayArgs = agenticHarnessArgs(parsedGameAgent);
-  assert.equal(argumentValue(relayArgs, "--harness.id"), "mazebench_codex_harness");
-  assert.equal(argumentValue(relayArgs, "--harness.runtime.type"), "subprocess");
-  assert.equal(argumentValue(relayArgs, "--taskset.tools.colocated"), "False");
-  assert.equal(argumentValue(relayArgs, "--taskset.python-tools"), "False");
+  assert.equal(argumentValue(relayArgs, "--env.agent.harness.id"), "null");
+  assert.equal(argumentValue(relayArgs, "--env.agent.runtime.type"), "prime");
+  assert.equal(argumentValue(relayArgs, "--env.taskset.tools.colocated"), undefined);
+  assert.equal(argumentValue(relayArgs, "--env.taskset.python-tools"), undefined);
   assert.equal(argumentValue(relayArgs, "--push"), "False");
 
   const parsedVisionAgent = parseArgs([
@@ -359,7 +336,7 @@ try {
         runDir,
         "--hosted"
       ]),
-    /Hosted agent evaluations cannot provide the trusted model relay/
+    /Hosted agent evaluations do not run the V1 harness and Toolset route/
   );
   assert.throws(
     () =>

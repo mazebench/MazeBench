@@ -38,7 +38,6 @@ AGENT_ENVIRONMENT_MARKERS = (
     "mazebench/mazebench.py",
     "mazebench/runtime/scripts/maze-mcp-client.js",
     "mazebench/runtime/scripts/maze-mcp-server.js",
-    "mazebench_harnesses/codex.py",
     "mazebench_tools/__init__.py",
 )
 
@@ -287,14 +286,10 @@ def smoke_wheel_agent_command(wheel_path: Path) -> None:
         argv = argv_path.read_text(encoding="utf-8").splitlines()
         required_arguments = (
             "mazebench-tools",
-            "--harness.id",
-            "mazebench_codex_harness",
-            "--harness.runtime.type",
-            "subprocess",
-            "--taskset.tools.colocated",
-            "false",
-            "--taskset.python-tools",
-            "false",
+            "--env.agent.harness.id",
+            "null",
+            "--env.agent.runtime.type",
+            "prime",
         )
         if any(argument not in argv for argument in required_arguments):
             fail(f"Agent command is incomplete: {argv!r}")

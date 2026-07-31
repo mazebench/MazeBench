@@ -10,7 +10,6 @@ import select
 import shlex
 import signal
 import subprocess
-import threading
 from datetime import datetime, timezone
 from importlib.resources import files
 from pathlib import Path
@@ -1348,7 +1347,6 @@ class MazeBenchTaskConfig(vf.TaskConfig):
     gem_reward_weight: float = Field(DEFAULT_GEM_REWARD_WEIGHT, ge=0)
     room_reward_weight: float = Field(DEFAULT_ROOM_REWARD_WEIGHT, ge=0)
     push_reward_weight: float = Field(DEFAULT_PUSH_REWARD_WEIGHT, ge=0)
-    user: vf.UserConfig = Field(default_factory=vf.UserConfig)
 
 
 # verifiers renamed the env-id type from `EnvId` to `ID` on main (both are the
@@ -1399,8 +1397,7 @@ class MazeBenchConfig(vf.TasksetConfig):
     vision_height: int = DEFAULT_VISION_HEIGHT
     vision_view: str = DEFAULT_VISION_VIEW
     vision_width: int = DEFAULT_VISION_WIDTH
-    system_prompt: str = MULTITURN_SYSTEM_PROMPT
-    user: vf.UserConfig = Field(default_factory=vf.UserConfig)
+    game_system_prompt: str = MULTITURN_SYSTEM_PROMPT
 
 
 class MazeBenchState(vf.State):
@@ -1415,7 +1412,7 @@ class MazeBenchState(vf.State):
     maze_status_error: str = ""
 
 
-class MazeBenchUser(vf.User[vf.UserConfig, MazeBenchState]):
+class MazeBenchUser:
     async def setup_task(self, task: MazeBenchTaskData) -> None:
         self.task = task
         self.vision_session = None
@@ -1850,7 +1847,7 @@ class MazeBenchTask(
     MazeBenchTaskBehavior,
     vf.Task[MazeBenchTaskData, MazeBenchState, MazeBenchTaskConfig],
 ):
-    user = MazeBenchUser
+    pass
 
 
 class MazeBenchTaskset(vf.Taskset[MazeBenchTask, MazeBenchConfig]):
@@ -1860,7 +1857,7 @@ class MazeBenchTaskset(vf.Taskset[MazeBenchTask, MazeBenchConfig]):
         if not _trusted_task_generation:
             raise RuntimeError(
                 "The direct MazeBench taskset is retired. Use mazebench-tools with "
-                "the fixed evaluator-side model relay."
+                "a framework MCP-capable harness."
             )
         super().__init__(config)
 
@@ -1893,7 +1890,6 @@ class MazeBenchTaskset(vf.Taskset[MazeBenchTask, MazeBenchConfig]):
                 "gem_reward_weight": self.config.gem_reward_weight,
                 "room_reward_weight": self.config.room_reward_weight,
                 "push_reward_weight": self.config.push_reward_weight,
-                "user": self.config.user,
             }
         )
         tasks: list[MazeBenchTask] = []
@@ -1924,9 +1920,12 @@ class MazeBenchTaskset(vf.Taskset[MazeBenchTask, MazeBenchConfig]):
                 name=f"{row['game_id']}:{row['level_id']}#{index}",
                 prompt=prime_resume_prompt(checkpoint) if checkpoint else None,
                 system_prompt=(
-                    str(checkpoint.get("system_prompt") or self.config.system_prompt)
+                    str(
+                        checkpoint.get("system_prompt")
+                        or self.config.game_system_prompt
+                    )
                     if checkpoint
-                    else self.config.system_prompt
+                    else self.config.game_system_prompt
                 ),
                 example_id=int(row["example_id"]),
                 allow_quit=bool(self.config.allow_quit),
@@ -1967,30 +1966,8 @@ class MazeBenchTaskset(vf.Taskset[MazeBenchTask, MazeBenchConfig]):
 def load_taskset(config: MazeBenchConfig) -> MazeBenchTaskset:
     raise RuntimeError(
         "The direct MazeBench taskset is retired. Use mazebench-tools with the "
-        "fixed evaluator-side model relay."
+        "framework harness of your choice."
     )
 
 
 __all__ = ["MazeBenchConfig", "MazeBenchTaskset"]
-
-
-if __name__ == "__main__":
-    original_parent_pid = os.getppid()
-
-    # A launcher can die in the narrow window before this module imports. In
-    # framework mode this process is never an intentional daemon, so starting
-    # already reparented to launchd means there is no rollout left to serve.
-    if original_parent_pid <= 1 and "VF_CONFIG" in os.environ:
-        raise SystemExit(0)
-
-    if original_parent_pid > 1:
-        parent_poll = threading.Event()
-
-        def stop_when_parent_exits() -> None:
-            while os.getppid() == original_parent_pid:
-                parent_poll.wait(2)
-            os.kill(os.getpid(), signal.SIGTERM)
-
-        threading.Thread(target=stop_when_parent_exits, daemon=True).start()
-
-    MazeBenchUser.run()
