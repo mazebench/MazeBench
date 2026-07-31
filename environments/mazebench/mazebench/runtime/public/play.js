@@ -667,6 +667,14 @@
     return { ...snapshot, raisedPlayerGates, raisedOrangeWalls };
   }
 
+  function playWorldMapResetSnapshot(outgoingLevel) {
+    if (!app.levelEntrySnapshot || typeof app.prepareLevelRenderState !== "function") {
+      return outgoingLevel;
+    }
+
+    return app.prepareLevelRenderState(app.levelEntrySnapshot) || outgoingLevel;
+  }
+
   function finishPlayWorldMapSwitch(levelId) {
     const editLink = document.querySelector("[data-play-author-link]");
     if (editLink && playWorldData?.game?.id) {
@@ -700,6 +708,12 @@
         typeof app.applyLevelState === "function" &&
         typeof app.renderCompositor?.startLevelTransition === "function";
       const outgoingLevel = canAnimate ? playWorldMapTransitionSnapshot() : null;
+      const outgoingResetLevel = canAnimate ? playWorldMapResetSnapshot(outgoingLevel) : null;
+
+      if (outgoingResetLevel && outgoingResetLevel !== outgoingLevel) {
+        app.rememberHorizontalNeighborLevelState?.(outgoingResetLevel);
+      }
+
       const levelState = await app.loadLevelState(levelId);
       app.applyLevelState(levelState, {
         deferRender: canAnimate,
@@ -730,7 +744,7 @@
         dx,
         dy,
         outgoingLevel,
-        outgoingResetLevel: outgoingLevel,
+        outgoingResetLevel,
         incomingLevel,
         incomingRaisedPlayerGates: incomingLevel.raisedPlayerGates,
         incomingRaisedOrangeWalls: incomingLevel.raisedOrangeWalls
