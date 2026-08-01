@@ -5,7 +5,7 @@ MazeBench is a long-horizon maze-navigation environment for reinforcement learni
 Models navigate a real JavaScript maze world one action at a time, preserve state across rooms, collect gems, discover new rooms, and push blocks. Every rollout produces deterministic rewards, metrics, and replay data from the same game engine used by the local MazeBench site.
 
 > **Environment:** `mazebench/mazebench`
-> **Native API:** Verifiers v1 `Taskset` + `Harness`
+> **Native agent API:** `mazebench-tools` + the fixed game-only relay
 > **Hosted compatibility:** Classic `MultiTurnEnv` adapter for Prime CLI 0.6.x
 > **Default observation:** ASCII
 > **Visibility:** Private
@@ -20,17 +20,19 @@ Models navigate a real JavaScript maze world one action at a time, preserve stat
 | Configurable start room, view, yaw, and action limit | Supported | Supported |
 | State-novelty auto-quit | Supported | Supported |
 | Replay state and per-action metadata | Supported | Supported |
-| Perspective image observations | Not yet self-contained | Supported by image-capable MCP harnesses |
-| All built-in harnesses in the pinned Verifiers revision | Not part of Hosted Training | Discovered and routed through isolated MCP or CLI controls |
-| Codex and Claude Code hosted by Prime | Not part of Hosted Training | Supported |
-| Isolated Python tools for Prime Codex/Claude | Not part of Hosted Training | Supported through the evaluator-owned scratch sandbox |
-| Docker/full-access and swarm modes | Not part of this environment | Available through the separate local Agent runner |
+| Perspective image observations | Not yet self-contained | Supported by the game-agent relay |
+| Fixed game-agent model relay | Not part of Hosted Training | Supported |
+| Shell, filesystem, subprocess, network, and Python tools | Not available | Not available |
+| Built-in coding harnesses and swarm modes | Not available | Not available |
 
-The package brings its own Node runtime for the JavaScript maze engine. Perspective vision additionally needs `playwright-core` and a compatible Chromium binary, which Prime's current Hosted Training image does not provide. Until that renderer is self-contained and tested, use ASCII mode for Hosted Training. Prime-hosted agentic runs use the evaluator-owned renderer instead: Bash, Claude Code, Codex, Kimi Code, Null, and Pi receive each frame as an MCP image result. RLM and the isolated CLI-gateway harnesses remain text-only.
+The package brings its own Node runtime for the JavaScript maze engine. Perspective vision additionally needs `playwright-core` and a compatible Chromium binary, which Prime's current Hosted Training image does not provide. Until that renderer is self-contained and tested, use ASCII mode for Hosted Training. Local game-agent runs render vision on the trusted evaluator and return each frame as an MCP image result.
 
 ## The task
 
-The model receives the current observation and must answer with exactly one command. MazeBench applies that command to a persistent game session and returns the next observation.
+The local game-agent route receives observations through `start`, `observe`,
+`action`, and `action_sequence`. Hosted Training uses
+the classic message adapter, where the model answers with one command. Both
+routes apply actions to persistent game state and return the next observation.
 
 The win condition is fixed at **100 unique gems** across the world. No harness,
 observation mode, environment variable, or replay can lower that threshold.
@@ -83,30 +85,53 @@ Install a specific version for reproducibility:
 prime env install mazebench/mazebench@0.1.15
 ```
 
-## Evaluate locally
+## Evaluate with Prime Sandboxes
 
 MazeBench uses the Verifiers v1 evaluator:
 
 ```bash
-uv run eval mazebench \
+uv run eval mazebench-tools \
   -m openai/gpt-4.1-mini \
   -n 1 \
   -r 1 \
-  --max-turns 40 \
-  --taskset.max-actions 40 \
+  --env.taskset.max-actions 40 \
+  --env.agent.max-turns 160 \
+  --env.agent.harness.id null \
+  --env.agent.runtime.type prime \
+  --push false \
   --rich false
 ```
 
-Use the Hub identifier directly when the environment is not already installed under its local name:
+`MazeBenchToolsetConfig.runtime` is a typed `PrimeConfig`, so Verifiers—not a
+shell environment variable—owns sandbox provisioning and teardown. The default
+uses a 1 CPU, 2 GB RAM, 5 GB disk Prime Sandbox in the `us` region. No Docker
+daemon is involved. The selected framework harness runs in its own sandbox and
+receives the Toolset through Verifiers' standard MCP wiring. Select the
+observation surface independently with
+`--env.taskset.observation-mode ascii`, `json`, or `vision`; add
+`--env.taskset.omniscient true` only for omniscient JSON.
+
+MazeBench does not implement or wrap a harness. Any framework harness that supports
+MCP can consume the game Toolset; the harness remains responsible for its model
+protocol and sampling behavior. Harnesses that expose agent shell or filesystem
+capabilities must run in an approved isolated runtime. The direct native `mazebench`
+taskset is retired because it bypasses the separate game server. The Hub environment
+identifier remains available to the distinct Hosted Training workflow described below.
+
+Complete game-only Prime Sandbox examples for the stock Pi, Claude Code, and
+Codex harnesses live in `configs/eval/` at the repository root. Each one uses
+the harness's `disabled_tools` contract to remove its standard tools and a
+framework-only runtime network policy, leaving only the evaluator-owned game
+MCP server and model interception route reachable. Run one from a checkout with:
 
 ```bash
-uv run eval mazebench/mazebench \
-  -m openai/gpt-4.1-mini \
-  -n 1 \
-  -r 1 \
-  --max-turns 40 \
-  --rich false
+uv run --project environments/mazebench eval \
+  @ configs/eval/mazebench-codex-game-only.toml
 ```
+
+Override `model`, taskset settings, sampling, or run limits on the command line
+as usual. Keep the harness `disabled_tools` list, `runtime.vm = true`, and
+`runtime.allow = []` intact for the game-only boundary.
 
 The saved `results.jsonl` trace contains:
 
@@ -258,65 +283,65 @@ farther away.
 
 Vision mode uses the same persistent game state, commands, stop conditions, rewards, and metrics as ASCII mode. Instead of an ASCII board, the model receives a short non-positional status message and a perspective PNG frame.
 
-It currently requires a full MazeBench checkout with Node dependencies plus a compatible Chrome or Chromium binary:
+The game Toolset installs its renderer and Chromium inside the game sandbox for vision runs:
 
 ```bash
-npm install
-
-uv run --project environments/mazebench eval mazebench \
+uv run --project environments/mazebench eval mazebench-tools \
   -m openai/gpt-4.1-mini \
   -n 1 \
   -r 1 \
-  --max-turns 8 \
-  --taskset.observation-mode vision \
-  --taskset.vision-width 512 \
-  --taskset.vision-height 512 \
+  --env.taskset.max-actions 8 \
+  --env.agent.max-turns 32 \
+  --env.taskset.observation-mode vision \
+  --env.taskset.vision-width 512 \
+  --env.taskset.vision-height 512 \
+  --env.agent.harness.id null \
+  --env.agent.runtime.type prime \
+  --push false \
   --rich false
 ```
 
-Do not select vision for Hosted Training until the environment publishes a self-contained renderer runtime and the Hub action includes a real frame-render smoke test.
+The resulting PNG is returned as ordinary MCP image content, so MazeBench does not need a vision-specific harness.
 
-## Local agent tooling
+## Agent tooling
 
-The repository also contains a `mazebench_codex` plugin and a much broader local Agent runner supporting Codex, Claude Code, Docker access, tools, orchestration, live views, pause/resume, and replay controls. Those capabilities are separate from the `mazebench/mazebench` Hosted Training environment.
+The former `mazebench_codex` direct taskset and local Codex, Claude Code, and
+Kimi runners are retired because their subprocess, host, and repository-aware
+paths cannot satisfy the benchmark isolation boundary. Use the Agent page or
+`scripts/maze-prime-run.js` with the `mazebench-tools` taskset.
 
-The local `/agent` page discovers every built-in shipped by the exact pinned
-Verifiers package. Native MCP harnesses use the external `mazebench-tools`
-server, Codex receives generated MCP configuration, and non-MCP command
-harnesses receive an equivalent capability-scoped CLI. The task sent through
-the harness channel contains no repository or checkpoint path, the live trace
-state is an empty strict schema, and final scoring replaces it with an
-evaluator-owned snapshot after the harness exits. New built-ins follow the
-native-MCP or generic CLI route automatically when the scheduled exact-pin
-update passes certification.
+The local `/agent` page permits catalog-approved stock Verifiers harnesses. The
+native `null` harness advertises only the four game tools. The native Codex
+harness uses its standard `disabled_tools = ["shell_tool"]` configuration; its
+other built-in bookkeeping tools remain available, but it has no shell or host
+filesystem path. Both run in a fresh Prime sandbox. The task sent to the model
+contains no repository or checkpoint path.
+Only the isolated tool server can update trusted game state through Verifiers'
+per-rollout state channel.
 
-Prime-hosted Codex and Claude Code runs can optionally expose the same
-`python_exec` scratchpad used by local tools mode. The Python process runs on
-the trusted evaluator inside Codex's fail-closed OS sandbox, not inside the
-coding harness: it receives a fresh persistent workspace, bounded CPU/memory
-and output, and no repository files, host files, subprocesses, credentials, or
-network. A launch-time canary preflight verifies those denials before the model
-starts. Claude's native Bash/read/edit tools and Codex's native shell remain
-disabled in both modes; enabling tools adds only `python_exec`.
+For every agentic rollout, `mazebench-tools` declares a bounded
+`PrimeConfig` as its Toolset runtime. Verifiers provisions that separate
+sandbox, installs the packaged environment, launches the MCP server there, and
+destroys the sandbox with the rollout. The Node game runs inside the same
+sandbox as its trusted tool server. Verifiers connects that server to the agent
+harness as the bare `start`, `observe`, `action`, and `action_sequence` tools;
+the game remains outside the agent sandbox.
 
-In these coding-agent paths, scoring is finalized after the agent exits. The
-agent-facing helper exposes start, observe, and action operations, but no
-scorecard operation.
+Scoring is finalized after the model exits. The agent-facing server exposes
+start, observe, action, and action-sequence tools, but no scorecard or
+filesystem operation. Action strings are limited to 128 characters and action
+sequences to 1,000 items.
 
-The local Codex v1 harness can be exercised from a full checkout with:
+The approved path can be exercised from a full checkout with:
 
 ```bash
-uv run --project environments/mazebench eval mazebench_codex \
-  --harness.id mazebench_codex_harness \
-  --harness.runtime.type prime \
-  --harness.runtime.image node:24-bookworm-slim \
-  -m openai/gpt-5 \
-  -n 1 \
-  -r 1 \
-  --taskset.max-actions 100 \
-  --taskset.python-tools true \
+node scripts/maze-prime-run.js \
+  --env-dir environments/mazebench \
+  --out /tmp/mazebench-agent-run \
+  --harness null \
+  --model openai/gpt-5 \
   --max-turns 40 \
-  --rich false
+  --tool-use read-only
 ```
 
 ## Runtime and reproducibility

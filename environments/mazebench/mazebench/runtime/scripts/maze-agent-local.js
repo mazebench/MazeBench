@@ -1,60 +1,11 @@
 #!/usr/bin/env node
 
-// Drive MazeBench with a LOCAL coding agent (Codex CLI, Claude Code, or Kimi Code) instead
-// of Prime Intellect Verifiers. The agent plays the maze by shelling out to
-// scripts/codex-play.js (a stateful CLI over scripts/maze-bridge.js). When the
-// agent is done we make sure a scorecard exists and then render a replay video
-// via scripts/maze-export-replay.js.
+// Retired local coding-agent launcher. Executing this file always fails closed;
+// current runs go through scripts/maze-prime-run.js and the mazebench-tools
+// environment so the agent and authoritative game occupy separate sandboxes.
 //
-// Usage:
-//   node scripts/maze-agent-local.js --model codex [options]
-//   node scripts/maze-agent-local.js model=claude moves=10 level=HxI
-//   node scripts/maze-agent-local.js model=kimi moves=10 level=HxI container=false
-//
-// Options accept either "--flag value" or "key=value" form:
-//   model        codex | claude | kimi                       (required)
-//   container    true (run inside docker, host FS isolated)  (default true)
-//                | false (run on host with the CLI sandbox)
-//   image        container image tag                         (default mazebench-agent)
-//   docker_bin   container runtime                           (default docker)
-//   codex_auth / claude_auth   host auth dir to mount read-only (subscription logins)
-//   kimi_auth    host Kimi Code data dir                     (default $KIMI_CODE_HOME or ~/.kimi-code)
-//   tool_use     read-only (game controls only) | offline (isolated Python)
-//                                                            (default read-only)
-//   tools        legacy boolean alias (false=game-only, true=offline)
-//   auto_run_tools      allow saved solvers to submit action sequences (tools only)
-//   auto_run_all_frames return every intermediate sequence observation (default true)
-//   swarm        true lets an offline lead spawn identical-model workers
-//   max_swarm_workers  hard cap on workers/private instances   (default 8)
-//   mode         text (ASCII) | json (structured room) | vision (PNG) (default text)
-//   omniscient   JSON mode includes every object in the room (default false)
-//   hide_names   ASCII/JSON randomizes glyphs/names except player/gem
-//   moves        maze action budget shown to the agent       (default 20)
-//   game         game directory under games/ (default maze; draft/online
-//                worlds created in Build Mode use their games/<id> dirs)
-//   level        world level id, e.g. HxI or level_HxI       (default level_HxI)
-//   vision_width, vision_height   PNG size in vision mode     (default 512)
-//   vision_view  how far vision frames see: 1-26 rings of neighbor rooms
-//                or "world"                                   (default 1 = 3x3)
-//   view         top | top-diagonal | diagonal | side-diagonal | side
-//   yaw          0-3 camera yaw                               (default 0)
-//   gems         legacy compatibility input; game_won is fixed at 100
-//   model_name   underlying LLM id (codex -m / claude --model) (agent default)
-//   reasoning    reasoning effort. codex: low|medium|high|xhigh; claude:
-//                low|medium|high|xhigh|max (model/agent default when unset)
-//   codex_fast   codex Fast mode (priority tier)              (default false)
-//   video        on | off                                     (default on)
-//   out          output directory for this run's artifacts
-//   session      explicit session.json path (overrides out)
-//   resume       provider conversation id to resume
-//   fork_session Claude: fork resume into session_id (internal branch support)
-//   session_id   Claude: id assigned to the forked conversation
-//   codex_bin    codex executable                             (default codex)
-//   claude_bin   claude executable                            (default claude)
-//   kimi_bin     kimi executable                              (default kimi)
-//   fast|draft   forwarded to the video renderer for speed
-//   width|height|fps  forwarded to the video renderer
-//   dry_run      print the agent command + prompt and exit (no run)
+// Historical event parsing and artifact helpers remain exported below for old
+// run pages; none of them is a supported launch interface.
 
 const crypto = require("node:crypto");
 const fs = require("node:fs");
@@ -70,6 +21,9 @@ const {
 } = require("./maze-python-sandbox");
 const DEFAULT_MAX_SWARM_WORKERS = 8;
 const SUPPORTED_KIMI_CODE_VERSIONS = new Set(["0.28.1"]);
+const RETIRED_LOCAL_AGENT_MESSAGE =
+  "Local coding-agent launches are retired because they can expose repository or host capabilities. " +
+  "Use scripts/maze-prime-run.js with the environments/mazebench mazebench-tools route.";
 
 // Claude Code discovers MCP tools only when its default tool registry is
 // enabled. Keep that registry on, then explicitly remove every non-game tool
@@ -115,7 +69,7 @@ const CLAUDE_RESTRICTED_BUILTIN_TOOLS = [
 
 // Kimi Code evaluates deny policies before allow policies, so an overlapping
 // catch-all deny would also block MazeBench MCP. Deny every built-in exposed by
-// the certified CLI version instead, allow exact MCP tools, and reject any
+// the pinned CLI version instead, allow exact MCP tools, and reject any
 // unreviewed Kimi version before launch. mcp.json also pins the exact tool list.
 const KIMI_RESTRICTED_BUILTIN_TOOLS = [
   "Agent",
@@ -2638,7 +2592,9 @@ async function runWizard(raw) {
   return out;
 }
 
-async function main() {
+// Kept temporarily for the pure event/parser helpers imported by historical
+// run views. Nothing calls this former launcher implementation.
+async function retiredLocalMain() {
   const { raw: parsedRaw, passthrough } = parseArgs(process.argv.slice(2));
   let raw = parsedRaw;
 
@@ -2909,7 +2865,12 @@ async function main() {
   }
 }
 
+async function main() {
+  throw new Error(RETIRED_LOCAL_AGENT_MESSAGE);
+}
+
 module.exports = {
+  RETIRED_LOCAL_AGENT_MESSAGE,
   actionFromShellCommand,
   agentCommand,
   actionsFromShellCommand,

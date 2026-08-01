@@ -454,7 +454,24 @@ try {
     { jsonrpc: "2.0", id: 93, method: "tools/call", params: { name: "game_observe", arguments: { clone_id: "scout" } } },
     { jsonrpc: "2.0", id: 94, method: "tools/call", params: { name: "maze_workers", arguments: {} } },
     { jsonrpc: "2.0", id: 95, method: "tools/call", params: { name: "game_action", arguments: { action: "right", clone_id: "scout" } } },
-    { jsonrpc: "2.0", id: 96, method: "tools/call", params: { name: "game_scorecard", arguments: {} } }
+    { jsonrpc: "2.0", id: 96, method: "tools/call", params: { name: "game_scorecard", arguments: {} } },
+    {
+      jsonrpc: "2.0",
+      id: 97,
+      method: "tools/call",
+      params: {
+        name: "game_action_sequence",
+        arguments: { actions: ["rotate camera left", "rotate camera right"] }
+      }
+    },
+    { jsonrpc: "2.0", id: 98, method: "tools/call", params: { name: "game_start", arguments: {} } },
+    { jsonrpc: "2.0", id: 99, method: "tools/call", params: { name: "maze_start", arguments: {} } },
+    {
+      jsonrpc: "2.0",
+      id: 100,
+      method: "tools/call",
+      params: { name: "game_action_sequence", arguments: { route_file: "route.json" } }
+    }
   ];
   const restrictedResult = spawnSync(process.execPath, [path.join(rootDir, "scripts", "maze-mcp-server.js")], {
     cwd: rootDir,
@@ -466,7 +483,7 @@ try {
       MAZEBENCH_RUN_DIR: restrictedDir,
       MAZEBENCH_SESSION_FILE: path.join(restrictedDir, "session.json"),
       MAZEBENCH_RESTRICTED_MODE: "1",
-      MAZEBENCH_MOVE_BUDGET: "1"
+      MAZEBENCH_MOVE_BUDGET: "2"
     }
   });
   assert.equal(restrictedResult.status, 0, restrictedResult.stderr);
@@ -475,9 +492,24 @@ try {
   const restrictedTools = restrictedResponses.find((response) => response.id === 91)?.result?.tools || [];
   assert.deepEqual(
     restrictedTools.map((tool) => tool.name),
-    ["game_start", "game_observe", "game_action"]
+    ["game_start", "game_observe", "game_action", "game_action_sequence"]
   );
   assert.doesNotMatch(JSON.stringify(restrictedTools), /MazeBench|clone_id|worker/i);
+  const restrictedSequenceTool = restrictedTools.find((tool) => tool.name === "game_action_sequence");
+  assert.deepEqual(
+    Object.keys(restrictedSequenceTool.inputSchema.properties),
+    ["actions", "include_intermediate_observations"]
+  );
+  assert.deepEqual(restrictedSequenceTool.inputSchema.required, ["actions"]);
+  assert.equal(restrictedSequenceTool.inputSchema.oneOf, undefined);
+  assert.equal(restrictedSequenceTool.inputSchema.properties.actions.maxItems, 1000);
+  assert.equal(restrictedSequenceTool.inputSchema.properties.actions.items.maxLength, 128);
+  assert.equal(
+    restrictedTools.find((tool) => tool.name === "game_action").inputSchema.properties.action
+      .maxLength,
+    128
+  );
+  assert.doesNotMatch(restrictedSequenceTool.description, /route_file|workspace/i);
   const restrictedObservation = restrictedResponses.find((response) => response.id === 92)?.result?.structuredContent;
   assert.deepEqual(Object.keys(restrictedObservation || {}), [
     "observation_mode",
@@ -496,9 +528,18 @@ try {
   assert.match(restrictedObservation.level, /P|p/);
   assert.equal(restrictedObservation.visited_levels.length, 1);
   assert.match(restrictedObservation.visited_levels[0], /^level_[A-P]x[A-P]$/);
-  for (const id of [93, 94, 95, 96]) {
+  for (const id of [93, 94, 95, 96, 99, 100]) {
     assert(restrictedResponses.find((response) => response.id === id)?.error, `restricted request ${id} must fail closed`);
   }
+  const restrictedSequence = restrictedResponses.find((response) => response.id === 97)?.result?.structuredContent;
+  assert.equal(restrictedSequence.completed_count, 2);
+  assert.match(restrictedSequence.final_observation.level, /P|p/);
+  assert.equal(restrictedResponses.find((response) => response.id === 98)?.result?.isError, false);
+  assert.equal(
+    JSON.parse(fs.readFileSync(path.join(restrictedDir, "session.json"), "utf8")).actions.length,
+    2,
+    "calling game_start again must observe the existing primary session"
+  );
 
   const noQuitDir = path.join(runDir, "no-quit");
   fs.mkdirSync(noQuitDir, { recursive: true });
@@ -1108,6 +1149,22 @@ runpy.run_path("planner.py")`;
   }
   assert(fs.existsSync(portFile), "HTTP MCP server should publish its port");
   const { port } = JSON.parse(fs.readFileSync(portFile, "utf8"));
+  const clientRequestPath = path.join(httpDir, "client-request.json");
+  fs.writeFileSync(
+    clientRequestPath,
+    `${JSON.stringify({ jsonrpc: "2.0", id: 0, method: "tools/list", params: {} })}\n`
+  );
+  const clientProbe = spawnSync(
+    process.execPath,
+    [
+      path.join(rootDir, "scripts", "maze-mcp-client.js"),
+      `http://127.0.0.1:${port}/test-token/lead`,
+      clientRequestPath
+    ],
+    { encoding: "utf8" }
+  );
+  assert.equal(clientProbe.status, 0, clientProbe.stderr);
+  assert.equal(JSON.parse(clientProbe.stdout).result.tools[0].name, "maze_start");
   const leadProbe = spawnSync(
     "curl",
     [

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Discover the harnesses shipped by the pinned Verifiers distribution."""
 
 from __future__ import annotations
@@ -16,13 +15,12 @@ import verifiers.v1.harnesses as builtin_harnesses
 from verifiers.v1.loaders import harness_class, harness_config_type
 from verifiers.v1.utils.version import verifiers_commit
 
-
 COMMON_CONFIG_FIELDS = {
     "disabled_tools",
     "env",
     "forward_env",
     "id",
-    "runtime",
+    "skills",
 }
 LABELS = {
     "bash": "Bash",
@@ -30,41 +28,39 @@ LABELS = {
     "codex": "Codex",
     "kimi_code": "Kimi Code",
     "mini_swe_agent": "mini-swe-agent",
-    "null": "Default MCP",
+    "null": "Game agent",
     "pi": "Pi",
     "rlm": "RLM",
     "terminus_2": "Terminus 2",
 }
+GAME_TOOLS_ONLY_ROUTES = {
+    "codex": {
+        "adapter": "native",
+        "runtime_harness_id": "codex",
+        "default_config": {
+            "disabled_tools": ["shell_tool"],
+            "version": "0.144.5",
+            "multi_agent": False,
+        },
+    },
+    "null": {
+        "adapter": "native",
+        "runtime_harness_id": "null",
+        "default_config": {},
+    },
+}
 
 
 def adapter_for(harness_id: str, harness_type: type[vf.Harness]) -> dict[str, Any]:
-    if harness_id == "claude_code":
+    del harness_type
+    if harness_id in GAME_TOOLS_ONLY_ROUTES:
         return {
-            "adapter": "claude_mcp",
-            "runtime_harness_id": "mazebench_claude_harness",
+            "adapter": "native",
+            "runtime_harness_id": harness_id,
         }
-    if harness_id == "codex":
-        return {
-            "adapter": "codex_mcp",
-            "runtime_harness_id": "mazebench_codex_harness",
-        }
-    if harness_id == "kimi_code":
-        return {
-            "adapter": "kimi_mcp",
-            "runtime_harness_id": "mazebench_kimi_harness",
-        }
-    if harness_id == "pi":
-        return {
-            "adapter": "cli_gateway",
-            "runtime_harness_id": "mazebench_cli_harness",
-            "upstream_id": harness_id,
-        }
-    if harness_type.SUPPORTS_MCP:
-        return {"adapter": "native_mcp", "runtime_harness_id": harness_id}
     return {
-        "adapter": "cli_gateway",
-        "runtime_harness_id": "mazebench_cli_harness",
-        "upstream_id": harness_id,
+        "adapter": "unsupported",
+        "runtime_harness_id": "",
     }
 
 
@@ -74,30 +70,26 @@ def discover() -> dict[str, Any]:
         pkgutil.iter_modules(builtin_harnesses.__path__), key=lambda item: item.name
     ):
         harness_id = module.name
-        try:
-            harness_type = harness_class(harness_id)
-            config_type = harness_config_type(harness_id)
-            config = config_type.model_validate({"id": harness_id})
-        except Exception as error:
-            harnesses.append(
-                {
-                    "id": harness_id,
-                    "label": LABELS.get(
-                        harness_id, harness_id.replace("_", " ").title()
-                    ),
-                    "launchable": False,
-                    "status": "catalog_error",
-                    "reason": str(error).splitlines()[0][:500],
-                }
-            )
-            continue
-
+        harness_type = harness_class(harness_id)
+        config_type = harness_config_type(harness_id)
+        config = config_type.model_validate({"id": harness_id})
         schema = config_type.model_json_schema()
         properties = schema.get("properties") or {}
         configurable = sorted(set(properties) - COMMON_CONFIG_FIELDS)
         defaults = config.model_dump(exclude=COMMON_CONFIG_FIELDS)
         adapter = adapter_for(harness_id, harness_type)
-        vision_harnesses = {"bash", "claude_code", "codex", "kimi_code", "null", "pi"}
+        approved = GAME_TOOLS_ONLY_ROUTES.get(harness_id) or {}
+        if approved:
+            config_type.model_validate({"id": harness_id, **approved["default_config"]})
+            defaults = approved["default_config"]
+        game_tools_only = bool(approved) and adapter == {
+            "adapter": approved.get("adapter"),
+            "runtime_harness_id": approved.get("runtime_harness_id"),
+        }
+        if game_tools_only:
+            # Only the generated default variant is approved. An
+            # arbitrary CLI version or feature toggle is a different boundary.
+            configurable = []
         harnesses.append(
             {
                 "id": harness_id,
@@ -105,18 +97,23 @@ def discover() -> dict[str, Any]:
                 "description": (harness_type.__doc__ or "").strip().splitlines()[0]
                 if (harness_type.__doc__ or "").strip()
                 else f"Prime-provided {harness_id.replace('_', ' ')} harness.",
-                "launchable": True,
-                "status": "compatible",
-                "reason": "",
-                "boundary": "isolated-game-gateway",
+                "launchable": game_tools_only,
+                "status": "compatible" if game_tools_only else "unsafe_agent_tools",
+                "reason": ""
+                if game_tools_only
+                else (
+                    "This harness can expose shell, filesystem, subprocess, or network "
+                    "capabilities beyond MazeBench game tools."
+                ),
+                "boundary": "game-tools-only"
+                if game_tools_only
+                else "unrestricted-agent-tools",
                 "observation_modes": [
                     "text",
                     "json",
-                    *(["vision"] if harness_id in vision_harnesses else []),
+                    *(["vision"] if harness_id == "null" else []),
                 ],
                 "supports_mcp": bool(harness_type.SUPPORTS_MCP),
-                "supports_message_prompt": bool(harness_type.SUPPORTS_MESSAGE_PROMPT),
-                "supports_user_sim": bool(harness_type.SUPPORTS_USER_SIM),
                 "configurable": configurable,
                 "default_config": defaults,
                 "config_schema": {
@@ -134,9 +131,10 @@ def discover() -> dict[str, Any]:
         "verifiers_version": version,
         "verifiers_revision": commit,
         "policy": (
-            "Prime-provided harnesses execute in disposable Prime sandboxes. "
-            "MazeBench state, source, checkpoints, and scoring remain behind an "
-            "evaluator-owned capability URL."
+            "MazeBench uses unmodified Verifiers harnesses in isolated Prime runtimes. "
+            "Each approved route pins its standard harness configuration so the model can "
+            "reach the four MazeBench game tools without receiving shell, host filesystem, "
+            "or repository access."
         ),
         "harnesses": harnesses,
     }

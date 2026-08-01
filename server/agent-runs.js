@@ -2,8 +2,10 @@ const crypto = require("crypto");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { isDeepStrictEqual } = require("node:util");
 const { spawn, spawnSync } = require("child_process");
 const {
+  RETIRED_LOCAL_AGENT_MESSAGE,
   distillClaudeEvents,
   distillCodexEvents,
   distillKimiEvents,
@@ -92,49 +94,23 @@ function normalizeEventTimestamp(value) {
   return Number.isFinite(date.getTime()) ? date.toISOString() : null;
 }
 
-// Agent Mode backend: launches scripts/maze-agent-local.js (Codex CLI, Claude
-// Code, or Kimi Code) or `prime eval run` as detached child processes, one directory per run
-// under outputs/maze-local/site/. The runner writes actions.jsonl + session.json
-// into that directory as the agent plays, so progress endpoints just read files
-// — no state beyond run.json survives a server restart, and none is needed.
+// Agent Mode backend: launches the isolated Prime runner and reads both current
+// and historical run artifacts under outputs/maze-local/site/.
 
 const VIEW_NAMES = ["top", "top-diagonal", "diagonal", "side-diagonal", "side"];
 const PRIME_HARNESS_CATALOG = require("../environments/mazebench/prime-harness-catalog.json");
-const PRIME_HARNESS_CERTIFICATION = require("../environments/mazebench/prime-harness-certification.json");
-if (PRIME_HARNESS_CERTIFICATION.catalog_fingerprint !== PRIME_HARNESS_CATALOG.catalog_fingerprint) {
-  throw new Error("Prime harness catalog does not match its safety certification.");
-}
-const CERTIFIED_PRIME_HARNESSES = new Set(
-  PRIME_HARNESS_CERTIFICATION.harnesses
-    .filter((entry) => entry.status === "certified")
-    .map((entry) => entry.id)
-);
 const VERIFIED_VERIFIERS_REVISION = PRIME_HARNESS_CATALOG.verifiers_revision;
-const PRIME_HARNESSES = new Map([
-  ["none", {
-    id: "none",
-    label: "Prime Intellect",
-    taskset: "mazebench",
-    protocol: "Prime model API",
-    launchable: true,
-    boundary: "trusted-user-simulator",
-    observation_modes: ["text", "json", "vision"]
-  }],
-  ...PRIME_HARNESS_CATALOG.harnesses.map((definition) => [definition.id, {
+const PRIME_HARNESSES = new Map(
+  PRIME_HARNESS_CATALOG.harnesses.map((definition) => [definition.id, {
     ...definition,
-    launchable: Boolean(definition.launchable) && CERTIFIED_PRIME_HARNESSES.has(definition.id),
-    status: CERTIFIED_PRIME_HARNESSES.has(definition.id) ? "certified" : "uncertified",
-    reason: CERTIFIED_PRIME_HARNESSES.has(definition.id)
-      ? definition.reason
-      : "This generated harness route has not passed the checked-in compatibility certification.",
+    launchable: Boolean(definition.launchable),
     taskset: "mazebench-tools",
     protocol: definition.adapter,
     custom: true
   }])
-]);
+);
 const UNSAFE_PRIME_AGENT_HARNESS_MESSAGE =
   "This Prime harness is not approved for MazeBench's isolated game-control boundary.";
-const PRIME_PYTHON_HARNESSES = new Set(["codex", "claude_code"]);
 
 const STANDARD_REASONING_LEVELS = ["low", "medium", "high"];
 const PRIME_REASONING_LEVELS = ["low", "medium", "high"];
@@ -168,11 +144,8 @@ function primeHarnessModelCompatible(modelId, harnessId) {
   const harness = normalizePrimeHarness(harnessId);
   const id = String(modelId || "").trim();
   if (!id) return false;
-  // Prime's interception endpoint is the compatibility layer between a
-  // harness protocol and the selected model. The live /models response does
-  // not expose a provider-name rule that can safely predict that pairing, so
-  // do not hide Codex, Claude Code, or future harnesses based on model ids.
-  // The compatibility certificate records actual launch results instead.
+  // The native null harness uses Prime's OpenAI-compatible interception endpoint, so
+  // it is provider-neutral and does not infer compatibility from model names.
   return true;
 }
 
@@ -190,7 +163,6 @@ function primeSandboxIdsFromText(value) {
 
 function filterPrimeCatalogForHarness(catalog, harnessId) {
   const harness = normalizePrimeHarness(harnessId);
-  if (harness === "none") return { ...catalog, harness };
   const definition = PRIME_HARNESSES.get(harness);
   const allModels = Array.isArray(catalog?.models) ? catalog.models : [];
   if (!definition?.launchable) {
@@ -215,7 +187,7 @@ function filterPrimeCatalogForHarness(catalog, harnessId) {
     models,
     default_model_id: models[0]?.id || "",
     note: models.length
-      ? `${models.length} live Prime model${models.length === 1 ? "" : "s"}. ${definition.label} is connected through MazeBench's ${definition.adapter || "native"} compatibility route; launch certification is recorded separately because Prime's model list has no harness capability flags.`
+      ? `${models.length} live Prime model${models.length === 1 ? "" : "s"}. ${definition.label} is connected through MazeBench's ${definition.adapter || "native"} game-tools-only route.`
       : catalog?.note || `Prime's live model catalog is currently empty.`
   };
 }
@@ -241,7 +213,6 @@ function publicPrimeHarnesses() {
       supports_mcp: Boolean(definition.supports_mcp),
       status: definition.status || (definition.launchable ? "compatible" : "catalog_error"),
       catalog_fingerprint: PRIME_HARNESS_CATALOG.catalog_fingerprint,
-      certification_schema_version: PRIME_HARNESS_CERTIFICATION.schema_version,
       verifiers_version: PRIME_HARNESS_CATALOG.verifiers_version,
       verifiers_revision: VERIFIED_VERIFIERS_REVISION
     }));
@@ -281,11 +252,15 @@ function normalizePrimeHarnessConfig(value, harnessId) {
     throw new Error(`${definition.label} configuration is too large.`);
   }
   const allowed = new Set(definition.configurable || []);
-  const unknown = Object.keys(raw).filter((key) => !allowed.has(key));
+  const defaults = definition.default_config || {};
+  const unknown = Object.keys(raw).filter((key) =>
+    !allowed.has(key) &&
+    !(Object.prototype.hasOwnProperty.call(defaults, key) && isDeepStrictEqual(raw[key], defaults[key]))
+  );
   if (unknown.length) {
     throw new Error(`Unsupported ${definition.label} configuration: ${unknown.join(", ")}.`);
   }
-  const config = { ...(definition.default_config || {}) };
+  const config = { ...defaults };
   for (const [key, value] of Object.entries(raw)) {
     const schema = definition.config_schema?.properties?.[key] || {};
     if (!primeHarnessConfigValueValid(value, schema)) {
@@ -297,13 +272,14 @@ function normalizePrimeHarnessConfig(value, harnessId) {
 }
 
 function normalizePrimeHarness(value) {
-  const requested = String(value || "none").trim().toLowerCase();
+  const requested = String(value || "null").trim().toLowerCase();
   const aliases = {
     claude: "claude_code",
     "claude-code": "claude_code",
     default: "null",
     "kimi-code": "kimi_code",
     "mini-swe-agent": "mini_swe_agent",
+    none: "null",
     "terminus-2": "terminus_2"
   };
   const normalized = aliases[requested] || requested;
@@ -361,6 +337,8 @@ const PAUSE_CAPABILITY_FILE = "cold-pause-capability.json";
 const RUN_FAVORITE_FILE = "favorite.json";
 const RUN_REVIEW_FILE = "run-review.json";
 const RUN_NOTES_FILE = "run-notes.json";
+const RETIRED_RUN_REVIEW_MESSAGE =
+  "Provider-backed run reviews are retired because they grant a host agent repository and run-file access. Review the saved artifacts directly.";
 const MAX_RUN_NOTES_LENGTH = 50_000;
 const MAX_PROGRESS_LOG_BYTES = 256 * 1024;
 const TOOL_WORKSPACE_MAX_ENTRIES = 2000;
@@ -384,73 +362,6 @@ const SERVABLE_RUN_FILES = new Set([
   "maze_actions.txt",
   "maze_replay.mp4"
 ]);
-
-function runReviewPrompt(runId, runDir, rootDir) {
-  return `You are the post-run analyst for MazeBench agent run ${runId}. Produce a candid, detailed review of how the agent played and reasoned.
-
-You have read-only access to the complete run directory at ${runDir} and the MazeBench game implementation at ${rootDir}. Do not modify any file. Read the game source only when it helps explain mechanics; the recorded evaluator artifacts are authoritative about what actually happened.
-
-Inspect the full run, not only the last few turns. Prioritize run.json, maze_scorecard.json, actions.jsonl, reasoning.json, prime-reasoning.jsonl, agent-events.jsonl, launcher.log, and eval-output/results.jsonl when present. Correlate reasoning with actions and outcomes. Treat valid:false actions and their errors as rejected attempts that did not change game state. Do not attempt to decode binary video files.
-
-Write a standalone Markdown report with these sections:
-1. Overall verdict and concise scorecard.
-2. Strategy and thought-process narrative across the run.
-3. What it understood and did well, with specific action numbers.
-4. Bad ideas, mistakes, invalid actions, repeated confusion, and wasted effort, with specific action numbers.
-5. How well its beliefs matched the actual game state and mechanics.
-6. Important turning points and interesting anecdotes from the reasoning logs.
-7. Efficiency, exploration, recovery behavior, and use of memory/tools/other agents when applicable.
-8. A better strategy it should have followed.
-9. Final lessons and concrete recommendations for the next attempt.
-
-Distinguish evidence from inference. Quote only short phrases from the reasoning logs and otherwise summarize. Be thorough, specific, readable, and honest.`;
-}
-
-function runReviewCommand({ provider, model, reasoning, runDir, rootDir, outputPath, prompt }) {
-  if (provider === "codex") {
-    const argv = [
-      "exec",
-      "--ephemeral",
-      "--ignore-user-config",
-      "--ignore-rules",
-      "--skip-git-repo-check",
-      "-C", runDir,
-      "--sandbox", "read-only",
-      "-c", 'approval_policy="never"',
-      "-c", 'web_search="disabled"',
-      "-c", "tools.web_search=false",
-      "--disable", "multi_agent",
-      "--disable", "apps",
-      "--disable", "plugins",
-      "--output-last-message", outputPath
-    ];
-    if (model) argv.push("--model", model);
-    if (reasoning) argv.push("-c", `model_reasoning_effort=${JSON.stringify(reasoning)}`);
-    argv.push(prompt);
-    return { bin: "codex", argv };
-  }
-
-  if (provider === "claude") {
-    const argv = [
-      "-p", prompt,
-      "--output-format", "text",
-      "--no-session-persistence",
-      "--safe-mode",
-      "--disable-slash-commands",
-      "--no-chrome",
-      "--permission-mode", "dontAsk",
-      "--tools", "Read,Glob,Grep",
-      "--allowedTools", "Read,Glob,Grep",
-      "--disallowedTools", "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch,Task,Agent",
-      "--add-dir", rootDir
-    ];
-    if (model) argv.push("--model", model);
-    if (reasoning) argv.push("--effort", reasoning);
-    return { bin: "claude", argv };
-  }
-
-  throw new Error('Review provider must be "codex" or "claude".');
-}
 
 function branchLaunchParams(meta, sourceParams, runId, turn) {
   const params = { ...(sourceParams || {}) };
@@ -528,9 +439,7 @@ function primeEvaluationReward(sample, scorecard = null) {
 function createAgentRunService({
   agentEnvironment,
   agentEnvironmentAsync,
-  allowLegacyLocalLaunch = true,
   primeEvaluationCreator = {},
-  reviewBins = {},
   syncPrimeEvaluations = false,
   ensureDirectory,
   getGame,
@@ -547,7 +456,6 @@ function createAgentRunService({
   const liveChildren = new Map();
   const videoChildren = new Map();
   const primeSyncChildren = new Map();
-  const reviewChildren = new Map();
   const resolvedRunModels = new Map();
   const legacyClaudeSnapshotTimers = new Map();
   const legacyClaudeSnapshotStamps = new Map();
@@ -555,11 +463,7 @@ function createAgentRunService({
   const autoQuitMonitors = new Map();
 
   function requireLegacyLocalLaunch() {
-    if (!allowLegacyLocalLaunch) {
-      throw new Error(
-        "Local Codex, Claude Code, and Kimi Code launches are disabled. Choose the corresponding Prime harness."
-      );
-    }
+    throw new Error(RETIRED_LOCAL_AGENT_MESSAGE);
   }
 
   function requireLocalSubscription(params) {
@@ -645,6 +549,20 @@ function createAgentRunService({
   function getEnvironmentAsync(options = {}) {
     if (typeof agentEnvironmentAsync === "function") return agentEnvironmentAsync(options);
     return Promise.resolve(getEnvironment(options));
+  }
+
+  function requirePrimeLaunchEnvironment() {
+    const environment = getEnvironment({ fresh: true });
+    if (!environment.prime) {
+      throw new Error(
+        environment.prime_installed
+          ? "Prime sign-in is required before launching an agent run."
+          : "Prime CLI is required before launching an agent run."
+      );
+    }
+    if (!environment.uv) {
+      throw new Error("uv is required before launching an agent run.");
+    }
   }
 
   // Launch the Docker daemon when it is installed but stopped. The daemon takes
@@ -1315,7 +1233,7 @@ function createAgentRunService({
       review: "",
       error: ""
     });
-    if (review.status === "running" && !reviewChildren.has(runId)) {
+    if (review.status === "running") {
       return writeRunReview(runId, {
         ...review,
         status: "failed",
@@ -1335,113 +1253,10 @@ function createAgentRunService({
     return value;
   }
 
-  function generateRunReview(runId, params = {}) {
+  function generateRunReview(runId) {
     const meta = readRunMeta(runId);
     if (!meta) throw new Error(`Unknown run "${runId}".`);
-    if (!["paused", "finished", "stopped", "failed"].includes(meta.status)) {
-      throw new Error("Pause or finish the run before asking another model to review it.");
-    }
-    if (!fileHasContent(path.join(runDirFor(runId), "actions.jsonl"))) {
-      throw new Error("This run has no recorded actions to review.");
-    }
-
-    const provider = String(params.provider || "codex").trim().toLowerCase();
-    if (!["codex", "claude"].includes(provider)) {
-      throw new Error('Review provider must be "codex" or "claude".');
-    }
-    const model = String(params.model || "").trim();
-    if (!model || model.length > 200 || /[\r\n\0]/.test(model)) {
-      throw new Error("Choose a valid reviewer model.");
-    }
-    const reasoning = String(params.reasoning || "").trim().toLowerCase();
-    if (reasoning && !["low", "medium", "high", "xhigh", "max", "ultra"].includes(reasoning)) {
-      throw new Error("Choose a supported reviewer reasoning effort.");
-    }
-    const environment = getEnvironment({ fresh: true });
-    if (!environment[provider]) {
-      const label = provider === "claude" ? "Claude Code" : "Codex";
-      const login = provider === "claude" ? "claude auth login" : "codex login";
-      throw new Error(`${label} is not signed in. Run \`${login}\`, then try again.`);
-    }
-    if (reviewChildren.has(runId)) return getRunReview(runId);
-
-    const runDir = runDirFor(runId);
-    const generationId = crypto.randomUUID();
-    const outputPath = path.join(runDir, `.run-review-${generationId}.md`);
-    const logPath = path.join(runDir, "run-review.log");
-    const prompt = runReviewPrompt(runId, runDir, rootDir);
-    const command = runReviewCommand({ provider, model, reasoning, runDir, rootDir, outputPath, prompt });
-    const startedAt = new Date().toISOString();
-    writeRunReview(runId, {
-      schema_version: 1,
-      generation_id: generationId,
-      status: "running",
-      provider,
-      model,
-      reasoning,
-      started_at: startedAt,
-      completed_at: null,
-      review: "",
-      error: ""
-    });
-
-    const child = spawn(String(reviewBins[provider] || command.bin), command.argv, {
-      cwd: runDir,
-      env: enrichedPathEnv(),
-      stdio: ["ignore", "pipe", "pipe"]
-    });
-    child.unref();
-    reviewChildren.set(runId, child);
-    let stdout = "";
-    let log = "";
-    let settled = false;
-    const append = (chunk, isStdout) => {
-      const text = chunk.toString();
-      log = `${log}${text}`.slice(-8 * 1024 * 1024);
-      if (isStdout) stdout = `${stdout}${text}`.slice(-8 * 1024 * 1024);
-      try {
-        fs.appendFileSync(logPath, text, "utf8");
-      } catch (_error) {
-        /* the final state still reports provider errors */
-      }
-    };
-    child.stdout.on("data", (chunk) => append(chunk, true));
-    child.stderr.on("data", (chunk) => append(chunk, false));
-    const finish = (code, spawnError = null) => {
-      if (settled) return;
-      settled = true;
-      reviewChildren.delete(runId);
-      const current = loadJson(path.join(runDir, RUN_REVIEW_FILE), {});
-      if (current.generation_id !== generationId) return;
-      let review = provider === "codex" && fileHasContent(outputPath)
-        ? fs.readFileSync(outputPath, "utf8").trim()
-        : stdout.trim();
-      fs.rmSync(outputPath, { force: true });
-      const completedAt = new Date().toISOString();
-      if (code === 0 && review) {
-        writeRunReview(runId, {
-          ...current,
-          status: "completed",
-          completed_at: completedAt,
-          review,
-          error: ""
-        });
-        return;
-      }
-      const error = String(spawnError?.message || log || `Reviewer exited with status ${code ?? "unknown"}.`)
-        .trim()
-        .slice(-4000);
-      writeRunReview(runId, {
-        ...current,
-        status: "failed",
-        completed_at: completedAt,
-        review: "",
-        error: error || "The reviewer did not return a report."
-      });
-    };
-    child.on("error", (error) => finish(null, error));
-    child.on("close", (code) => finish(code));
-    return getRunReview(runId);
+    throw new Error(RETIRED_RUN_REVIEW_MESSAGE);
   }
 
   function readPrimeRolloutFailure(runId) {
@@ -1775,6 +1590,7 @@ function createAgentRunService({
   }
 
   function startWaitingClaudeRun(runId) {
+    requireLegacyLocalLaunch();
     const meta = readRunMeta(runId);
     if (!meta || meta.model !== "claude" || meta.status !== "waiting") return null;
 
@@ -1819,17 +1635,7 @@ function createAgentRunService({
   }
 
   function startNextWaitingClaudeRun() {
-    if (!allowLegacyLocalLaunch) return null;
-    if (startingClaudeQueue) return null;
-    startingClaudeQueue = true;
-
-    try {
-      const waiting = waitingClaudeRuns();
-      waiting.forEach((entry) => startWaitingClaudeRun(entry.id));
-      return waiting.length ? summarizeRun(waiting[waiting.length - 1].id) : null;
-    } finally {
-      startingClaudeQueue = false;
-    }
+    return null;
   }
 
   function readActions(runId, afterTurn = 0) {
@@ -2338,6 +2144,7 @@ function createAgentRunService({
   }
 
   function retryProviderBackoff(runId, meta) {
+    requireLegacyLocalLaunch();
     if (meta?.status !== "paused" || meta.pause_reason !== "provider_backoff") return null;
     if (Date.parse(meta.retry_at || "") > Date.now()) return null;
 
@@ -2366,12 +2173,7 @@ function createAgentRunService({
   }
 
   function retryDueProviderBackoffs() {
-    if (!allowLegacyLocalLaunch) return;
-    runMetaEntries().forEach(({ id, meta }) => {
-      if (meta.status === "paused" && meta.pause_reason === "provider_backoff") {
-        retryProviderBackoff(id, meta);
-      }
-    });
+    return;
   }
 
   function resolveClaudeCatalogModelId(modelName) {
@@ -4957,7 +4759,6 @@ function createAgentRunService({
       verifiers_revision: VERIFIED_VERIFIERS_REVISION,
       verifiers_version: PRIME_HARNESS_CATALOG.verifiers_version,
       catalog_fingerprint: PRIME_HARNESS_CATALOG.catalog_fingerprint,
-      certification: PRIME_HARNESS_CERTIFICATION.boundary,
       policy: PRIME_HARNESS_CATALOG.policy
     };
   }
@@ -5139,18 +4940,15 @@ function createAgentRunService({
     return { args, model, levelId, moves, gems, view, toolUse, autoRunTools, autoRunAllFrames, swarm, unlimited, allowQuit, autoQuit, mode, omniscient, hideNames, hideNamesSeed };
   }
 
-  // Agent Runner defaults to a local Verifiers evaluator (while inference still
-  // goes through Prime). Its PendingTurn hook can publish every resolved move
-  // immediately. A hosted evaluation only publishes sample artifacts on the
-  // platform's schedule, which can be after this single long rollout finishes.
-  // Keep hosted execution as an API-level opt-in for evaluation workflows.
+  // Verifiers provisions the native harness and game Toolset in separate Prime
+  // Sandboxes for each rollout.
   function buildPrimeCommand(params, runDir, runId, game) {
     const harness = normalizePrimeHarness(params.harness);
     const definition = PRIME_HARNESSES.get(harness);
     if (!definition.launchable) throw new Error(definition.reason || UNSAFE_PRIME_AGENT_HARNESS_MESSAGE);
     const harnessConfig = normalizePrimeHarnessConfig(params.harness_config, harness);
     const model = String(params.model_name || params.model || "").trim();
-    if (harness !== "none" && !primeHarnessModelCompatible(model, harness)) {
+    if (!primeHarnessModelCompatible(model, harness)) {
       const definition = PRIME_HARNESSES.get(harness);
       throw new Error(
         `${definition.label} requires a known-compatible Prime model using ${definition.protocol}. Choose a model from the displayed catalog.`
@@ -5168,15 +4966,15 @@ function createAgentRunService({
     const omniscient = mode === "json" && (params.omniscient === true || params.omniscient === "true");
     const hideNames = mode !== "vision" && (params.hide_names === true || params.hide_names === "true");
     const hideNamesSeed = resolvedHideNamesSeed(hideNames, params.hide_names_seed);
-    const hosted = harness === "none" && !vision && (params.hosted === true || params.hosted === "true");
+    if (params.hosted === true || params.hosted === "true") {
+      throw new Error("Hosted agent evaluations do not run the V1 harness and Toolset route.");
+    }
+    const hosted = false;
     const requestedToolUse = String(params.tool_use || "").trim().toLowerCase();
-    const toolUse = requestedToolUse === "offline" ? "offline" : "read-only";
-    if (toolUse === "offline" && !PRIME_PYTHON_HARNESSES.has(harness)) {
-      throw new Error("Prime isolated Python tools are supported only by the Codex and Claude Code harnesses.");
+    if (requestedToolUse === "offline") {
+      throw new Error("Agent computation tools are unavailable in the game-tools-only boundary.");
     }
-    if (toolUse === "offline" && vision) {
-      throw new Error("Prime isolated Python tools currently support only ASCII and JSON observations.");
-    }
+    const toolUse = "read-only";
     const wantVideo = !(params.video === false || params.video === "false");
     const allowQuit = !(params.allow_quit === false || params.allow_quit === "false");
     const autoQuit = normalizeAutoQuitConfig(params);
@@ -5214,10 +5012,6 @@ function createAgentRunService({
       argv.push("--unlimited");
     } else {
       argv.push("--max-turns", String(maxTurns));
-    }
-
-    if (hosted) {
-      argv.push("--hosted", "--environment", "mazebench/mazebench");
     }
 
     if (model) {
@@ -5261,7 +5055,6 @@ function createAgentRunService({
 
     // A readable command string for the run page / logs (not the resolved path).
     const display = ["node", "scripts/maze-prime-run.js"]
-      .concat(hosted ? ["--hosted"] : [])
       .concat(["--out", "<run>", "--harness", harness])
       .concat(Object.keys(harnessConfig).length ? ["--harness-config", JSON.stringify(harnessConfig)] : [])
       .concat(["--tool-use", toolUse])
@@ -5300,7 +5093,7 @@ function createAgentRunService({
       upstreamHarnessId: definition.upstream_id || null,
       harnessCatalogFingerprint: PRIME_HARNESS_CATALOG.catalog_fingerprint,
       verifiersVersion: PRIME_HARNESS_CATALOG.verifiers_version,
-      runtimeImage: harness === "none" ? null : (vision ? "mcr.microsoft.com/playwright:v1.60.0-noble" : "node:24-bookworm-slim"),
+      runtimeImage: null,
       taskset: definition.taskset,
       model,
       maxTurns,
@@ -5324,6 +5117,7 @@ function createAgentRunService({
   function launchRun(params = {}) {
     const kind = String(params.kind || "local");
     if (kind !== "prime") requireLegacyLocalLaunch();
+    requirePrimeLaunchEnvironment();
     const runId = generateRunId();
     const runDir = runDirFor(runId);
 
@@ -5429,14 +5223,8 @@ function createAgentRunService({
           resume_action_count: params.resume_checkpoint
             ? Math.max(0, Number(loadJson(path.join(runDir, PRIME_RESUME_CHECKPOINT_FILE), {})?.action_count) || 0)
             : 0,
-          prime_execution: command.hosted ? "hosted" : "local",
-          note: command.hosted
-            ? "Prime Hosted Evaluation. Sample artifacts sync as Prime publishes them; per-turn streaming requires local Agent execution."
-            : command.harness === "none"
-              ? "Local Prime Verifiers evaluation using Prime inference. Moves, boards, reasoning, and usage stream into this page after every model turn."
-              : command.toolUse === "offline"
-                ? `${command.harnessLabel} runs in a Prime sandbox with MazeBench's isolated game controls and fail-closed Python scratchpad; the trusted evaluator retains game state and scoring.`
-                : `${command.harnessLabel} runs in a Prime sandbox and receives only MazeBench's isolated MCP game controls; the trusted evaluator retains game state and scoring.`
+          prime_execution: "local",
+          note: `${command.harnessLabel} is an unmodified Verifiers harness in its own Prime Sandbox and receives MazeBench's four game tools from a separate Prime Sandbox.`
         };
       } else {
         let effectiveParams = params;
@@ -6533,16 +6321,6 @@ function createAgentRunService({
       }
       primeSyncChildren.delete(runId);
     }
-    const reviewer = reviewChildren.get(runId);
-    if (reviewer?.pid) {
-      try {
-        reviewer.kill("SIGTERM");
-      } catch (_error) {
-        /* reviewer already exited */
-      }
-      reviewChildren.delete(runId);
-    }
-
     if (meta?.kind === "prime" && ["running", "stopping"].includes(meta.status)) {
       cancelPrimeEvaluation(runId);
       stopPrimeAgentSandboxes(runId);
@@ -6759,7 +6537,5 @@ module.exports = {
   primeEvaluationReward,
   primeSandboxIdsFromText,
   publicPrimeHarnesses,
-  replayMessageForCommandText,
-  runReviewCommand,
-  runReviewPrompt
+  replayMessageForCommandText
 };

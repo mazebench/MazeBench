@@ -132,41 +132,26 @@ assert.match(
 );
 assert.match(siteTheme, /\.inline-spinner \{[\s\S]*?animation: loading-spin 0\.85s linear infinite/);
 assert.match(siteTheme, /@keyframes loading-spin \{[\s\S]*?transform: rotate\(360deg\)/);
-assert.match(pages, /rel="preload" as="image" href="\/logos\/codex\.png"[^>]*fetchpriority="high"/);
-assert.match(pages, /rel="preload" as="image" href="\/logos\/claude\.png"[^>]*fetchpriority="high"/);
-assert.match(pages, /rel="preload" as="image" href="\/logos\/kimi\.svg"[^>]*fetchpriority="high"/);
+assert.doesNotMatch(pages, /rel="preload" as="image" href="\/logos\/(?:codex|claude)\.png"/);
+assert.doesNotMatch(pages, /rel="preload" as="image" href="\/logos\/kimi\.svg"/);
 assert.match(appSource, /"\/logos\/kimi\.svg"/);
 assert.match(pages, /rel="preload" as="image" href="\/logos\/prime\.png"[^>]*fetchpriority="high"/);
 assert.doesNotMatch(agentScript, /logos\/(?:codex|claude|prime)\.png" alt="" loading="lazy"/);
-assert.equal((agentScript.match(/loading="eager" decoding="sync" fetchpriority="high"/g) || []).length, 4);
+assert.equal((agentScript.match(/loading="eager" decoding="sync" fetchpriority="high"/g) || []).length, 1);
 assert.match(agentScript, /const HARNESSES = \[/);
 assert.match(agentScript, /function runModeLabel\(value\)/);
 assert.match(agentScript, /run-card__badge--mode[^\n]*runModeLabel\(run\.mode\)/);
 assert.doesNotMatch(agentScript, /id: "none",\s*name: "Prime Intellect"/);
-assert.match(agentScript, /id: "custom",\s*name: "Prime Intellect",\s*logo: '<img src="\/logos\/prime\.png"/);
-assert.match(agentScript, /id: "codex",\s*name: "Codex"/);
-assert.match(agentScript, /id: "claude-code",\s*name: "Claude Code"/);
-assert.match(agentScript, /id: "kimi-code",\s*name: "Kimi Code",\s*logo: '<img src="\/logos\/kimi\.svg"/);
-assert.ok(
-  agentScript.indexOf('id: "custom"') < agentScript.indexOf('id: "codex"') &&
-    agentScript.indexOf('id: "codex"') < agentScript.indexOf('id: "claude-code"') &&
-    agentScript.indexOf('id: "claude-code"') < agentScript.indexOf('id: "kimi-code"'),
-  "Prime Intellect must come first, with Kimi Code immediately after Claude Code"
-);
+assert.match(agentScript, /id: "custom",\s*name: "Game agent",\s*logo: '<img src="\/logos\/prime\.png"/);
+assert.doesNotMatch(agentScript, /id: "(?:codex|claude-code)",\s*name:/);
+assert.doesNotMatch(agentScript, /id: "kimi-code",\s*name: "Kimi Code"/);
 assert.match(agentScript, /kind: "prime",\s*harness: effectiveHarnessId\(\)/);
-assert.match(agentScript, /kind: "local",\s*subscription: true/);
+assert.doesNotMatch(agentScript, /kind: "local",\s*subscription: true/);
 assert.match(pages, /id="custom-harness-panel"/);
-assert.match(pages, /Game source, state, checkpoints, and scoring remain on the trusted evaluator/);
-assert.match(pages, /capability-scoped CLI/);
-assert.match(pages, /data-execution="prime"/);
-assert.match(pages, /data-execution="local"/);
-assert.match(pages, /data-execution="prime"[\s\S]*?src="\/logos\/prime\.png"/);
-assert.match(pages, /id="local-run-status"[^>]*hidden/);
+assert.match(pages, /framework harness receives exactly four game tools through standard MCP wiring/);
+assert.match(pages, /authoritative game server runs in a separate sandbox/);
+assert.doesNotMatch(pages, /id="harness-execution"|data-execution="local"|id="local-run-status"/);
 assert.doesNotMatch(agentScript, /provider-card__avail/);
-assert.ok(
-  pages.indexOf('id="provider-picker"') < pages.indexOf('id="harness-execution"'),
-  "Run through choices should appear beneath the selected harness"
-);
 assert.match(pages, /<h3>Harness<\/h3>/);
 assert.match(pages, /window\.__PLAY_WORLD_DATA__/);
 assert.match(pages, /maze-frame is-loading/);

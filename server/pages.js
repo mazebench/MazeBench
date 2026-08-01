@@ -204,7 +204,7 @@ function createPageRenderer({
       title: "Maze Bench",
       main: `<div class="world-grid home-mode-grid">
           ${modeCard("/build", "build", "Build and Play", "Create, edit, and play the official Maze Bench environment or your local drafts.")}
-          ${modeCard("/agent", "agent", "Agent", "Run Codex, Claude Code, Kimi Code, or Prime Verifiers on any world and watch live.")}
+          ${modeCard("/agent", "agent", "Agent", "Run a model through four isolated game tools and watch live.")}
           ${modeCard("/train", "train", "Train", "Train models on Maze Bench with Prime Verifiers.")}
         </div>
         ${otherGamesSection}`
@@ -846,10 +846,7 @@ function createPageRenderer({
 
     return renderSitePage({
       title: "Agent — Maze Bench",
-      extraHeadHtml: `<link rel="preload" as="image" href="/logos/codex.png" type="image/png" fetchpriority="high">
-    <link rel="preload" as="image" href="/logos/claude.png" type="image/png" fetchpriority="high">
-    <link rel="preload" as="image" href="/logos/kimi.svg" type="image/svg+xml" fetchpriority="high">
-    <link rel="preload" as="image" href="/logos/prime.png" type="image/png" fetchpriority="high">`,
+      extraHeadHtml: `<link rel="preload" as="image" href="/logos/prime.png" type="image/png" fetchpriority="high">`,
       main: `<div class="page-head agent-page-head">
           <h1>Agent</h1>
           <p id="agent-status" class="author-status" role="status" aria-live="polite"></p>
@@ -880,21 +877,7 @@ function createPageRenderer({
               <div class="custom-harness-panel__status">
                 <strong id="custom-harness-status">Loading harnesses…</strong>
                 <p id="custom-harness-note" class="muted"></p>
-                <p class="custom-harness-panel__security">The harness program runs in a disposable Prime sandbox. Game source, state, checkpoints, and scoring remain on the trusted evaluator. Native clients receive three sanitized MCP controls; command harnesses receive an equivalent capability-scoped CLI.</p>
-              </div>
-            </div>
-            <div id="harness-execution" class="harness-execution" hidden>
-              <span class="harness-execution__label">Run through</span>
-              <div id="execution-picker" class="execution-picker" role="radiogroup" aria-label="Execution provider">
-                <button type="button" class="execution-option is-selected" data-execution="prime" aria-pressed="true">
-                  <span class="execution-option__logo"><img src="/logos/prime.png" alt="" width="128" height="128"></span>
-                  <span class="execution-option__copy"><strong>Prime</strong><small>Prime inference</small></span>
-                </button>
-                <button type="button" class="execution-option" data-execution="local" aria-pressed="false">
-                  <span class="execution-option__logo execution-option__logo--local" aria-hidden="true">LOCAL</span>
-                  <span class="execution-option__copy"><strong>Local Run</strong><small>Use your subscription</small></span>
-                  <span id="local-run-status" class="execution-option__status is-idle" hidden></span>
-                </button>
+                <p class="custom-harness-panel__security">The framework harness receives exactly four game tools through standard MCP wiring. The authoritative game server runs in a separate sandbox; source, state, checkpoints, and scoring remain with the evaluator.</p>
               </div>
             </div>
           </section>

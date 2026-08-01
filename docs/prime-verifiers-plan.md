@@ -32,26 +32,25 @@ The web game is Node/browser-first. The canonical rules surface appears to be:
 
 The Python `games/maze/player.py` implementation is useful but currently behind the web engine: it does not model every newer browser token/type. Treat the JS engine as canonical until a shared runtime is extracted.
 
-## Recommended Benchmark Architecture
+## Current Benchmark Architecture
 
-1. Extract a shared maze core contract:
-   - Level spec: text grid plus parser metadata.
-   - State spec: terrain layers, actors, elevation, collected gems, level/world position.
-   - Action spec: screen-relative `up`, `down`, `left`, `right` movement plus camera, undo, and reset tools.
-   - Observation spec: ASCII renderer first, image renderer later.
+The JavaScript engine remains the source of truth. Model evaluations use the
+`mazebench-tools` taskset with an unmodified, framework-selected harness. The
+Toolset advertises only `game_start`, `game_observe`, `game_action`, and
+`game_action_sequence` and declares an independent Prime Sandbox runtime for
+the authoritative Node game and MCP server. The model receives only sanitized
+tool schemas and results.
 
-2. Build `mazebench` in stages:
-   - `mazebench-ascii-single`: one-shot prompt asks for `<moves>...</moves>`, reward simulates the path. Initial ASCII state comes from the canonical `scripts/maze-bridge.js` observation path.
-   - `mazebench-ascii-tools`: stateful/tool environment exposes `move(direction)`, `rotate_camera(direction)`, `undo()`, `reset_level()`, and `goto_level(x, y)`. This is now the default `mazebench` mode, with `level_HxI` as the starter task.
-   - `mazebench-open-world`: multi-level/world-map navigation once the open world is converted to ASCII.
-   - `mazebench-vlm`: visual observations from the browser/isometric renderer for VLM evaluation.
+The direct native `mazebench` taskset is retired. The app currently approves
+the stock `null` harness because it has MCP support and no agent shell or
+filesystem tools; MazeBench itself contains no harness adapter. Hosted Training
+still uses the separate classic `load_environment()` adapter because the model
+is remote and receives messages rather than a host agent runtime.
 
-3. Keep web compatibility by keeping level files and parser metadata as the source of truth. The web renderer can stay JS/Three. With OpenEnv, the verifier can also keep the JS engine as the source of truth by running Node inside the environment process and exposing movement/camera actions as tools. That avoids a Python rules port.
-
-4. Before publishing to the Environments Hub:
+Before publishing to the Environments Hub:
    - Ensure `environments/mazebench/pyproject.toml` includes all package files and data.
    - Run `prime env install mazebench`.
-   - Run a local smoke eval, for example `prime eval run mazebench -n 1 -r 1 --skip-upload`.
+   - Run the native-harness and isolated-Toolset smoke tests.
    - Update the package version.
    - Push with `prime env push --path ./environments/mazebench --visibility PUBLIC` or `PRIVATE`.
 
@@ -64,18 +63,12 @@ The Python `games/maze/player.py` implementation is useful but currently behind 
 - Terminal runner and verifier share the same ASCII renderer.
 - JS and Python/OpenEnv simulators have parity tests for each token class before large-scale evals.
 
-## OpenEnv Direction
+## Tool-server direction
 
-OpenEnv is the preferred path for the full game benchmark because the environment can wrap a process that already knows how to simulate the game. The Prime/Verifiers package can be Python at the boundary while the actual game runtime stays Node.
-
-The likely OpenEnv action/tool surface:
-
-- `move(direction)`: `Up`, `Down`, `Left`, `Right`.
-- `rotate_camera(direction)`: `Up`, `Down`, `Left`, `Right`.
-- `undo()`: undo the most recent movement action.
-- `reset_level()`: reset the current room to its entry state.
-- `goto_level(x, y)`: spawn back at a world room that has already been visited during the rollout.
-- Later: `list_levels()` and maybe `inspect_tile(x, y)` for tool-using agents.
+The Python evaluator owns lifecycle, sanitization, and scoring while the actual
+game runtime stays Node. Game commands remain strings inside the bounded
+`game_action` and `game_action_sequence` tools, keeping the model-facing
+capability set fixed even as the maze command vocabulary evolves.
 
 For the first isometric ASCII pass, each visible tile is a 4x4 character block. Camera pitch has five positions:
 

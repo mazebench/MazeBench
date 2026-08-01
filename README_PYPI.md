@@ -1,7 +1,7 @@
 # MazeBench
 
 MazeBench is a local browser app for building and playing persistent 3D puzzle
-worlds, then evaluating coding agents in the same JavaScript engine.
+worlds, then evaluating models against the same JavaScript engine.
 
 ## Install
 
@@ -37,8 +37,9 @@ view. Names are not hidden unless `--hide-names` is passed explicitly. JSON
 arrays are kept on one line in the terminal. Pipe the output or pass `--once`
 to print a single snapshot instead of starting an interactive session.
 
-Local agent runs also require Docker and either the Codex CLI or Claude Code.
-Replay video requires a Chromium-family browser and `ffmpeg`.
+Agent runs require Prime Sandbox access. Verifiers runs its stock harness in
+one sandbox and gives it four tools from the authoritative game server in a
+second sandbox. Replay video requires a Chromium-family browser and `ffmpeg`.
 
 [Website](https://mazebench.com) ·
 [Source](https://github.com/mazebench/MazeBenchEngine)

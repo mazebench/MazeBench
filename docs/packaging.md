@@ -101,9 +101,10 @@ Notes:
   verifiers — the prime path shells out to the `prime`/`uv` CLIs anyway, so
   nothing else changes.
 - External prerequisites the wheel cannot bundle: **Node.js** (always),
-  **ffmpeg + a Chromium-family browser** (replay videos), **codex / claude /
-  kimi CLIs** (agent runs), **Docker** (containerized runs), **prime / uv**
-  (Verifiers path).
+  **ffmpeg + a Chromium-family browser** (replay videos), and **prime / uv**
+  (the stock framework harness and game Toolset run in separate Prime
+  Sandboxes). The stock Verifiers Codex harness is supported there; local
+  Codex, Claude, and Kimi coding-agent launch paths are retired.
 
 ## Note on the two `mazebench` packages
 

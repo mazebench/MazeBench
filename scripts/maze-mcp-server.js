@@ -59,7 +59,7 @@ const WORKER_ONLY = process.env.MAZEBENCH_WORKER_ONLY === "1";
 const SWARM_REQUIRED = process.env.MAZEBENCH_SWARM === "1";
 const MAX_SWARM_WORKERS = Math.min(32, positiveInt(process.env.MAZEBENCH_MAX_SWARM_WORKERS, 8));
 const RESTRICTED_MODE = process.env.MAZEBENCH_RESTRICTED_MODE === "1";
-const AUTO_RUN_TOOLS = !RESTRICTED_MODE && process.env.MAZEBENCH_AUTO_RUN_TOOLS === "1";
+const AUTO_RUN_TOOLS = RESTRICTED_MODE || process.env.MAZEBENCH_AUTO_RUN_TOOLS === "1";
 const AUTO_RUN_ALL_FRAMES = AUTO_RUN_TOOLS && process.env.MAZEBENCH_AUTO_RUN_ALL_FRAMES === "1";
 const KIMI_OBSERVE_BREAK_ENABLED = process.env.MAZEBENCH_PROVIDER === "kimi";
 const KIMI_IDENTICAL_ACTION_INTERVAL = 5;
@@ -68,6 +68,8 @@ const WORKER_ALLOCATION_LOCK = path.join(SWARM_DIR, ".instance-allocation.lock")
 const PYTHON_PREFLIGHTS = new Map();
 const PYTHON_WORKSPACE_SNAPSHOT_LIMIT = 2000;
 const MAX_ROUTE_FILE_BYTES = 1024 * 1024;
+const MAX_ACTION_LENGTH = 128;
+const MAX_ACTION_SEQUENCE_LENGTH = 1000;
 const OBSERVATION_DIRECTORY = "observations";
 
 function sessionActionCount(file) {
@@ -741,7 +743,7 @@ function runPythonTool(input = {}) {
 const LEAD_TOOLS = [
   {
     name: "maze_start",
-    description: "Start the primary MazeBench session. The lead agent calls this exactly once on a fresh run.",
+    description: "Start or reconnect to the primary MazeBench session. Repeated calls return the current observation without resetting progress.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false }
   },
   {
@@ -761,6 +763,8 @@ const LEAD_TOOLS = [
       properties: {
         action: {
           type: "string",
+          minLength: 1,
+          maxLength: MAX_ACTION_LENGTH,
           description: ALLOW_QUIT
             ? "up, down, left, right, rotate camera up/down/left/right, undo, reset, quit, or go to level X Y"
             : "up, down, left, right, rotate camera up/down/left/right, undo, reset, or go to level X Y"
@@ -838,6 +842,8 @@ const WORKER_TOOLS = [
       properties: {
         action: {
           type: "string",
+          minLength: 1,
+          maxLength: MAX_ACTION_LENGTH,
           description: ALLOW_QUIT
             ? "up, down, left, right, rotate camera up/down/left/right, undo, reset, quit, or go to level X Y"
             : "up, down, left, right, rotate camera up/down/left/right, undo, reset, or go to level X Y"
@@ -856,7 +862,8 @@ const WORKER_TOOLS = [
         actions: {
           type: "array",
           minItems: 1,
-          items: { type: "string", minLength: 1 }
+          maxItems: MAX_ACTION_SEQUENCE_LENGTH,
+          items: { type: "string", minLength: 1, maxLength: MAX_ACTION_LENGTH }
         },
         route_file: { type: "string", minLength: 1 },
         include_intermediate_observations: { type: "boolean", default: AUTO_RUN_ALL_FRAMES }
@@ -883,7 +890,7 @@ const WORKER_TOOLS = [
 const RESTRICTED_TOOLS = [
   {
     name: "game_start",
-    description: "Start the current game once and return its first observation.",
+    description: "Start or reconnect to the current game. Repeated calls return the current observation without resetting progress.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false }
   },
   {
@@ -899,12 +906,35 @@ const RESTRICTED_TOOLS = [
       properties: {
         action: {
           type: "string",
+          minLength: 1,
+          maxLength: MAX_ACTION_LENGTH,
           description: ALLOW_QUIT
             ? "up, down, left, right, rotate camera up/down/left/right, undo, reset, quit, or go to level X Y"
             : "up, down, left, right, rotate camera up/down/left/right, undo, reset, or go to level X Y"
         }
       },
       required: ["action"],
+      additionalProperties: false
+    }
+  },
+  {
+    name: "game_action_sequence",
+    description: "Apply an ordered action list and return compact per-step summaries and the final observation.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        actions: {
+          type: "array",
+          minItems: 1,
+          maxItems: MAX_ACTION_SEQUENCE_LENGTH,
+          items: { type: "string", minLength: 1, maxLength: MAX_ACTION_LENGTH }
+        },
+        include_intermediate_observations: {
+          type: "boolean",
+          default: AUTO_RUN_ALL_FRAMES
+        }
+      },
+      required: ["actions"],
       additionalProperties: false
     }
   }
@@ -996,72 +1026,77 @@ function ensureWorkerAssignment(context) {
   return worker.id;
 }
 
-function normalizedToolCall(name, input = {}, { workerOnly = false } = {}) {
-  if (!RESTRICTED_MODE) {
-    const allowedNames = new Set(
-      toolsFor(workerOnly).map((tool) => tool.name)
-    );
-    if (!allowedNames.has(name)) throw new Error(`Unknown game control "${name}".`);
-    const allowedKeys = name === "maze_action"
-      ? new Set(["action"])
-      : name === "maze_action_sequence"
-        ? new Set(["actions", "route_file", "include_intermediate_observations"])
-      : name === "python_exec"
-        ? new Set(["code", "timeout_seconds"])
-        : new Set();
-    const extraKey = Object.keys(input).find((key) => !allowedKeys.has(key));
-    if (extraKey) throw new Error(`Unsupported argument "${extraKey}" for ${name}.`);
-    if (name === "maze_action") return { name, input: { action: input.action } };
-    if (name === "maze_action_sequence") {
-      const hasActions = Array.isArray(input.actions);
-      const routeFile = String(input.route_file || "").trim();
-      if (hasActions === Boolean(routeFile)) {
-        throw new Error("Supply exactly one of actions or route_file.");
-      }
-      let actions;
-      if (hasActions) {
-        if (input.actions.length < 1) throw new Error("actions must contain at least one item.");
-        actions = input.actions.map((action, index) => {
-          if (typeof action !== "string" || !action.trim()) {
-            throw new Error(`actions[${index}] must be a non-empty string.`);
-          }
-          return action.trim();
-        });
-      }
-      if (
-        input.include_intermediate_observations !== undefined &&
-        typeof input.include_intermediate_observations !== "boolean"
-      ) {
-        throw new Error("include_intermediate_observations must be a boolean.");
-      }
-      return {
-        name,
-        input: {
-          ...(hasActions ? { actions } : { route_file: routeFile }),
-          include_intermediate_observations:
-            AUTO_RUN_ALL_FRAMES || input.include_intermediate_observations === true
-        }
-      };
-    }
-    if (name === "python_exec") {
-      const timeoutSeconds = input.timeout_seconds === undefined ? 10 : Number(input.timeout_seconds);
-      if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 60) {
-        throw new Error("timeout_seconds must be an integer between 1 and 60.");
-      }
-      return { name, input: { code: String(input.code || ""), timeout_seconds: timeoutSeconds } };
-    }
-    return { name, input: {} };
+function normalizedToolCall(requestedName, input = {}, { workerOnly = false } = {}) {
+  const allowedNames = new Set(toolsFor(workerOnly).map((tool) => tool.name));
+  if (!allowedNames.has(requestedName)) {
+    throw new Error(`Unknown game control "${requestedName}".`);
   }
-  if (!/^game_(start|observe|action)$/.test(name)) {
-    throw new Error(`Unknown game control "${name}".`);
-  }
-  const allowedKeys = name === "game_action" ? new Set(["action"]) : new Set();
+  const name = RESTRICTED_MODE
+    ? requestedName.replace(/^game_/, "maze_")
+    : requestedName;
+  const allowedKeys = new Set({
+    maze_action: ["action"],
+    maze_action_sequence: RESTRICTED_MODE
+      ? ["actions", "include_intermediate_observations"]
+      : ["actions", "route_file", "include_intermediate_observations"],
+    python_exec: ["code", "timeout_seconds"]
+  }[name] || []);
   const extraKey = Object.keys(input).find((key) => !allowedKeys.has(key));
-  if (extraKey) throw new Error(`Unsupported argument "${extraKey}" for ${name}.`);
-  return {
-    name: name.replace(/^game_/, "maze_"),
-    input: name === "game_action" ? { action: input.action } : {}
-  };
+  if (extraKey) throw new Error(`Unsupported argument "${extraKey}" for ${requestedName}.`);
+  if (name === "maze_action") {
+    const action = String(input.action || "").trim();
+    if (!action || action.length > MAX_ACTION_LENGTH) {
+      throw new Error(`action must contain between 1 and ${MAX_ACTION_LENGTH} characters.`);
+    }
+    return { name, input: { action } };
+  }
+  if (name === "maze_action_sequence") {
+    const hasActions = Array.isArray(input.actions);
+    const routeFile = String(input.route_file || "").trim();
+    if (hasActions === Boolean(routeFile)) {
+      throw new Error("Supply exactly one of actions or route_file.");
+    }
+    let actions;
+    if (hasActions) {
+      if (input.actions.length < 1 || input.actions.length > MAX_ACTION_SEQUENCE_LENGTH) {
+        throw new Error(`actions must contain between 1 and ${MAX_ACTION_SEQUENCE_LENGTH} items.`);
+      }
+      actions = input.actions.map((action, index) => {
+        if (
+          typeof action !== "string" ||
+          !action.trim() ||
+          action.trim().length > MAX_ACTION_LENGTH
+        ) {
+          throw new Error(
+            `actions[${index}] must contain between 1 and ${MAX_ACTION_LENGTH} characters.`
+          );
+        }
+        return action.trim();
+      });
+    }
+    if (
+      input.include_intermediate_observations !== undefined &&
+      typeof input.include_intermediate_observations !== "boolean"
+    ) {
+      throw new Error("include_intermediate_observations must be a boolean.");
+    }
+    return {
+      name,
+      input: {
+        ...(hasActions ? { actions } : { route_file: routeFile }),
+        include_intermediate_observations:
+          AUTO_RUN_ALL_FRAMES || input.include_intermediate_observations === true
+      }
+    };
+  }
+  if (name === "python_exec") {
+    const timeoutSeconds = input.timeout_seconds === undefined ? 10 : Number(input.timeout_seconds);
+    if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 60) {
+      throw new Error("timeout_seconds must be an integer between 1 and 60.");
+    }
+    return { name, input: { code: String(input.code || ""), timeout_seconds: timeoutSeconds } };
+  }
+  return { name, input: {} };
 }
 
 function runActionSequence(input, context) {
@@ -1133,6 +1168,10 @@ function callTool(name, input = {}, context = createRequestContext({ workerOnly:
   if (!workerOnly && name !== "maze_start") synchronizePrimarySessionBudget();
   if (name === "maze_start") {
     if (workerOnly) return runHelper(["observe", "--state", sessionFor(cloneId)]);
+    if (readJson(PRIMARY_SESSION, null)) {
+      synchronizePrimarySessionBudget();
+      return runHelper(["observe", "--state", PRIMARY_SESSION]);
+    }
     return startMaze();
   }
   if (name === "maze_observe") {
