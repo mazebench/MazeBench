@@ -3441,7 +3441,12 @@
         orangeButtonsPressed
       )
         .concat(actorSupportSurfaceHeightsAt(state, x, y, ignoredActors, includePlayerSupport))
-        .filter((height) => height < elevation)
+        // canMoveIntoAtElevation above recognizes same-height terrain
+        // support, but actor support lives outside that helper. Keep an
+        // actor surface at the current elevation eligible as a landing too;
+        // otherwise a punch/ice continuation that stops on top of a box is
+        // incorrectly dropped through it to the next terrain surface.
+        .filter((height) => height <= elevation)
         .sort((left, right) => right - left);
 
       return supportHeights.find(
