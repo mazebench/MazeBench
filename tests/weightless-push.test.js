@@ -660,6 +660,105 @@ function createUShapeActors(extraActors = []) {
 }
 
 {
+  // Chained punches animate one sequence at a time. An actor whose first
+  // punch segment belongs to a later sequence must wait at that segment's
+  // origin; rendering its destination early makes it jump ahead, snap back,
+  // and then repeat the same move when its puncher fires.
+  const originalRequestAnimationFrame = window.requestAnimationFrame;
+  const queuedFrames = [];
+  const incomingBox = { type: "box", x: 1, y: 0, elevation: 0, removed: false };
+  const waitingBox = { type: "box", x: 3, y: 0, elevation: 0, removed: false };
+  const waitingPuncher = { type: "puncher", x: 3, y: 1, elevation: 0, removed: false };
+  const app = createGameplayApp([incomingBox, waitingBox, waitingPuncher], {
+    height: 2,
+    moveDurationMs: 100,
+    width: 6
+  });
+  const renderSamples = [];
+
+  window.requestAnimationFrame = (callback) => {
+    queuedFrames.push(callback);
+    return queuedFrames.length;
+  };
+  // Phase one occupies 100 ms; sequence zero occupies the next 100 ms.
+  // Sample at 150 ms, while sequence-one actors are still waiting.
+  app.replayAnimationFrameStepMs = 150;
+  app.render = () => {
+    renderSamples.push({
+      boxX: waitingBox.renderX,
+      puncherBaseX: waitingPuncher.renderPunchBaseX,
+      puncherX: waitingPuncher.renderX
+    });
+  };
+
+  function punchMove(actor, actorIndex, sequence, fromX, fromY, toX, toY) {
+    return {
+      actor,
+      actorIndex,
+      actorType: actor.type,
+      fromElevation: 0,
+      fromX,
+      fromY,
+      punchSegments: [
+        {
+          sequence,
+          fromElevation: 0,
+          fromX,
+          fromY,
+          punchSlide: true,
+          toElevation: 0,
+          toX,
+          toY
+        }
+      ],
+      punchSlide: true,
+      punchStartElevation: 0,
+      punchStartX: fromX,
+      punchStartY: fromY,
+      toElevation: 0,
+      toX,
+      toY
+    };
+  }
+
+  try {
+    app.animateMoves([
+      punchMove(incomingBox, 0, 0, 0, 0, 1, 0),
+      punchMove(waitingBox, 1, 1, 4, 0, 3, 0),
+      punchMove(waitingPuncher, 2, 1, 4, 1, 3, 1),
+      {
+        actor: waitingPuncher,
+        actorIndex: 2,
+        actorType: "puncher",
+        finalElevation: 0,
+        finalX: 3,
+        finalY: 1,
+        fromElevation: 0,
+        fromX: 4,
+        fromY: 1,
+        iceSlide: true,
+        punchEffect: true,
+        punchSequence: 1,
+        toElevation: 0,
+        toX: 2,
+        toY: 1,
+        visualOnly: true
+      }
+    ]);
+
+    queuedFrames.shift()(performance.now());
+  } finally {
+    window.requestAnimationFrame = originalRequestAnimationFrame;
+  }
+
+  assert.deepEqual(renderSamples[0], {
+    boxX: 4,
+    puncherBaseX: 4,
+    puncherX: 4
+  });
+}
+
+{
   const originalRequestAnimationFrame = window.requestAnimationFrame;
   const queuedFrames = [];
   const distance = 4;
