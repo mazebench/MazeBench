@@ -8301,7 +8301,74 @@
         // below its travel elevation at the slide stop; true-void members are
         // left for the hole-fall pass (which now runs in both modes).
         movedInfos.forEach((info) => {
+          const rigidLandingMembers = new Set();
+          const landedWeightlessGroups = new Set();
+          const landedCloneGroups = new Set();
+
+          // Rigid groups must land as a body before the next punch pass.
+          // Settling each voxel independently can temporarily collapse a
+          // vertical group onto one elevation. A puncher occupying the upper
+          // voxel then misses the group, even though the later support-sync
+          // pass restores its authored shape (IxB chained-punch regression).
           info.members.forEach((member) => {
+            if (actorTypes[member] === "weightless_box") {
+              const groupId = actorGroupIds[member];
+
+              if (landedWeightlessGroups.has(groupId)) {
+                return;
+              }
+
+              landedWeightlessGroups.add(groupId);
+              const groupMembers = weightlessGroupMembers(state, groupId);
+              const baseElevation = weightlessGroupSupportedElevation(
+                state,
+                groupMembers,
+                gateState,
+                orangeButtonsPressed
+              );
+
+              groupMembers.forEach((groupMember) => {
+                rigidLandingMembers.add(groupMember);
+                jSetActorElevation(
+                  state,
+                  groupMember,
+                  baseElevation + (weightlessRelativeElevations[groupMember] || 0)
+                );
+              });
+              return;
+            }
+
+            if (isCloneActor(member)) {
+              const groupId = actorGroupIds[member] || "";
+
+              if (landedCloneGroups.has(groupId)) {
+                return;
+              }
+
+              landedCloneGroups.add(groupId);
+              const group = cloneGroupSupportedElevation(
+                state,
+                groupId,
+                gateState,
+                orangeButtonsPressed
+              );
+
+              group.members.forEach((groupMember) => {
+                rigidLandingMembers.add(groupMember);
+                jSetActorElevation(
+                  state,
+                  groupMember,
+                  group.baseElevation + actorElevation(state, groupMember) - group.currentBaseElevation
+                );
+              });
+            }
+          });
+
+          info.members.forEach((member) => {
+            if (rigidLandingMembers.has(member)) {
+              return;
+            }
+
             // A punch that ran off the board edge may continue into the
             // neighboring room (cross-room flight, play-world-transitions):
             // its elevation belongs to the continuation's own landing, not
