@@ -2922,6 +2922,33 @@ for (const { name, dx, dy } of [
 }
 
 {
+  // A cross-room punch continuation may stop over an actor surface rather
+  // than terrain. Preserve that same-height support instead of dropping the
+  // player through the box to the floor below (GxK regression).
+  const terrain = floorTerrain(4, 1);
+  terrain[0][0] = wallStack(4);
+  terrain[0][1] = wallStack(2);
+  const { engine, state } = createState({
+    width: 4,
+    height: 1,
+    terrain,
+    actors: [
+      { type: "weightless_box", groupId: "M0", x: 1, y: 0, elevation: 2, removed: false },
+      { type: "player", x: 3, y: 0, elevation: 3, removed: false }
+    ]
+  });
+
+  const result = engine.move(state, -1, 0, { continuePunchSlide: true });
+  const playerMove = result.moves.find((move) => move.actorIndex === 1 && !move.visualOnly);
+
+  assert.equal(result.moved, true);
+  assert.deepEqual([state.actorX[1], state.actorY[1]], [1, 0]);
+  assert.equal(state.actorElevation[1], 3);
+  assert.equal(playerMove.toElevation, 3);
+  assert.equal(playerMove.punchSlide, true);
+}
+
+{
   const terrain = floorTerrain(4, 1);
   terrain[0][3] = wallStack(3);
   const { engine, state } = createState({
