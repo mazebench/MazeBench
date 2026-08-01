@@ -188,7 +188,10 @@ function parseArgs(argv) {
     } else if (arg === "--solve") {
       options.solve = true;
     } else if (arg === "--max-expanded-states") {
-      options.maxExpandedStates = Number(next()) || options.maxExpandedStates;
+      const value = next();
+      options.maxExpandedStates = value.toLowerCase() === "unlimited"
+        ? null
+        : Number(value) || options.maxExpandedStates;
     } else if (arg === "--game-won-gem-count" || arg === "--game-won-gems") {
       options.gameWonGemCount = normalizeGameWonGemCount(next());
     } else if (arg === "--pitch") {
@@ -253,8 +256,9 @@ Options:
   --hide-names-seed <value>
                      Stable randomization seed used with --hide-names.
   --solve            Add the JS solver answer to --json output.
-  --max-expanded-states <n>
-                     Solver search cap used by --solve.
+  --max-expanded-states <n|unlimited>
+                     Solver search cap used by --solve; unlimited removes the
+                     configured cap (cancel/resource limits still apply).
   --game-won-gem-count <n>
                      Legacy input; game_won is fixed at 100 unique gems.
   --record-replay    Write local replay artifacts for non-interactive runs.
