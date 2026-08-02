@@ -1462,6 +1462,29 @@ textarea {
   display: grid;
   gap: 7px;
 }
+.solver-unlimited-toggle {
+  align-items: center;
+  color: var(--muted);
+  cursor: pointer;
+  display: flex;
+  font-size: 11px;
+  font-weight: 600;
+  gap: 8px;
+}
+.solver-unlimited-toggle input {
+  accent-color: var(--cyan);
+  cursor: pointer;
+  height: 16px;
+  margin: 0;
+  min-height: 0;
+  padding: 0;
+  width: 16px;
+}
+.solver-unlimited-toggle input:disabled,
+.solver-unlimited-toggle input:disabled + span {
+  cursor: default;
+  opacity: 0.48;
+}
 .solver-mode-field__label {
   color: var(--muted);
   font-size: 11px;

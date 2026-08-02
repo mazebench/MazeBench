@@ -939,7 +939,19 @@
             );
           }
 
-          const renderSegment = lastCompletedSegment || firstSegment;
+          // A later punch train has not started yet. Keep its actors at the
+          // start of their first segment instead of previewing that segment's
+          // destination, which otherwise makes them jump ahead and snap back
+          // when their puncher actually fires.
+          if (!lastCompletedSegment) {
+            return {
+              x: firstSegment.fromX,
+              y: firstSegment.fromY,
+              elevation: firstSegment.fromElevation
+            };
+          }
+
+          const renderSegment = lastCompletedSegment;
 
           return {
             x: renderSegment.toX,
@@ -1304,8 +1316,6 @@
                       lastCompletedSegment = segment;
                     }
 
-                    const renderSegment = activeSegment || lastCompletedSegment || firstSegment;
-
                     if (activeSegment && activeTiming) {
                       const distance = punchSegmentDistance(activeSegment);
                       const duration = punchSegmentDurationFor(move, activeSegment);
@@ -1324,13 +1334,21 @@
                           move.punchSlide === true ||
                           iceSlide === true
                       );
+                    } else if (!lastCompletedSegment) {
+                      renderFromX = firstSegment.fromX;
+                      renderFromY = firstSegment.fromY;
+                      renderToX = firstSegment.fromX;
+                      renderToY = firstSegment.fromY;
+                      renderFromElevation = firstSegment.fromElevation;
+                      renderToElevation = firstSegment.fromElevation;
+                      positionProgress = 1;
                     } else {
-                      renderFromX = renderSegment.toX;
-                      renderFromY = renderSegment.toY;
-                      renderToX = renderSegment.toX;
-                      renderToY = renderSegment.toY;
-                      renderFromElevation = renderSegment.toElevation;
-                      renderToElevation = renderSegment.toElevation;
+                      renderFromX = lastCompletedSegment.toX;
+                      renderFromY = lastCompletedSegment.toY;
+                      renderToX = lastCompletedSegment.toX;
+                      renderToY = lastCompletedSegment.toY;
+                      renderFromElevation = lastCompletedSegment.toElevation;
+                      renderToElevation = lastCompletedSegment.toElevation;
                       positionProgress = 1;
                     }
                   }

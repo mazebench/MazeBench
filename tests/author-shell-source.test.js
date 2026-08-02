@@ -22,6 +22,7 @@ for (const id of [
   "author-hotbar",
   "author-inventory",
   "solver-max-states",
+  "solver-unlimited-states",
   "solver-mode-picker",
   "solver-mode-place",
   "solver-mode-reach",
@@ -58,6 +59,7 @@ assert.doesNotMatch(shell, /author-disclosure--world/);
 assert.doesNotMatch(shell, /author-world-solver|World Solver/);
 assert.doesNotMatch(shell, /world-start-select/);
 assert.match(shell, /The solver uses the A\* search algorithm/);
+assert.match(shell, /Unlimited runs until solved, exhausted, or cancelled/);
 assert.match(shell, /Reach Gem becomes available when this room contains a gem/);
 assert.doesNotMatch(shell, /id=["']solver-algorithm["']/);
 assert.doesNotMatch(shell, /id=["']hill-climb["']/);
