@@ -29,7 +29,18 @@ ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_GAME_TOOLS = {
     "start",
     "observe",
-    "action",
+    "up",
+    "down",
+    "left",
+    "right",
+    "rotate_camera_up",
+    "rotate_camera_down",
+    "rotate_camera_left",
+    "rotate_camera_right",
+    "undo",
+    "reset",
+    "go_to_level",
+    "quit",
     "action_sequence",
 }
 
@@ -170,12 +181,12 @@ class GameRuntimeIsolationTests(unittest.TestCase):
         try:
             await toolset.setup_task(task.data)
             started = await toolset.start()
-            moved = await toolset.action("up")
+            moved = await toolset.up()
             controls = {fn.__name__ for fn in discover_decorated(toolset, "tool")}
 
             self.assertEqual(
                 controls,
-                {"start", "observe", "action", "action_sequence"},
+                EXPECTED_GAME_TOOLS,
             )
             self.assertEqual(started["observation"]["observation_mode"], "ascii")
             self.assertEqual(moved["actions_used"], 1)
@@ -382,10 +393,15 @@ class GameRuntimeIsolationTests(unittest.TestCase):
             self.assertTrue(traces[0].state.maze_scorecard)
             self.assertEqual(len(requests), 3)
             for request in requests:
-                names = {
-                    tool["function"]["name"] for tool in request.get("tools") or []
+                tools = {
+                    tool["function"]["name"]: tool["function"]
+                    for tool in request.get("tools") or []
                 }
+                names = set(tools)
                 self.assertEqual(names, EXPECTED_GAME_TOOLS)
+                coordinates = tools["go_to_level"]["parameters"]["properties"]
+                self.assertEqual(coordinates["x"]["pattern"], "^[A-Za-z]$")
+                self.assertEqual(coordinates["y"]["pattern"], "^[A-Za-z]$")
                 self.assertEqual(request["max_tokens"], 512)
                 self.assertEqual(request["reasoning_effort"], "high")
                 self.assertEqual(request["temperature"], 0.2)

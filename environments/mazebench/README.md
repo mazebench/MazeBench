@@ -30,7 +30,7 @@ The package brings its own Node runtime for the JavaScript maze engine. Perspect
 ## The task
 
 The local game-agent route receives observations through `start`, `observe`,
-`action`, and `action_sequence`. Hosted Training uses
+named action tools, and `action_sequence`. Hosted Training uses
 the classic message adapter, where the model answers with one command. Both
 routes apply actions to persistent game state and return the next observation.
 
@@ -47,6 +47,11 @@ observation mode, environment variable, or replay can lower that threshold.
 | `reset` | Reset the current room to its entry state. Global score remains monotonic. |
 | `go to level X Y` | Return to a previously visited room. |
 | `quit` | End the rollout as a loss when quitting is enabled. |
+
+The tool names match the commands: movement uses `up`, `down`, `left`, and
+`right`; camera changes use `rotate_camera_up`, `rotate_camera_down`,
+`rotate_camera_left`, and `rotate_camera_right`; recovery uses `undo` and
+`reset`; and room navigation uses `go_to_level(x, y)`.
 
 Movement remains screen-relative after camera rotation. `go to level` is restricted to rooms already present in `visited_levels`.
 
@@ -311,7 +316,7 @@ paths cannot satisfy the benchmark isolation boundary. Use the Agent page or
 `scripts/maze-prime-run.js` with the `mazebench-tools` taskset.
 
 The local `/agent` page permits catalog-approved stock Verifiers harnesses. The
-native `null` harness advertises only the four game tools. The native Codex
+native `null` harness advertises only the named game controls. The native Codex
 harness uses its standard `disabled_tools = ["shell_tool"]` configuration; its
 other built-in bookkeeping tools remain available, but it has no shell or host
 filesystem path. Both run in a fresh Prime sandbox. The task sent to the model
@@ -324,13 +329,13 @@ For every agentic rollout, `mazebench-tools` declares a bounded
 sandbox, installs the packaged environment, launches the MCP server there, and
 destroys the sandbox with the rollout. The Node game runs inside the same
 sandbox as its trusted tool server. Verifiers connects that server to the agent
-harness as the bare `start`, `observe`, `action`, and `action_sequence` tools;
-the game remains outside the agent sandbox.
+harness as bare, named controls: `start`, `observe`, movement, camera rotation,
+recovery, level navigation, `quit`, and `action_sequence`. The game remains
+outside the agent sandbox.
 
-Scoring is finalized after the model exits. The agent-facing server exposes
-start, observe, action, and action-sequence tools, but no scorecard or
-filesystem operation. Action strings are limited to 128 characters and action
-sequences to 1,000 items.
+Scoring is finalized after the model exits. The agent-facing server exposes no
+generic single-action string multiplexer, scorecard, or filesystem operation.
+The batch `action_sequence` route remains bounded to 1,000 items.
 
 The approved path can be exercised from a full checkout with:
 
