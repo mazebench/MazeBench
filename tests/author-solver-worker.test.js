@@ -83,6 +83,29 @@ async function waitForDone(id) {
   assert.equal(continued.result.path, "RRR");
   assert.equal(continued.result.expanded >= capped.result.expanded, true);
   assert.equal(continued.continuationId, "");
+
+  context.onmessage({
+    data: {
+      type: "run",
+      id: 3,
+      op: "solve",
+      playData: {
+        width: 4,
+        height: 1,
+        terrain: floorTerrain(4, 1),
+        actors: [
+          { type: "player", x: 0, y: 0, removed: false },
+          { type: "gem", x: 3, y: 0, removed: false }
+        ]
+      },
+      options: { algorithm: "astar", maxExpandedStates: null }
+    }
+  });
+
+  const unlimited = await waitForDone(3);
+  assert.equal(unlimited.result.status, "solved");
+  assert.equal(unlimited.result.path, "RRR");
+  assert.equal(unlimited.continuationId, "");
   console.log("author-solver-worker: OK — capped editor searches resume from their saved frontier.");
 })().catch((error) => {
   console.error(error);

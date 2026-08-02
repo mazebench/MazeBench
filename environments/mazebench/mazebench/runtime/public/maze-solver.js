@@ -96,6 +96,38 @@
     }
   }
 
+  // V8 limits a single Map to roughly 2^24 entries. Large author searches can
+  // legitimately cross that boundary before either finding a solution or
+  // exhausting the graph, which used to surface as "Map maximum size
+  // exceeded" even when the configured state budget was higher. State keys
+  // are four UTF-16 code units of uniformly mixed hash data, so partitioning
+  // on the first unit keeps every backing Map small without changing lookup
+  // semantics or imposing a new global limit.
+  class SolverCostStore {
+    constructor() {
+      this.buckets = [];
+    }
+
+    bucketIndex(key) {
+      return String(key).charCodeAt(0) || 0;
+    }
+
+    get(key) {
+      return this.buckets[this.bucketIndex(key)]?.get(key);
+    }
+
+    set(key, value) {
+      const bucketIndex = this.bucketIndex(key);
+      const bucket = this.buckets[bucketIndex] || new Map();
+
+      if (!this.buckets[bucketIndex]) {
+        this.buckets[bucketIndex] = bucket;
+      }
+      bucket.set(key, value);
+      return this;
+    }
+  }
+
   class SolverStatePool {
     constructor(engine) {
       this.engine = engine;
@@ -151,6 +183,18 @@
 
   function numericOption(value, fallback) {
     return Number.isFinite(value) && value > 0 ? value : fallback;
+  }
+
+  function expandedStateBudget(value, fallback) {
+    // `null` is the cross-worker sentinel for an intentionally unlimited
+    // search. Infinity is also accepted for direct callers. The search still
+    // yields for progress, honors AbortSignal cancellation, and can naturally
+    // terminate by solving or exhausting its frontier.
+    if (value === null || value === Infinity) {
+      return Infinity;
+    }
+
+    return numericOption(value, fallback);
   }
 
   function solverAlgorithmOption(value) {
@@ -252,15 +296,15 @@
         ? engine.heuristicDistance
         : engine.heuristic;
     const open = continuation?.open || new SolverHeap();
-    const bestCostByKey = continuation?.bestCostByKey || new Map();
+    const bestCostByKey = continuation?.bestCostByKey || new SolverCostStore();
     const nodePool = continuation?.nodePool || new SolverNodePool();
     const reportProgressFn =
       typeof options.onProgress === "function" ? options.onProgress : null;
     let order = continuation?.order || 0;
     let expanded = continuation?.expanded || 0;
-    const additionalExpandedStates = numericOption(
+    const additionalExpandedStates = expandedStateBudget(
       options.additionalExpandedStates,
-      numericOption(options.maxExpandedStates, defaultMaxExpandedStates)
+      expandedStateBudget(options.maxExpandedStates, defaultMaxExpandedStates)
     );
     const maxExpandedStates = expanded + additionalExpandedStates;
 
@@ -596,7 +640,7 @@
     const canPlaceGemAt = continuation?.canPlaceGemAt ||
       (typeof options.canPlaceGemAt === "function" ? options.canPlaceGemAt : () => true);
     const open = continuation?.open || new SolverHeap();
-    const bestCostByKey = continuation?.bestCostByKey || new Map();
+    const bestCostByKey = continuation?.bestCostByKey || new SolverCostStore();
     const bestCandidateByCell = continuation?.bestCandidateByCell || new Map();
     const statePool = continuation?.statePool || new SolverStatePool(engine);
     const nodePool = continuation?.nodePool || new SolverNodePool();
@@ -604,9 +648,9 @@
       typeof options.onProgress === "function" ? options.onProgress : null;
     let order = continuation?.order || 0;
     let expanded = continuation?.expanded || 0;
-    const additionalExpandedStates = numericOption(
+    const additionalExpandedStates = expandedStateBudget(
       options.additionalExpandedStates,
-      numericOption(options.maxExpandedStates, defaultMaxExpandedStates)
+      expandedStateBudget(options.maxExpandedStates, defaultMaxExpandedStates)
     );
     const maxExpandedStates = expanded + additionalExpandedStates;
 
@@ -789,16 +833,16 @@
     );
     const reportProgressFn = typeof options.onProgress === "function" ? options.onProgress : null;
     const open = continuation?.open || new SolverHeap();
-    const bestCostByKey = continuation?.bestCostByKey || new Map();
+    const bestCostByKey = continuation?.bestCostByKey || new SolverCostStore();
     const reachedById = continuation?.reachedById || new Map();
     const targetsByPosition = continuation?.targetsByPosition || new Map();
     const statePool = continuation?.statePool || new SolverStatePool(engine);
     const nodePool = continuation?.nodePool || new SolverNodePool();
     let order = continuation?.order || 0;
     let expanded = continuation?.expanded || 0;
-    const additionalExpandedStates = numericOption(
+    const additionalExpandedStates = expandedStateBudget(
       options.additionalExpandedStates,
-      numericOption(options.maxExpandedStates, Number.MAX_SAFE_INTEGER)
+      expandedStateBudget(options.maxExpandedStates, Number.MAX_SAFE_INTEGER)
     );
     const maxExpandedStates = expanded + additionalExpandedStates;
 
@@ -920,6 +964,7 @@
   }
 
   window.MazeSolver = {
+    SolverCostStore,
     findHardestGemPlacement,
     findReachablePositions,
     solveWithAStar

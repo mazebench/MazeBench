@@ -6,7 +6,12 @@ loadBrowserScript("public/maze-engine.js");
 loadBrowserScript("public/maze-solver.js");
 
 const { createEngine } = window.MazeEngine;
-const { findHardestGemPlacement, findReachablePositions, solveWithAStar } = window.MazeSolver;
+const {
+  SolverCostStore,
+  findHardestGemPlacement,
+  findReachablePositions,
+  solveWithAStar
+} = window.MazeSolver;
 
 function floorTerrain(width, height) {
   return Array.from({ length: height }, () =>
@@ -15,6 +20,61 @@ function floorTerrain(width, height) {
 }
 
 (async () => {
+  {
+    const costs = new SolverCostStore();
+    const firstBucketKey = String.fromCharCode(1, 2, 3, 4);
+    const secondBucketKey = String.fromCharCode(2, 2, 3, 4);
+
+    costs.set(firstBucketKey, 7).set(secondBucketKey, 9).set(firstBucketKey, 5);
+    assert.equal(costs.get(firstBucketKey), 5);
+    assert.equal(costs.get(secondBucketKey), 9);
+    assert.equal(
+      costs.buckets.filter(Boolean).reduce((sum, bucket) => sum + bucket.size, 0),
+      2
+    );
+    assert.equal(costs.buckets.filter(Boolean).length, 2);
+
+    // Exercise more total entries than a deliberately small per-bucket
+    // threshold without allocating millions of objects. The production
+    // state hash distributes the same way across all 65,536 possible buckets.
+    const perBucketThreshold = 8;
+    for (let bucket = 0; bucket < 32; bucket += 1) {
+      for (let entry = 0; entry < perBucketThreshold; entry += 1) {
+        costs.set(String.fromCharCode(bucket, entry, 17, 23), bucket + entry);
+      }
+    }
+    assert.equal(
+      costs.buckets.filter(Boolean).reduce((sum, bucket) => sum + bucket.size, 0) > perBucketThreshold,
+      true
+    );
+    assert.equal(
+      costs.buckets.filter(Boolean).every((bucket) => bucket.size <= perBucketThreshold + 1),
+      true
+    );
+  }
+
+  {
+    const progressEvents = [];
+    const engine = createEngine({
+      width: 4,
+      height: 1,
+      terrain: floorTerrain(4, 1),
+      actors: [
+        { type: "player", x: 0, y: 0, removed: false },
+        { type: "gem", x: 3, y: 0, removed: false }
+      ]
+    });
+    const result = await solveWithAStar(engine, {
+      maxExpandedStates: null,
+      onProgress: (progress) => progressEvents.push(progress),
+      progressYieldStateInterval: 1
+    });
+
+    assert.equal(result.status, "solved");
+    assert.equal(result.path, "RRR");
+    assert.equal(progressEvents.some((progress) => progress.maxExpanded === Infinity), true);
+  }
+
   {
     const progressEvents = [];
     const engine = createEngine({
@@ -56,6 +116,7 @@ function floorTerrain(width, height) {
     assert.equal(capped.status, "capped");
     assert.equal(capped.expanded, 1);
     assert.ok(capped.continuation);
+    assert.equal(capped.continuation.bestCostByKey instanceof SolverCostStore, true);
 
     const continued = await solveWithAStar(engine, {
       additionalExpandedStates: 100,

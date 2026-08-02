@@ -91,6 +91,8 @@
             </summary>
             <div class="author-disclosure__body">
               <label class="field"><span>Search states</span><input id="solver-max-states" type="number" min="1" step="1" value="1000000" inputmode="numeric" aria-label="Solver search state limit"></label>
+              <label class="solver-unlimited-toggle"><input id="solver-unlimited-states" type="checkbox"><span>Unlimited states</span></label>
+              <p class="solver-mode-field__hint">Unlimited runs until solved, exhausted, or cancelled and may use substantial memory.</p>
               <div class="solver-mode-field">
                 <span class="solver-mode-field__label">Mode</span>
                 <div id="solver-mode-picker" class="solver-mode-picker" role="radiogroup" aria-label="Solver mode">
