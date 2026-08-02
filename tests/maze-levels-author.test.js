@@ -23,7 +23,6 @@ const game = {
       floor: { token: "." },
       wall: { token: "#" },
       ice: { token: "i" },
-      ice_block: { token: "I" },
       ice_slope: {
         label: "Ice Slope",
         tokens: [
@@ -35,12 +34,6 @@ const game = {
         ]
       },
       gem: { token: "G" },
-      player: { token: "p", checkpoint_kind: "primary", label: "Primary Flag" },
-      checkpoint_secondary: {
-        token: "F2",
-        checkpoint_kind: "secondary",
-        label: "Secondary Flag"
-      },
       player_gate: { token: "g" },
       player_lift: { token: "l" },
       orange_button: { token: "o", label: "Orange Button" },
@@ -139,8 +132,6 @@ assert.equal(catalogWeightless.label, "Feather Box");
 assert.equal(catalogWeightless.description, "Catalog description.");
 assert.deepEqual(catalogWeightless.demo, { layout: ["p $ ."], moves: "R" });
 assert.equal(authorPageData.palette.find((tool) => tool.token === "Sr#").styleKey, "wall");
-assert.equal(authorPageData.palette.find((tool) => tool.token === "p").checkpointKind, "primary");
-assert.equal(authorPageData.palette.find((tool) => tool.token === "F2").checkpointKind, "secondary");
 assert.equal(authorPageData.toolboxCatalog.format, 1);
 assert.equal(authorPageData.roomSwapApiUrl, "/api/world-map/maze/swap");
 assert.equal(
@@ -353,90 +344,6 @@ assert.deepEqual(
     ["floor", 0],
     ["player_gate", 0]
   ]
-);
-
-fs.writeFileSync(path.join(levelDir, "test-empty.txt"), ".+p+G .+F2+G #+F2\n", "utf8");
-
-const checkpointPlayState = service.getLevelState(
-  game,
-  game.worldMap.byPosition.get("level_AxA")
-);
-
-assert.deepEqual(checkpointPlayState.checkpoints, [
-  {
-    id: "level_AxA:checkpoint:primary",
-    kind: "primary",
-    x: 0,
-    y: 0,
-    elevation: 0,
-    active: false,
-    userPlaced: false
-  },
-  {
-    id: "level_AxA:checkpoint:secondary:1:0:0",
-    kind: "secondary",
-    x: 1,
-    y: 0,
-    elevation: 0,
-    active: false,
-    userPlaced: false
-  },
-  {
-    id: "level_AxA:checkpoint:secondary:2:0:1",
-    kind: "secondary",
-    x: 2,
-    y: 0,
-    elevation: 1,
-    active: false,
-    userPlaced: false
-  }
-]);
-const checkpointPrimaryActor = checkpointPlayState.actors.find(
-  (actor) => actor.isPrimaryCheckpointSpawn === true
-);
-assert.equal(checkpointPrimaryActor.primaryCheckpointId, "level_AxA:checkpoint:primary");
-assert.equal(
-  checkpointPlayState.actors.find((actor) => actor.type === "gem" && actor.x === 0).elevation,
-  1
-);
-assert.equal(
-  checkpointPlayState.actors.find((actor) => actor.type === "gem" && actor.x === 1).elevation,
-  0,
-  "secondary metadata must not consume an elevation slot"
-);
-assert.equal(
-  checkpointPlayState.actors.some((actor) => actor.type === "checkpoint_secondary"),
-  false
-);
-
-assert.deepEqual(
-  service.sanitizeEditorPayload(game, {
-    cells: [[".+F2", "#+F2", "i+F2", "I+F2", "b1+F2"]],
-    height: 1,
-    width: 5
-  }).cells[0],
-  [".+F2", "#+F2", "i+F2", "I+F2", "b1+F2"]
-);
-assert.throws(
-  () => service.sanitizeEditorPayload(game, { cells: [["+F2"]], height: 1, width: 1 }),
-  /must stand alone/
-);
-assert.throws(
-  () => service.sanitizeEditorPayload(game, { cells: [[".+M0+F2"]], height: 1, width: 1 }),
-  /must stand alone/
-);
-assert.throws(
-  () => service.sanitizeEditorPayload(game, { cells: [[".+F2+#"]], height: 1, width: 1 }),
-  /must stand alone/
-);
-assert.throws(
-  () => service.sanitizeEditorPayload(game, { cells: [[".+p", ".+p"]], height: 1, width: 2 }),
-  /only one primary checkpoint/
-);
-assert.equal(
-  service.sanitizeEditorPayload(game, { cells: [[".+b1+p"]], height: 1, width: 1 }).cells[0][0],
-  ".+b1+p",
-  "legacy primary starts on invalid supports remain editable and round-trip unchanged"
 );
 
 fs.rmSync(tempRoot, { recursive: true, force: true });

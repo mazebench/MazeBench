@@ -95,12 +95,6 @@ const JSON_OBJECT_NAME_UNIVERSE = Object.freeze([
   "block_asset_4",
   "box",
   "clone_ungrouped",
-  "checkpoint_primary_active",
-  "checkpoint_primary_inactive",
-  "checkpoint_secondary_active",
-  "checkpoint_secondary_inactive",
-  "checkpoint_user_active",
-  "checkpoint_user_inactive",
   "empty",
   "exit",
   "floor",
@@ -2756,26 +2750,6 @@ function semanticActorObjectName(type, source, yaw, state, index, raisedPlayerGa
   return semanticObjectName(type, source, yaw);
 }
 
-function checkpointObservationName(checkpoint) {
-  const kind = ["primary", "secondary", "user"].includes(checkpoint?.kind)
-    ? checkpoint.kind
-    : "secondary";
-  const active = checkpoint?.active === true || kind === "user";
-  return `checkpoint_${kind}_${active ? "active" : "inactive"}`;
-}
-
-function checkpointObservationSourceType(checkpoint) {
-  if (checkpoint?.kind === "primary") return "player";
-  if (checkpoint?.kind === "user") return "checkpoint_user";
-  return "checkpoint_secondary";
-}
-
-function checkpointObservationGlyph(checkpoint) {
-  if (checkpoint?.kind === "primary") return glyphPair("1", "!");
-  if (checkpoint?.kind === "user") return glyphPair("*", "+");
-  return glyphPair("2", "?");
-}
-
 function semanticNamesForPlayData(playData) {
   const names = new Set(JSON_OBJECT_NAME_UNIVERSE);
   const directions = ["down", "left", "right", "up"];
@@ -2819,10 +2793,6 @@ function semanticNamesForPlayData(playData) {
     } else {
       names.add(semanticObjectName(type, actor, 0));
     }
-  });
-
-  (playData?.checkpoints || []).forEach((checkpoint) => {
-    names.add(checkpointObservationName(checkpoint));
   });
 
   return Array.from(names).filter(Boolean);
@@ -2927,17 +2897,6 @@ function jsonObservationObjects(context) {
     });
   }
 
-  (playData.checkpoints || []).forEach((checkpoint, index) => {
-    if (!Number.isInteger(checkpoint?.x) || !Number.isInteger(checkpoint?.y)) return;
-    objects.push({
-      elevation: Number(checkpoint.elevation) || 0,
-      id: `checkpoint:${checkpoint.id || index}`,
-      name: checkpointObservationName(checkpoint),
-      x: checkpoint.x,
-      y: checkpoint.y
-    });
-  });
-
   return objects;
 }
 
@@ -3035,8 +2994,6 @@ function jsonDisplayColor(entry) {
   const name = String(entry?.name || "");
   const type = String(entry?.sourceType || "");
 
-  if (name.startsWith("checkpoint_") && name.endsWith("_active")) return "#3fa95c";
-  if (name.startsWith("checkpoint_") && name.endsWith("_inactive")) return "#353941";
   if (name.startsWith("black_ice_slope_")) return "#23262c";
   if (name.startsWith("orange_ice_slope_")) return "#b85f16";
   if (name.startsWith("ramped_clone_") || type === "clone") return "#b59a2a";
@@ -3156,15 +3113,6 @@ function buildObservationInventory(context) {
       sourceType: type
     });
   }
-
-  (playData.checkpoints || []).forEach((checkpoint) => {
-    entries.push({
-      glyph: checkpointObservationGlyph(checkpoint),
-      kind: "checkpoint",
-      name: checkpointObservationName(checkpoint),
-      sourceType: checkpointObservationSourceType(checkpoint)
-    });
-  });
 
   return entries;
 }
