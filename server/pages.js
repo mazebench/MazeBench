@@ -316,6 +316,11 @@ function createPageRenderer({
                 </div>
               </div>
             </div>
+            <div class="checkpoint-mobile-actions" aria-label="Checkpoint flag controls">
+              <button class="control-button" type="button" data-action="switch-flag" aria-label="Switch to the next visited checkpoint flag">Switch Flag</button>
+              <button class="control-button" type="button" data-action="place-flag" aria-label="Place a user checkpoint flag" disabled>Place Flag</button>
+              <button class="control-button" type="button" data-action="remove-flag" aria-label="Remove the user checkpoint flag here" disabled>Remove Flag</button>
+            </div>
             <div class="control-pad" data-quadrant-pad="move" aria-label="Move controls">
               <button class="control-button dpad-button" type="button" data-move="up" aria-label="Move up" tabindex="-1"></button>
               <button class="control-button dpad-button" type="button" data-move="left" aria-label="Move left" tabindex="-1"></button>
@@ -351,7 +356,7 @@ function createPageRenderer({
               </div>
               <section class="controls-section" aria-label="Keyboard controls">
                 <h3>Keyboard</h3>
-                <p class="controls-note">Arrow keys move · A / D rotate · W / S tilt · Z or U undo · R reset</p>
+                <p class="controls-note">Arrow keys move · A / D rotate · W / S tilt · Z or U undo · R reset · Space switch flag · F place/remove flag</p>
               </section>
               <section class="controls-section" aria-label="Controller options">
                 <h3>Controller</h3>

@@ -50,7 +50,8 @@
       return {
         ...snapshot,
         terrain: cloneTerrainState(snapshot.terrain || []),
-        actors: (snapshot.actors || []).map((actor) => ({ ...actor }))
+        actors: (snapshot.actors || []).map((actor) => ({ ...actor })),
+        checkpoints: (snapshot.checkpoints || []).map((checkpoint) => ({ ...checkpoint }))
       };
     }
 
@@ -1196,6 +1197,7 @@
           deferRender: true,
           preserveAnimation: transition.followSourcePlayerBeforeContinuation === true
         });
+        app.touchCheckpointsAtPlayer?.({ reason: "room-arrival" });
         pruneTransitionWarmups();
 
         const incomingRaisedPlayerGates = computeRaisedPlayerGateSet();

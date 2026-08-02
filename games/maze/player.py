@@ -329,6 +329,13 @@ class MazeWorld(GridWorld):
                     if definition is None:
                         continue
 
+                    # Checkpoint flags are browser/save metadata, not maze
+                    # physics. Secondary markers share a surface with the
+                    # player and must never become a blocking/observable
+                    # sprite in the lightweight Python solver runtime.
+                    if definition["name"] == "checkpoint_secondary":
+                        continue
+
                     cell_definitions.append(definition)
 
                 has_wall = any(definition["name"] == "wall" for definition in cell_definitions)

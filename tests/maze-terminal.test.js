@@ -572,6 +572,7 @@ function syntheticFloor(width, height) {
   ]);
   const terrainSources = [];
   const actors = [];
+  const checkpointSources = [];
 
   Object.entries(parsing.objects).forEach(([name, definition]) => {
     const type = definition.type || name;
@@ -590,6 +591,13 @@ function syntheticFloor(width, height) {
         styleKey: entry.style_key || null,
         token: entry.token
       };
+      if (definition.checkpoint_kind) {
+        checkpointSources.push({
+          kind: definition.checkpoint_kind,
+          sourceType: type
+        });
+        if (definition.checkpoint_kind !== "primary") return;
+      }
       if (actorTypes.has(type)) actors.push(source);
       else terrainSources.push(source);
     });
@@ -605,7 +613,7 @@ function syntheticFloor(width, height) {
     { type: "attached_gate" }
   );
 
-  const width = terrainSources.length + actors.length;
+  const width = terrainSources.length + actors.length + checkpointSources.length;
   const terrain = syntheticFloor(width, 1);
   terrainSources.forEach((source, x) => {
     terrain[0][x] = source.type === "empty"
@@ -613,12 +621,21 @@ function syntheticFloor(width, height) {
       : { type: source.type, ...source, layers: [{ elevation: 0, ...source }] };
   });
   const actorOffset = terrainSources.length;
+  const checkpointOffset = actorOffset + actors.length;
   const playData = {
     actors: actors.map((actor, index) => ({
       ...actor,
       elevation: 0,
       removed: false,
       x: actorOffset + index,
+      y: 0
+    })),
+    checkpoints: checkpointSources.map((checkpoint, index) => ({
+      active: false,
+      elevation: 0,
+      id: `complete_observation_inventory:checkpoint:${checkpoint.kind}:${index}`,
+      kind: checkpoint.kind,
+      x: checkpointOffset + index,
       y: 0
     })),
     gameId: "maze",
@@ -652,6 +669,10 @@ function syntheticFloor(width, height) {
     "weightless_push_box_M712",
     "ramped_weightless_push_box_M712_left",
     "attached_player_lift_lowered"
+  ].forEach((name) => assert.equal(names.has(name), true, `${name} must be lifted`));
+  [
+    "checkpoint_primary_inactive",
+    "checkpoint_secondary_inactive"
   ].forEach((name) => assert.equal(names.has(name), true, `${name} must be lifted`));
 }
 

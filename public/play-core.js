@@ -153,6 +153,7 @@
       // host-only route state (such as MazeJam save ids) and run a custom
       // camera flight before committing the destination room.
       hostOwnsWorldMapNavigation: playData?.hostOwnsWorldMapNavigation === true,
+      hostOwnsCheckpointControls: playData?.hostOwnsCheckpointControls === true,
       disableHorizontalNeighborFetches:
         playData?.disableHorizontalNeighborFetches === true,
       autoUndoPlayerFalls: playData?.autoUndoPlayerFalls === true,
@@ -170,6 +171,16 @@
       cameraModeToggle,
       resetProgressButton,
       canonicalLevelPlayerStarts: new Map(),
+      authoredCheckpointsByLevel: new Map(),
+      activatedCheckpointIds: new Set(),
+      customCheckpointsByLevel: new Map(),
+      invalidCheckpointSpawnIds: new Set(),
+      selectedCheckpointIdsByLevel: new Map(),
+      legacyVisitedCheckpointLevelIds: new Set(),
+      resumeCheckpoint: null,
+      checkpointRenderVersion: 0,
+      MAX_CUSTOM_CHECKPOINTS: 2048,
+      MAX_CHECKPOINT_PROGRESS_BYTES: 49152,
       TILE_SIZE: 64,
       FUZZY_AMOUNT: 0.1,
       NOISE_FPS: 8,
@@ -208,6 +219,7 @@
         height: playData.height,
         terrain: playData.terrain,
         actors: playData.actors.map((actor) => ({ ...actor })),
+        checkpoints: [],
         effects: {
           fuzzyEnabled: fuzzyToggle ? fuzzyToggle.getAttribute("aria-pressed") === "true" : true,
           edgeOutlinesEnabled: edgeToggle ? edgeToggle.getAttribute("aria-pressed") === "true" : true,
@@ -320,6 +332,8 @@
         return null;
       }
 
+      registerAuthoredCheckpoints(levelState, { emitLegacy: true });
+
       const preparedState = {
         ...levelState,
         levelId: levelState.levelId,
@@ -329,6 +343,7 @@
         actors: (levelState.actors || []).map((actor, index) =>
           createRuntimeActor(actor, index, levelState.levelId)
         ),
+        checkpoints: runtimeCheckpointsForLevel(levelState.levelId),
         raisedPlayerGates: Array.isArray(levelState.raisedPlayerGates)
           ? levelState.raisedPlayerGates.slice()
           : null,
@@ -353,6 +368,7 @@
     }
 
     function rememberHorizontalNeighborLevelState(levelState) {
+      registerAuthoredCheckpoints(levelState, { emitLegacy: true });
       rememberCanonicalLevelPlayerStart(levelState);
       const storedLevelState = prepareLevelRenderState(levelState);
 
@@ -608,6 +624,1084 @@
       return `pixel-game:${app.currentGameId}:collected-gems:v1`;
     }
 
+    function checkpointStorageKey() {
+      return `pixel-game:${app.currentGameId}:checkpoints:v1`;
+    }
+
+    function checkpointInteger(value, fallback = 0) {
+      const number = Number(value);
+      return Number.isInteger(number) ? number : fallback;
+    }
+
+    function checkpointIdFor(levelId, kind, x = 0, y = 0, elevation = 0) {
+      const safeLevelId = String(levelId || "");
+
+      if (!safeLevelId) return null;
+      if (kind === "primary") return `${safeLevelId}:checkpoint:primary`;
+      return `${safeLevelId}:checkpoint:${kind}:${x}:${y}:${elevation}`;
+    }
+
+    function cloneCheckpointDefinition(checkpoint) {
+      return checkpoint
+        ? {
+            id: checkpoint.id,
+            kind: checkpoint.kind,
+            levelId: checkpoint.levelId,
+            x: checkpoint.x,
+            y: checkpoint.y,
+            elevation: checkpoint.elevation,
+            active: checkpoint.active === true,
+            userPlaced: checkpoint.userPlaced === true || checkpoint.kind === "user"
+          }
+        : null;
+    }
+
+    function checkpointSort(left, right) {
+      const kindOrder = { primary: 0, secondary: 1, user: 2 };
+      return (
+        (kindOrder[left?.kind] ?? 9) - (kindOrder[right?.kind] ?? 9) ||
+        checkpointInteger(left?.y) - checkpointInteger(right?.y) ||
+        checkpointInteger(left?.x) - checkpointInteger(right?.x) ||
+        checkpointInteger(left?.elevation) - checkpointInteger(right?.elevation) ||
+        String(left?.id || "").localeCompare(String(right?.id || ""))
+      );
+    }
+
+    function normalizedAuthoredCheckpoints(levelState) {
+      const levelId = String(levelState?.levelId || app.currentLevelId || "");
+      const players = Array.isArray(levelState?.actors) ? levelState.actors : [];
+      const primaryPlayer = players.find((actor) => isMainPlayerActor(actor) && !actor.removed) || null;
+      const checkpoints = [];
+      const seenIds = new Set();
+      let hasPrimary = false;
+
+      (Array.isArray(levelState?.checkpoints) ? levelState.checkpoints : []).forEach((rawCheckpoint) => {
+        const rawKind = String(
+          rawCheckpoint?.kind || rawCheckpoint?.checkpointKind || rawCheckpoint?.type || ""
+        ).toLowerCase();
+        const kind = rawKind === "primary" || rawKind === "1"
+          ? "primary"
+          : rawKind === "secondary" || rawKind === "2"
+            ? "secondary"
+            : null;
+
+        if (!kind || (kind === "primary" && hasPrimary)) return;
+        const x = checkpointInteger(rawCheckpoint?.x);
+        const y = checkpointInteger(rawCheckpoint?.y);
+        const elevation = checkpointInteger(rawCheckpoint?.elevation);
+        const id = checkpointIdFor(levelId, kind, x, y, elevation);
+        if (!id || seenIds.has(id)) return;
+        checkpoints.push({ id, kind, levelId, x, y, elevation });
+        seenIds.add(id);
+        hasPrimary ||= kind === "primary";
+      });
+
+      // Transitional compatibility: old level payloads still contain a raw
+      // player start. Treat it as primary metadata until every serializer has
+      // shipped the new top-level `checkpoints` field.
+      if (!hasPrimary && primaryPlayer) {
+        const x = checkpointInteger(primaryPlayer.x);
+        const y = checkpointInteger(primaryPlayer.y);
+        const elevation = checkpointInteger(primaryPlayer.elevation);
+        const id = checkpointIdFor(levelId, "primary", x, y, elevation);
+        checkpoints.push({ id, kind: "primary", levelId, x, y, elevation });
+        seenIds.add(id);
+      }
+
+      const primary = checkpoints.find((checkpoint) => checkpoint.kind === "primary");
+      if (primaryPlayer && primary) {
+        primaryPlayer.primaryCheckpointId = primary.id;
+      }
+
+      return checkpoints.sort(checkpointSort);
+    }
+
+    function checkpointLevelIdFromId(checkpointId) {
+      const id = String(checkpointId || "");
+      const markerIndex = id.indexOf(":checkpoint:");
+      return markerIndex > 0 ? id.slice(0, markerIndex) : "";
+    }
+
+    function authoredCheckpointsForLevel(levelId = app.currentLevelId) {
+      return (app.authoredCheckpointsByLevel.get(String(levelId || "")) || []).map(
+        cloneCheckpointDefinition
+      );
+    }
+
+    function customCheckpointMapForLevel(levelId, create = false) {
+      const safeLevelId = String(levelId || "");
+      let checkpoints = app.customCheckpointsByLevel.get(safeLevelId);
+
+      if (!checkpoints && create && safeLevelId) {
+        checkpoints = new Map();
+        app.customCheckpointsByLevel.set(safeLevelId, checkpoints);
+      }
+
+      return checkpoints || null;
+    }
+
+    function runtimeCheckpointsForLevel(levelId = app.currentLevelId) {
+      const safeLevelId = String(levelId || "");
+      const authored = authoredCheckpointsForLevel(safeLevelId);
+      const custom = Array.from(customCheckpointMapForLevel(safeLevelId)?.values() || [],
+        cloneCheckpointDefinition);
+      return authored.concat(custom).sort(checkpointSort).map((checkpoint) => ({
+        ...checkpoint,
+        active: app.activatedCheckpointIds.has(checkpoint.id),
+        userPlaced: checkpoint.kind === "user"
+      }));
+    }
+
+    function checkpointById(checkpointId) {
+      const levelId = checkpointLevelIdFromId(checkpointId);
+      if (!levelId) return null;
+      return runtimeCheckpointsForLevel(levelId).find((checkpoint) => checkpoint.id === checkpointId) || null;
+    }
+
+    function activatedCheckpointsForLevel(levelId = app.currentLevelId) {
+      return runtimeCheckpointsForLevel(levelId).filter((checkpoint) =>
+        app.activatedCheckpointIds.has(checkpoint.id) &&
+        !app.invalidCheckpointSpawnIds.has(checkpoint.id)
+      );
+    }
+
+    function selectedCheckpointForLevel(levelId = app.currentLevelId) {
+      const safeLevelId = String(levelId || "");
+      const selectedId = app.selectedCheckpointIdsByLevel.get(safeLevelId);
+      const selected = selectedId ? checkpointById(selectedId) : null;
+
+      if (
+        selected &&
+        app.activatedCheckpointIds.has(selected.id) &&
+        !app.invalidCheckpointSpawnIds.has(selected.id)
+      ) return selected;
+      return activatedCheckpointsForLevel(safeLevelId)[0] || null;
+    }
+
+    function checkpointTerrainLayers(levelState, checkpoint) {
+      const cell = levelState?.terrain?.[checkpoint?.y]?.[checkpoint?.x];
+      if (!cell) return [];
+      return Array.isArray(cell.layers) && cell.layers.length > 0 ? cell.layers : [cell];
+    }
+
+    function customCheckpointSpawnIsValid(levelState, checkpoint) {
+      if (!levelState || checkpoint?.kind !== "user") return checkpoint?.kind !== "user";
+      const width = Number(levelState.width) || 0;
+      const height = Number(levelState.height) || 0;
+      if (
+        !Number.isInteger(checkpoint.x) ||
+        !Number.isInteger(checkpoint.y) ||
+        !Number.isInteger(checkpoint.elevation) ||
+        checkpoint.x < 0 ||
+        checkpoint.y < 0 ||
+        checkpoint.x >= width ||
+        checkpoint.y >= height ||
+        checkpoint.elevation < 0
+      ) return false;
+
+      const hasValidSupport = checkpointTerrainLayers(levelState, checkpoint).some((layer) => {
+        const type = String(layer?.type || "");
+        const elevation = checkpointInteger(layer?.elevation);
+        return (
+          ((type === "floor" || type === "ice") && elevation === checkpoint.elevation) ||
+          ((type === "wall" || type === "ice_block" || type === "block_asset") &&
+            elevation + 1 === checkpoint.elevation)
+        );
+      });
+      if (!hasValidSupport) return false;
+
+      const authoredOverlap = normalizedAuthoredCheckpoints(levelState).some((authored) =>
+        authored.x === checkpoint.x &&
+        authored.y === checkpoint.y &&
+        authored.elevation === checkpoint.elevation
+      );
+      if (authoredOverlap) return false;
+
+      return !(levelState.actors || []).some((actor) => {
+        if (isMainPlayerActor(actor) || actor?.type === "gem" || actor?.removed) return false;
+        const actorElevation = checkpointInteger(actor?.elevation);
+        return (
+          checkpointInteger(actor?.x, NaN) === checkpoint.x &&
+          checkpointInteger(actor?.y, NaN) === checkpoint.y &&
+          (actorElevation === checkpoint.elevation || actorElevation + 1 === checkpoint.elevation)
+        );
+      });
+    }
+
+    function validateCheckpointSpawnsForLevelState(levelState) {
+      const levelId = String(levelState?.levelId || "");
+      const custom = customCheckpointMapForLevel(levelId);
+      if (!custom) return;
+      custom.forEach((checkpoint) => {
+        if (customCheckpointSpawnIsValid(levelState, checkpoint)) {
+          app.invalidCheckpointSpawnIds.delete(checkpoint.id);
+        } else {
+          app.invalidCheckpointSpawnIds.add(checkpoint.id);
+        }
+      });
+    }
+
+    function recoverSelectedCheckpointForLevelState(levelState) {
+      if (!levelState) return null;
+      validateCheckpointSpawnsForLevelState(levelState);
+      const levelId = String(levelState.levelId || "");
+      const checkpoint = selectedCheckpointForLevel(levelId);
+      if (!checkpoint) return null;
+      app.selectedCheckpointIdsByLevel.set(levelId, checkpoint.id);
+      if (app.resumeCheckpoint?.levelId === levelId) {
+        app.resumeCheckpoint = { levelId, checkpointId: checkpoint.id };
+      }
+      return checkpoint;
+    }
+
+    function visitedCheckpointLevelIds() {
+      const levelIds = new Set(app.legacyVisitedCheckpointLevelIds);
+      app.activatedCheckpointIds.forEach((checkpointId) => {
+        const levelId = checkpointLevelIdFromId(checkpointId);
+        if (levelId) levelIds.add(levelId);
+      });
+      app.customCheckpointsByLevel.forEach((checkpoints, levelId) => {
+        if (checkpoints.size > 0) levelIds.add(levelId);
+      });
+      return levelIds;
+    }
+
+    function isCheckpointLevelVisited(levelId) {
+      return visitedCheckpointLevelIds().has(String(levelId || ""));
+    }
+
+    function hasCheckpointSpawnForLevel(levelId) {
+      const safeLevelId = String(levelId || "");
+      if (selectedCheckpointForLevel(safeLevelId) !== null) return true;
+      // Once real metadata is loaded, never let an imported/stale authored id
+      // stand in for a checkpoint that the room does not actually contain.
+      if (app.authoredCheckpointsByLevel.has(safeLevelId)) return false;
+      if (app.legacyVisitedCheckpointLevelIds.has(safeLevelId)) return true;
+      const selectedId = app.selectedCheckpointIdsByLevel.get(safeLevelId) || "";
+      const provisionallySpawnable = (checkpointId) =>
+        checkpointId === `${safeLevelId}:checkpoint:primary` ||
+        checkpointId.startsWith(`${safeLevelId}:checkpoint:secondary:`);
+      if (app.activatedCheckpointIds.has(selectedId) && provisionallySpawnable(selectedId)) return true;
+      return Array.from(app.activatedCheckpointIds).some((checkpointId) =>
+        checkpointLevelIdFromId(checkpointId) === safeLevelId && provisionallySpawnable(checkpointId)
+      );
+    }
+
+    function exportCheckpointProgress() {
+      const custom = [];
+      app.customCheckpointsByLevel.forEach((checkpoints) => {
+        checkpoints.forEach((checkpoint) => {
+          custom.push({
+            levelId: checkpoint.levelId,
+            x: checkpoint.x,
+            y: checkpoint.y,
+            elevation: checkpoint.elevation
+          });
+        });
+      });
+      custom.sort((left, right) =>
+        left.levelId.localeCompare(right.levelId) || checkpointSort(left, right)
+      );
+
+      const selected = Array.from(app.selectedCheckpointIdsByLevel, ([levelId, checkpointId]) => ({
+        levelId,
+        checkpointId
+      })).sort((left, right) =>
+        left.levelId.localeCompare(right.levelId) || left.checkpointId.localeCompare(right.checkpointId)
+      );
+
+      return {
+        version: 1,
+        activated: Array.from(app.activatedCheckpointIds).sort(),
+        custom,
+        selected,
+        resume: app.resumeCheckpoint
+          ? {
+              levelId: app.resumeCheckpoint.levelId,
+              checkpointId: app.resumeCheckpoint.checkpointId
+            }
+          : null
+      };
+    }
+
+    function checkpointProgressByteLength(progress) {
+      const serialized = JSON.stringify(progress || {});
+      if (typeof window.TextEncoder === "function") {
+        return new window.TextEncoder().encode(serialized).byteLength;
+      }
+      return serialized.length;
+    }
+
+    function checkpointProgressWithCustomAddition(checkpoint) {
+      const progress = exportCheckpointProgress();
+      progress.custom = progress.custom.concat([{
+        levelId: checkpoint.levelId,
+        x: checkpoint.x,
+        y: checkpoint.y,
+        elevation: checkpoint.elevation
+      }]).sort((left, right) =>
+        left.levelId.localeCompare(right.levelId) || checkpointSort(left, right)
+      );
+      progress.activated = Array.from(new Set(progress.activated.concat(checkpoint.id))).sort();
+      progress.selected = progress.selected
+        .filter((entry) => entry.levelId !== checkpoint.levelId)
+        .concat([{ levelId: checkpoint.levelId, checkpointId: checkpoint.id }])
+        .sort((left, right) =>
+          left.levelId.localeCompare(right.levelId) || left.checkpointId.localeCompare(right.checkpointId)
+        );
+      progress.resume = { levelId: checkpoint.levelId, checkpointId: checkpoint.id };
+      return progress;
+    }
+
+    function validateCheckpointProgressCapacity(progress, options = {}) {
+      if ((progress?.custom?.length || 0) > app.MAX_CUSTOM_CHECKPOINTS) {
+        return { allowed: false, reason: "custom-checkpoint-limit" };
+      }
+      if (checkpointProgressByteLength(progress) > app.MAX_CHECKPOINT_PROGRESS_BYTES) {
+        return { allowed: false, reason: "checkpoint-progress-too-large" };
+      }
+      const hostCapacityHook =
+        app.canPersistCheckpointProgress ||
+        app.playData?.canPersistCheckpointProgress ||
+        window.__MAZEBENCH_CAN_PERSIST_CHECKPOINT_PROGRESS__;
+      if (options.includeHostHook === true && typeof hostCapacityHook === "function") {
+        try {
+          const decision = hostCapacityHook(progress, {
+            operation: options.operation || "update",
+            levelId: options.levelId || app.currentLevelId
+          });
+          if (decision && typeof decision.then === "function") {
+            return { allowed: false, reason: "checkpoint-capacity-hook-must-be-synchronous" };
+          }
+          if (decision === false || decision?.allowed === false) {
+            return { allowed: false, reason: decision?.reason || "checkpoint-progress-rejected" };
+          }
+        } catch (error) {
+          return { allowed: false, reason: "checkpoint-progress-rejected" };
+        }
+      }
+      return { allowed: true, reason: null };
+    }
+
+    function checkpointSelectionState(levelId = app.currentLevelId) {
+      const safeLevelId = String(levelId || "");
+      return {
+        levelId: safeLevelId,
+        checkpointId: app.selectedCheckpointIdsByLevel.get(safeLevelId) || null,
+        resume: app.resumeCheckpoint ? { ...app.resumeCheckpoint } : null
+      };
+    }
+
+    function restoreCheckpointSelectionState(selection, options = {}) {
+      if (!selection?.levelId) return false;
+      const previous = checkpointSelectionState(selection.levelId);
+      if (selection.checkpointId) {
+        app.selectedCheckpointIdsByLevel.set(selection.levelId, selection.checkpointId);
+      } else {
+        app.selectedCheckpointIdsByLevel.delete(selection.levelId);
+      }
+      app.resumeCheckpoint = selection.resume ? { ...selection.resume } : null;
+      const changed =
+        previous.checkpointId !== (selection.checkpointId || null) ||
+        previous.resume?.levelId !== selection.resume?.levelId ||
+        previous.resume?.checkpointId !== selection.resume?.checkpointId;
+      if (changed && options.emit !== false) {
+        const checkpoint = selection.checkpointId ? checkpointById(selection.checkpointId) : null;
+        commitCheckpointMutation("selected", checkpoint, {
+          levelId: selection.levelId,
+          checkpointId: selection.checkpointId || null,
+          reason: options.reason || "restore-selection"
+        });
+      }
+      return changed;
+    }
+
+    function checkpointLocalStorageEnabled() {
+      return (
+        !app.isEditorRenderApp &&
+        !app.ignoreSavedGemProgress &&
+        playData?.checkpointLocalStorage !== false &&
+        playData?.hostOwnsWorldMapNavigation !== true
+      );
+    }
+
+    function saveCheckpointProgress() {
+      if (!checkpointLocalStorageEnabled()) return;
+
+      try {
+        window.localStorage?.setItem(checkpointStorageKey(), JSON.stringify(exportCheckpointProgress()));
+      } catch (error) {
+        // Storage can fail in private browsing or constrained embedded contexts.
+      }
+    }
+
+    function loadCheckpointProgress() {
+      if (!checkpointLocalStorageEnabled()) return null;
+
+      try {
+        const raw = window.localStorage?.getItem(checkpointStorageKey());
+        return raw ? JSON.parse(raw) : null;
+      } catch (error) {
+        return null;
+      }
+    }
+
+    function emitCheckpointProgress(type, checkpoint = null, extra = {}) {
+      const detail = {
+        version: 1,
+        type,
+        levelId: checkpoint?.levelId || extra.levelId || app.currentLevelId || null,
+        checkpointId: checkpoint?.id || extra.checkpointId || null,
+        checkpoint: cloneCheckpointDefinition(checkpoint),
+        progress: exportCheckpointProgress(),
+        ...extra
+      };
+
+      app.onCheckpointProgress?.(detail);
+      if (typeof window.dispatchEvent === "function" && typeof window.CustomEvent === "function") {
+        window.dispatchEvent(new window.CustomEvent("mazebench:checkpoint-progress", { detail }));
+      }
+    }
+
+    function commitCheckpointMutation(type, checkpoint = null, extra = {}) {
+      app.checkpointRenderVersion += 1;
+      app.state.checkpoints = runtimeCheckpointsForLevel(app.currentLevelId);
+      saveCheckpointProgress();
+      app.threeRenderer?.invalidateSceneCache?.();
+      if (typeof app.render === "function") app.renderOncePerFrame?.();
+      emitCheckpointProgress(type, checkpoint, extra);
+    }
+
+    function selectCheckpoint(checkpoint, options = {}) {
+      if (!checkpoint || !app.activatedCheckpointIds.has(checkpoint.id)) return false;
+      const previousId = app.selectedCheckpointIdsByLevel.get(checkpoint.levelId) || null;
+      const previousResumeId = app.resumeCheckpoint?.checkpointId || null;
+      app.selectedCheckpointIdsByLevel.set(checkpoint.levelId, checkpoint.id);
+      app.resumeCheckpoint = { levelId: checkpoint.levelId, checkpointId: checkpoint.id };
+      const changed = previousId !== checkpoint.id || previousResumeId !== checkpoint.id;
+
+      if (changed && options.emit !== false) {
+        commitCheckpointMutation(options.type || "selected", checkpoint, {
+          reason: options.reason || "selection"
+        });
+      }
+      return changed;
+    }
+
+    function activateCheckpoint(checkpoint, options = {}) {
+      if (!checkpoint) return false;
+      const newlyActivated = !app.activatedCheckpointIds.has(checkpoint.id);
+      const previousId = app.selectedCheckpointIdsByLevel.get(checkpoint.levelId) || null;
+      app.activatedCheckpointIds.add(checkpoint.id);
+      app.legacyVisitedCheckpointLevelIds.delete(checkpoint.levelId);
+      app.selectedCheckpointIdsByLevel.set(checkpoint.levelId, checkpoint.id);
+      app.resumeCheckpoint = { levelId: checkpoint.levelId, checkpointId: checkpoint.id };
+      const selectionChanged = previousId !== checkpoint.id;
+
+      if ((newlyActivated || selectionChanged) && options.emit !== false) {
+        commitCheckpointMutation(newlyActivated ? (options.type || "activated") : "selected", checkpoint, {
+          reason: options.reason || "touch"
+        });
+      }
+
+      return newlyActivated || selectionChanged;
+    }
+
+    function activateLegacyPrimaryForLevel(levelId, options = {}) {
+      const safeLevelId = String(levelId || "");
+      if (!app.legacyVisitedCheckpointLevelIds.has(safeLevelId)) return false;
+      const primary = authoredCheckpointsForLevel(safeLevelId).find(
+        (checkpoint) => checkpoint.kind === "primary"
+      );
+      if (!primary) return false;
+      return activateCheckpoint(primary, {
+        emit: options.emit !== false,
+        reason: "legacy-visited-room"
+      });
+    }
+
+    function registerAuthoredCheckpoints(levelState, options = {}) {
+      const levelId = String(levelState?.levelId || "");
+      if (!levelId) return [];
+      const checkpoints = normalizedAuthoredCheckpoints(levelState);
+      app.authoredCheckpointsByLevel.set(levelId, checkpoints);
+      levelState.checkpoints = checkpoints.map(cloneCheckpointDefinition);
+
+      if (levelId === app.currentLevelId) {
+        app.state.checkpoints = runtimeCheckpointsForLevel(levelId);
+        const primary = checkpoints.find((checkpoint) => checkpoint.kind === "primary");
+        const runtimePlayer = app.state.actors.find((actor) => isMainPlayerActor(actor) && !actor.removed);
+        if (primary && runtimePlayer) runtimePlayer.primaryCheckpointId = primary.id;
+      }
+
+      activateLegacyPrimaryForLevel(levelId, { emit: options.emitLegacy === true });
+      return checkpoints.map(cloneCheckpointDefinition);
+    }
+
+    function importCheckpointProgress(progress, options = {}) {
+      const value = progress && typeof progress === "object" ? progress : {};
+      if (options.replace !== false) {
+        app.activatedCheckpointIds.clear();
+        app.customCheckpointsByLevel.clear();
+        app.invalidCheckpointSpawnIds.clear();
+        app.selectedCheckpointIdsByLevel.clear();
+        app.legacyVisitedCheckpointLevelIds.clear();
+        app.resumeCheckpoint = null;
+      }
+
+      const activated = value.activated || value.activatedCheckpointIds || value.activated_checkpoint_ids;
+      (Array.isArray(activated) ? activated : []).forEach((checkpointId) => {
+        if (typeof checkpointId === "string" && checkpointLevelIdFromId(checkpointId)) {
+          app.activatedCheckpointIds.add(checkpointId);
+        }
+      });
+
+      const custom = value.custom || value.customFlags || value.custom_flags;
+      (Array.isArray(custom) ? custom : []).forEach((rawCheckpoint) => {
+        const levelId = String(rawCheckpoint?.levelId || rawCheckpoint?.level_id || "");
+        if (!levelId) return;
+        const x = checkpointInteger(rawCheckpoint?.x);
+        const y = checkpointInteger(rawCheckpoint?.y);
+        const elevation = checkpointInteger(rawCheckpoint?.elevation);
+        const id = checkpointIdFor(levelId, "user", x, y, elevation);
+        const checkpoint = { id, kind: "user", levelId, x, y, elevation };
+        customCheckpointMapForLevel(levelId, true).set(id, checkpoint);
+        app.activatedCheckpointIds.add(id);
+      });
+
+      const selected = value.selected || value.activeByLevel || value.active_by_level;
+      if (Array.isArray(selected)) {
+        selected.forEach((entry) => {
+          const levelId = String(entry?.levelId || entry?.level_id || "");
+          const checkpointId = String(entry?.checkpointId || entry?.checkpoint_id || "");
+          if (levelId && checkpointId) app.selectedCheckpointIdsByLevel.set(levelId, checkpointId);
+        });
+      } else if (selected && typeof selected === "object") {
+        Object.entries(selected).forEach(([levelId, checkpointId]) => {
+          if (typeof checkpointId === "string") {
+            app.selectedCheckpointIdsByLevel.set(levelId, checkpointId);
+          }
+        });
+      }
+
+      const resume = value.resume || value.lastActivated || value.last_activated;
+      const resumeLevelId = String(resume?.levelId || resume?.level_id || "");
+      const resumeCheckpointId = String(resume?.checkpointId || resume?.checkpoint_id || "");
+      if (resumeLevelId && resumeCheckpointId) {
+        app.resumeCheckpoint = { levelId: resumeLevelId, checkpointId: resumeCheckpointId };
+        if (!app.selectedCheckpointIdsByLevel.has(resumeLevelId)) {
+          app.selectedCheckpointIdsByLevel.set(resumeLevelId, resumeCheckpointId);
+        }
+      }
+
+      const legacyVisited = options.legacyVisitedLevelIds || value.legacyVisitedLevelIds ||
+        value.legacy_visited_level_ids || value.visitedLevelIds || value.visited_level_ids;
+      (Array.isArray(legacyVisited) ? legacyVisited : legacyVisited instanceof Set
+        ? Array.from(legacyVisited)
+        : []).forEach((levelId) => {
+        const safeLevelId = String(levelId || "");
+        if (safeLevelId && !isCheckpointLevelVisited(safeLevelId)) {
+          app.legacyVisitedCheckpointLevelIds.add(safeLevelId);
+        }
+      });
+
+      Array.from(app.legacyVisitedCheckpointLevelIds).forEach((levelId) => {
+        activateLegacyPrimaryForLevel(levelId, { emit: false });
+      });
+      app.checkpointRenderVersion += 1;
+      app.state.checkpoints = runtimeCheckpointsForLevel(app.currentLevelId);
+      app.threeRenderer?.invalidateSceneCache?.();
+      if (typeof app.render === "function") app.renderOncePerFrame?.();
+      if (options.save !== false) saveCheckpointProgress();
+      if (options.emit === true) emitCheckpointProgress("restored", null);
+      return exportCheckpointProgress();
+    }
+
+    function touchCheckpointsAtPosition(position, options = {}) {
+      if (app.isEditorRenderApp || !position) return false;
+      const levelId = String(options.levelId || position.levelId || app.currentLevelId || "");
+      const x = checkpointInteger(position.x, NaN);
+      const y = checkpointInteger(position.y, NaN);
+      const elevation = checkpointInteger(position.elevation, NaN);
+      if (!levelId || !Number.isInteger(x) || !Number.isInteger(y) || !Number.isInteger(elevation)) {
+        return false;
+      }
+
+      let changed = false;
+      runtimeCheckpointsForLevel(levelId).forEach((checkpoint) => {
+        if (checkpoint.x === x && checkpoint.y === y && checkpoint.elevation === elevation) {
+          changed = activateCheckpoint(checkpoint, {
+            reason: options.reason || "touch"
+          }) || changed;
+        }
+      });
+      return changed;
+    }
+
+    function touchCheckpointsAtPlayer(options = {}) {
+      const player = app.state.actors.find((actor) => isMainPlayerActor(actor) && !actor.removed);
+      return player
+        ? touchCheckpointsAtPosition(player, {
+            levelId: app.currentLevelId,
+            reason: options.reason || "player-position"
+          })
+        : false;
+    }
+
+    function touchCheckpointsFromMoves(moves, options = {}) {
+      let changed = false;
+      let activated = false;
+      let lastCheckpoint = null;
+      (moves || []).forEach((move) => {
+        if (move?.visualOnly === true || !isMainPlayerActor(move?.actor)) return;
+        const positions = Array.isArray(move.path) && move.path.length > 0
+          ? move.path
+          : [];
+        positions.concat([{
+          x: move.toX,
+          y: move.toY,
+          elevation: move.toElevation ?? move.actor?.elevation ?? 0
+        }]).forEach((position) => {
+          const x = checkpointInteger(position?.x, NaN);
+          const y = checkpointInteger(position?.y, NaN);
+          const elevation = checkpointInteger(
+            position?.elevation ?? move.toElevation ?? move.actor?.elevation ?? 0,
+            NaN
+          );
+          runtimeCheckpointsForLevel(app.currentLevelId).forEach((checkpoint) => {
+            if (checkpoint.x !== x || checkpoint.y !== y || checkpoint.elevation !== elevation) return;
+            const wasActivated = app.activatedCheckpointIds.has(checkpoint.id);
+            const checkpointChanged = activateCheckpoint(checkpoint, { emit: false });
+            if (!checkpointChanged) return;
+            changed = true;
+            activated ||= !wasActivated;
+            lastCheckpoint = checkpoint;
+          });
+        });
+      });
+      if (changed) {
+        commitCheckpointMutation(activated ? "activated" : "selected", lastCheckpoint, {
+          reason: options.reason || "movement"
+        });
+      }
+      return changed;
+    }
+
+    function cloneCheckpointLevelState(levelState) {
+      if (!levelState) return null;
+      return {
+        ...levelState,
+        terrain: cloneTerrainState(levelState.terrain || []),
+        actors: (levelState.actors || []).map((actor) => ({ ...actor })),
+        checkpoints: (levelState.checkpoints || []).map(cloneCheckpointDefinition),
+        raisedPlayerGates: Array.isArray(levelState.raisedPlayerGates)
+          ? levelState.raisedPlayerGates.slice()
+          : levelState.raisedPlayerGates,
+        raisedOrangeWalls: Array.isArray(levelState.raisedOrangeWalls)
+          ? levelState.raisedOrangeWalls.slice()
+          : levelState.raisedOrangeWalls
+      };
+    }
+
+    function moveLevelPlayerToCheckpoint(levelState, checkpoint) {
+      if (!levelState || !checkpoint) return levelState;
+      const player = (levelState.actors || []).find((actor) => isMainPlayerActor(actor) && !actor.removed);
+      if (!player) return levelState;
+      player.x = checkpoint.x;
+      player.y = checkpoint.y;
+      player.elevation = checkpoint.elevation;
+      player.primaryCheckpointId = authoredCheckpointsForLevel(checkpoint.levelId).find(
+        (entry) => entry.kind === "primary"
+      )?.id || player.primaryCheckpointId || null;
+      return levelState;
+    }
+
+    function prepareLevelStateAtSelectedCheckpoint(levelState) {
+      if (!levelState) return levelState;
+      registerAuthoredCheckpoints(levelState, { emitLegacy: true });
+      const checkpoint = recoverSelectedCheckpointForLevelState(levelState);
+      return checkpoint
+        ? moveLevelPlayerToCheckpoint(cloneCheckpointLevelState(levelState), checkpoint)
+        : levelState;
+    }
+
+    function checkpointRecoveryLevelIds(excludedLevelId = "") {
+      const ordered = [];
+      const seen = new Set([String(excludedLevelId || "")]);
+      const add = (levelId) => {
+        const safeLevelId = String(levelId || "");
+        if (!safeLevelId || seen.has(safeLevelId)) return;
+        seen.add(safeLevelId);
+        ordered.push(safeLevelId);
+      };
+      app.selectedCheckpointIdsByLevel.forEach((checkpointId, levelId) => {
+        if (app.activatedCheckpointIds.has(checkpointId)) add(levelId);
+      });
+      app.activatedCheckpointIds.forEach((checkpointId) => add(checkpointLevelIdFromId(checkpointId)));
+      app.legacyVisitedCheckpointLevelIds.forEach(add);
+      return ordered;
+    }
+
+    function reportCheckpointRecoveryRequired(resume) {
+      app.checkpointResumeBlocked = true;
+      app.checkpointRecoveryMessage =
+        "This save's last checkpoint no longer exists. Choose another active room from the world map.";
+      if (typeof window.dispatchEvent === "function" && typeof window.CustomEvent === "function") {
+        window.dispatchEvent(new window.CustomEvent("mazebench:checkpoint-recovery-required", {
+          detail: {
+            levelId: resume?.levelId || app.currentLevelId,
+            checkpointId: resume?.checkpointId || null,
+            message: app.checkpointRecoveryMessage
+          }
+        }));
+      }
+    }
+
+    async function recoverAtAnotherActivatedCheckpoint(excludedLevelId, options = {}) {
+      for (const levelId of checkpointRecoveryLevelIds(excludedLevelId)) {
+        try {
+          const levelState = await loadLevelState(levelId);
+          const prepared = prepareLevelStateAtSelectedCheckpoint(levelState);
+          const checkpoint = selectedCheckpointForLevel(levelId);
+          if (!checkpoint || !hasCheckpointSpawnForLevel(levelId)) continue;
+          app.selectedCheckpointIdsByLevel.set(levelId, checkpoint.id);
+          app.resumeCheckpoint = { levelId, checkpointId: checkpoint.id };
+          app.checkpointResumeBlocked = false;
+          app.checkpointRecoveryMessage = "";
+          applyLevelState(prepared, {
+            updateUrl: options.updateUrl !== false,
+            resetHistory: true,
+            resetLevelEntry: true,
+            immediateCamera: true
+          });
+          return true;
+        } catch (error) {
+          // A stale room id must not prevent trying the remaining activated rooms.
+        }
+      }
+      return false;
+    }
+
+    async function resumeAtSelectedCheckpoint(options = {}) {
+      const resume = app.resumeCheckpoint;
+      if (!resume?.levelId || !resume?.checkpointId) return false;
+
+      if (resume.levelId !== app.currentLevelId) {
+        try {
+          const levelState = await loadLevelState(resume.levelId);
+          const prepared = prepareLevelStateAtSelectedCheckpoint(levelState);
+          if (hasCheckpointSpawnForLevel(resume.levelId)) {
+            app.checkpointResumeBlocked = false;
+            app.checkpointRecoveryMessage = "";
+            applyLevelState(prepared, {
+              updateUrl: options.updateUrl !== false,
+              resetHistory: true,
+              resetLevelEntry: true,
+              immediateCamera: true
+            });
+            return true;
+          }
+        } catch (error) {
+          // A removed or temporarily unavailable last room is handled by the
+          // same activated-checkpoint recovery path as a removed flag.
+        }
+        if (await recoverAtAnotherActivatedCheckpoint(resume.levelId, options)) return true;
+        reportCheckpointRecoveryRequired(resume);
+        return false;
+      }
+
+      const currentLevelState = {
+        ...app.state,
+        levelId: app.currentLevelId
+      };
+      const checkpoint = recoverSelectedCheckpointForLevelState(currentLevelState);
+      const player = app.state.actors.find((actor) => isMainPlayerActor(actor));
+      if (!checkpoint || !player) {
+        if (await recoverAtAnotherActivatedCheckpoint(resume.levelId, options)) return true;
+        reportCheckpointRecoveryRequired(resume);
+        return false;
+      }
+      player.removed = false;
+      app.checkpointResumeBlocked = false;
+      app.checkpointRecoveryMessage = "";
+      player.x = checkpoint.x;
+      player.y = checkpoint.y;
+      player.elevation = checkpoint.elevation;
+      player.renderX = checkpoint.x;
+      player.renderY = checkpoint.y;
+      player.renderElevation = checkpoint.elevation;
+      player.renderScale = 1;
+      player.renderAlpha = 1;
+      player.renderSink = 0;
+      player.renderInHole = false;
+      syncCameraTarget(true);
+      if (typeof app.render === "function") app.render();
+      return true;
+    }
+
+    function checkpointResetState() {
+      const base = app.levelEntrySnapshot && app.levelEntrySnapshot.levelId === app.currentLevelId
+        ? app.levelEntrySnapshot
+        : cloneLevelSnapshot();
+      const checkpoint = selectedCheckpointForLevel(app.currentLevelId);
+      const snapshot = cloneCheckpointLevelState(base);
+      if (checkpoint) moveLevelPlayerToCheckpoint(snapshot, checkpoint);
+      return {
+        checkpoint,
+        snapshot,
+        positions: (snapshot?.actors || []).map((actor) => ({
+          x: actor.x,
+          y: actor.y,
+          removed: Boolean(actor.removed),
+          elevation: actor.elevation ?? 0,
+          raised: actor.raised === true,
+          collectionId: actor.collectionId || null,
+          collected: actor.collected === true,
+          showCollectedGhost: actor.showCollectedGhost === true
+        }))
+      };
+    }
+
+    function actorCheckpointState(actor) {
+      if (!actor || isMainPlayerActor(actor) || actor.type === "gem") return null;
+      return {
+        type: actor.type,
+        groupId: actor.groupId ?? null,
+        x: actor.x,
+        y: actor.y,
+        elevation: actor.elevation ?? 0,
+        removed: Boolean(actor.removed),
+        raised: actor.raised === true,
+        direction: actor.direction || null
+      };
+    }
+
+    function isCurrentRoomCheckpointPristine() {
+      const reset = checkpointResetState().snapshot;
+      if (!reset) return false;
+      if (
+        JSON.stringify(cloneTerrainState(app.state.terrain)) !==
+        JSON.stringify(cloneTerrainState(reset.terrain || []))
+      ) return false;
+      const currentActors = app.state.actors.map(actorCheckpointState).filter(Boolean);
+      const resetActors = (reset.actors || []).map(actorCheckpointState).filter(Boolean);
+      if (JSON.stringify(currentActors) !== JSON.stringify(resetActors)) return false;
+      const currentOrangeWalls = Array.from(computeRaisedOrangeWallSet()).sort();
+      const resetOrangeWalls = Array.from(reset.raisedOrangeWalls || []).sort();
+      return JSON.stringify(currentOrangeWalls) === JSON.stringify(resetOrangeWalls);
+    }
+
+    function customFlagPlacementSurface(player) {
+      if (!player) return null;
+      const allowedTypes = new Set(["floor", "wall", "ice", "ice_block", "block_asset"]);
+      return terrainLayersAt(player.x, player.y).find((layer) =>
+        allowedTypes.has(layer.type) &&
+        terrainLayerSurfaceHeight(
+          layer,
+          player.x,
+          player.y,
+          app.liveRaisedPlayerGates,
+          app.liveRaisedOrangeWalls
+        ) === (player.elevation ?? 0)
+      ) || null;
+    }
+
+    function canPlaceUserCheckpointFlag() {
+      const player = app.state.actors.find((actor) => isMainPlayerActor(actor) && !actor.removed);
+      if (!player) return { allowed: false, reason: "no-player" };
+      const existingUserId = checkpointIdFor(
+        app.currentLevelId,
+        "user",
+        checkpointInteger(player.x),
+        checkpointInteger(player.y),
+        checkpointInteger(player.elevation)
+      );
+      if (customCheckpointMapForLevel(app.currentLevelId)?.has(existingUserId)) {
+        return { allowed: false, reason: "already-exists" };
+      }
+      const overlapsAuthoredCheckpoint = authoredCheckpointsForLevel(app.currentLevelId).some(
+        (checkpoint) =>
+          checkpoint.x === player.x &&
+          checkpoint.y === player.y &&
+          checkpoint.elevation === (player.elevation ?? 0)
+      );
+      if (overlapsAuthoredCheckpoint) {
+        return { allowed: false, reason: "authored-checkpoint-overlap" };
+      }
+      if (!isCurrentRoomCheckpointPristine()) {
+        return { allowed: false, reason: "room-state-changed" };
+      }
+      if (!customFlagPlacementSurface(player)) {
+        return { allowed: false, reason: "invalid-surface" };
+      }
+      const conflictsWithActor = app.state.actors.some((actor) =>
+        actor !== player &&
+        !actor.removed &&
+        actor.type !== "gem" &&
+        actor.x === player.x &&
+        actor.y === player.y &&
+        (
+          (actor.elevation ?? 0) === (player.elevation ?? 0) ||
+          (actor.elevation ?? 0) + 1 === (player.elevation ?? 0)
+        )
+      );
+      if (conflictsWithActor) return { allowed: false, reason: "actor-conflict" };
+      const coordinates = {
+        levelId: app.currentLevelId,
+        x: checkpointInteger(player.x),
+        y: checkpointInteger(player.y),
+        elevation: checkpointInteger(player.elevation)
+      };
+      const checkpoint = {
+        id: checkpointIdFor(
+          coordinates.levelId,
+          "user",
+          coordinates.x,
+          coordinates.y,
+          coordinates.elevation
+        ),
+        kind: "user",
+        ...coordinates
+      };
+      return validateCheckpointProgressCapacity(
+        checkpointProgressWithCustomAddition(checkpoint),
+        {
+          includeHostHook: true,
+          operation: "preview-add-user-checkpoint",
+          levelId: checkpoint.levelId
+        }
+      );
+    }
+
+    function canRemoveUserCheckpointFlag() {
+      const coordinates = currentPlayerCheckpointCoordinates();
+      if (!coordinates) return { allowed: false, checkpointId: null, reason: "no-player" };
+      const checkpointId = checkpointIdFor(
+        coordinates.levelId,
+        "user",
+        coordinates.x,
+        coordinates.y,
+        coordinates.elevation
+      );
+      const allowed = customCheckpointMapForLevel(coordinates.levelId)?.has(checkpointId) === true;
+      return {
+        allowed,
+        checkpointId: allowed ? checkpointId : null,
+        reason: allowed ? null : "no-user-checkpoint"
+      };
+    }
+
+    function currentPlayerCheckpointCoordinates() {
+      const player = app.state.actors.find((actor) => isMainPlayerActor(actor) && !actor.removed);
+      return player
+        ? {
+            levelId: app.currentLevelId,
+            x: checkpointInteger(player.x),
+            y: checkpointInteger(player.y),
+            elevation: checkpointInteger(player.elevation)
+          }
+        : null;
+    }
+
+    function placeUserCheckpointFlag() {
+      const coordinates = currentPlayerCheckpointCoordinates();
+      if (!coordinates) return { placed: false, reason: "no-player" };
+      const allowed = canPlaceUserCheckpointFlag();
+      if (!allowed.allowed) return { placed: false, reason: allowed.reason };
+      const id = checkpointIdFor(
+        coordinates.levelId,
+        "user",
+        coordinates.x,
+        coordinates.y,
+        coordinates.elevation
+      );
+      if (customCheckpointMapForLevel(coordinates.levelId)?.has(id)) {
+        return { placed: false, reason: "already-exists" };
+      }
+      const checkpoint = { id, kind: "user", ...coordinates };
+      const capacity = validateCheckpointProgressCapacity(
+        checkpointProgressWithCustomAddition(checkpoint),
+        {
+          includeHostHook: true,
+          operation: "add-user-checkpoint",
+          levelId: checkpoint.levelId
+        }
+      );
+      if (!capacity.allowed) return { placed: false, reason: capacity.reason };
+      const checkpoints = customCheckpointMapForLevel(coordinates.levelId, true);
+      checkpoints.set(id, checkpoint);
+      app.invalidCheckpointSpawnIds.delete(id);
+      app.activatedCheckpointIds.add(id);
+      app.selectedCheckpointIdsByLevel.set(checkpoint.levelId, id);
+      app.resumeCheckpoint = { levelId: checkpoint.levelId, checkpointId: id };
+      app.legacyVisitedCheckpointLevelIds.delete(checkpoint.levelId);
+      commitCheckpointMutation("custom-added", checkpoint, { reason: "player-toggle" });
+      return { placed: true, checkpoint: cloneCheckpointDefinition(checkpoint), reason: null };
+    }
+
+    function removeUserCheckpointFlag(checkpointId = null) {
+      const coordinates = currentPlayerCheckpointCoordinates();
+      const id = checkpointId || (coordinates
+        ? checkpointIdFor(
+            coordinates.levelId,
+            "user",
+            coordinates.x,
+            coordinates.y,
+            coordinates.elevation
+          )
+        : null);
+      const levelId = checkpointLevelIdFromId(id);
+      const checkpoints = customCheckpointMapForLevel(levelId);
+      const checkpoint = checkpoints?.get(id) || null;
+      if (!checkpoint) return false;
+      checkpoints.delete(id);
+      app.invalidCheckpointSpawnIds.delete(id);
+      if (checkpoints.size === 0) app.customCheckpointsByLevel.delete(levelId);
+      // Keep the activation id as a historical tombstone. The room remains
+      // visited/countable, while runtime checkpoint lookup deliberately omits
+      // the deleted flag so it cannot be selected as a teleport/reset spawn.
+      if (app.selectedCheckpointIdsByLevel.get(levelId) === id) {
+        app.selectedCheckpointIdsByLevel.delete(levelId);
+        const fallback = activatedCheckpointsForLevel(levelId)[0] || null;
+        if (fallback) app.selectedCheckpointIdsByLevel.set(levelId, fallback.id);
+      }
+      if (app.resumeCheckpoint?.checkpointId === id) {
+        const fallback = selectedCheckpointForLevel(levelId);
+        app.resumeCheckpoint = fallback
+          ? { levelId, checkpointId: fallback.id }
+          : null;
+      }
+      commitCheckpointMutation("custom-removed", checkpoint, { reason: "player-toggle" });
+      return true;
+    }
+
+    function toggleUserCheckpointFlag() {
+      const coordinates = currentPlayerCheckpointCoordinates();
+      if (!coordinates) return { changed: false, reason: "no-player" };
+      const id = checkpointIdFor(
+        coordinates.levelId,
+        "user",
+        coordinates.x,
+        coordinates.y,
+        coordinates.elevation
+      );
+      if (customCheckpointMapForLevel(coordinates.levelId)?.has(id)) {
+        return { changed: removeUserCheckpointFlag(id), removed: true, reason: null };
+      }
+      const result = placeUserCheckpointFlag();
+      return { changed: result.placed === true, removed: false, ...result };
+    }
+
+    function selectNextCheckpointForLevel(levelId = app.currentLevelId) {
+      const checkpoints = activatedCheckpointsForLevel(levelId);
+      if (checkpoints.length < 2) return null;
+      const currentId = selectedCheckpointForLevel(levelId)?.id || null;
+      const currentIndex = checkpoints.findIndex((checkpoint) => checkpoint.id === currentId);
+      const next = checkpoints[(currentIndex + 1 + checkpoints.length) % checkpoints.length];
+      selectCheckpoint(next, { reason: "cycle" });
+      return cloneCheckpointDefinition(next);
+    }
+
     const LEGACY_GEM_ID_PATTERN = /^(.*):gem:(?:-?\d+:)?(-?\d+),(-?\d+),(-?\d+)$/;
 
     function normalizeGemCollectionId(value) {
@@ -776,6 +1870,8 @@
       if (app.isEditorRenderApp) {
         return;
       }
+
+      touchCheckpointsFromMoves(moves, { reason: "movement" });
 
       let changed = false;
 
@@ -1363,6 +2459,7 @@
     function cloneActorState(actor) {
       return {
         type: actor.type,
+        primaryCheckpointId: actor.primaryCheckpointId || null,
         groupId: actor.groupId ?? null,
         label: actor.label,
         imageUrl: actor.imageUrl || null,
@@ -1545,6 +2642,7 @@
         height: app.state.height,
         terrain: cloneTerrainState(app.state.terrain),
         actors: cloneActorStateList(),
+        checkpoints: runtimeCheckpointsForLevel(app.currentLevelId),
         raisedOrangeWalls: Array.from(computeRaisedOrangeWallSet())
       };
     }
@@ -1598,6 +2696,7 @@
       app.orangeWallRenderOverride = null;
       app.currentLevelId = levelState.levelId || app.currentLevelId;
       app.currentLevelLabel = levelState.levelLabel || app.currentLevelLabel || app.currentLevelId;
+      registerAuthoredCheckpoints(levelState, { emitLegacy: true });
       if (Object.prototype.hasOwnProperty.call(levelState, "editorRender")) {
         app.isEditorRenderApp = levelState.editorRender === true;
       }
@@ -1616,6 +2715,7 @@
       app.state.actors = (levelState.actors || []).map((actor, index) =>
         createRuntimeActor(actor, index, levelState.levelId || app.currentLevelId)
       );
+      app.state.checkpoints = runtimeCheckpointsForLevel(app.currentLevelId);
       app.orangeWallRaisedState = Array.isArray(levelState.raisedOrangeWalls)
         ? new Set(levelState.raisedOrangeWalls)
         : null;
@@ -3457,6 +4557,36 @@
       createRuntimeActor,
       rememberCanonicalLevelPlayerStart,
       canonicalLevelPlayerStart,
+      checkpointIdFor,
+      registerAuthoredCheckpoints,
+      authoredCheckpointsForLevel,
+      runtimeCheckpointsForLevel,
+      activatedCheckpointsForLevel,
+      selectedCheckpointForLevel,
+      visitedCheckpointLevelIds,
+      isCheckpointLevelVisited,
+      hasCheckpointSpawnForLevel,
+      exportCheckpointProgress,
+      checkpointProgressByteLength,
+      validateCheckpointProgressCapacity,
+      checkpointSelectionState,
+      restoreCheckpointSelectionState,
+      importCheckpointProgress,
+      emitCheckpointProgress,
+      selectCheckpoint,
+      selectNextCheckpointForLevel,
+      touchCheckpointsAtPosition,
+      touchCheckpointsAtPlayer,
+      touchCheckpointsFromMoves,
+      prepareLevelStateAtSelectedCheckpoint,
+      resumeAtSelectedCheckpoint,
+      checkpointResetState,
+      isCurrentRoomCheckpointPristine,
+      canPlaceUserCheckpointFlag,
+      canRemoveUserCheckpointFlag,
+      placeUserCheckpointAtPlayer: placeUserCheckpointFlag,
+      removeUserCheckpointAtPlayer: removeUserCheckpointFlag,
+      toggleUserCheckpointAtPlayer: toggleUserCheckpointFlag,
       gemCollectionId,
       applyCollectedGemVisual,
       hideCollectedGemVisual,
@@ -3568,8 +4698,54 @@
       preloadImages
     });
 
+    registerAuthoredCheckpoints(playData, { emitLegacy: false });
+    const suppliedCheckpointProgress =
+      playData?.checkpointProgress ||
+      playData?.checkpoint_progress ||
+      playData?.clientState?.checkpoints ||
+      playData?.client_state?.checkpoints ||
+      loadCheckpointProgress() ||
+      {};
+    const legacyVisitedLevelIds =
+      playData?.legacyVisitedLevelIds ||
+      playData?.legacy_visited_level_ids ||
+      playData?.visitedLevelIds ||
+      playData?.visited_level_ids ||
+      playData?.world?.visitedLevelIds ||
+      playData?.world?.visited_level_ids ||
+      [];
+    importCheckpointProgress(suppliedCheckpointProgress, {
+      emit: false,
+      legacyVisitedLevelIds,
+      save: false
+    });
+    validateCheckpointSpawnsForLevelState(playData);
+    app.state.checkpoints = runtimeCheckpointsForLevel(app.currentLevelId);
     rememberCanonicalLevelPlayerStart(playData);
     initializeActorElevations();
+    const restoredResume = app.resumeCheckpoint ? { ...app.resumeCheckpoint } : null;
+    const restoredCurrentCheckpoint =
+      restoredResume?.levelId === app.currentLevelId
+        ? recoverSelectedCheckpointForLevelState(playData)
+        : null;
+    if (restoredCurrentCheckpoint) {
+      moveLevelPlayerToCheckpoint({ actors: app.state.actors }, restoredCurrentCheckpoint);
+    } else if (restoredResume?.levelId === app.currentLevelId) {
+      // Persisted progress exists for this room, but none of its activated
+      // checkpoints can still be spawned at. Never leave the player at the
+      // raw authored primary and accidentally activate it: that would turn a
+      // removed/invalid flag into a free room unlock after a level edit.
+      const player = app.state.actors.find((actor) => isMainPlayerActor(actor));
+      if (player) player.removed = true;
+      app.checkpointResumeBlocked = true;
+    } else if (restoredResume?.levelId) {
+      // Do not expose the raw primary in the route's placeholder room while
+      // the persisted resume room is loading. If that room was removed, the
+      // player stays absent and the recovery flow offers only checkpoints
+      // that this save had already activated.
+      const player = app.state.actors.find((actor) => isMainPlayerActor(actor));
+      if (player) player.removed = true;
+    }
     setRaisedOrangeWallState(computeRaisedOrangeWallSet());
     syncDocumentLevelState();
     rememberHorizontalNeighborLevelState(playData);
@@ -3580,6 +4756,11 @@
     app.initialTerrain = cloneTerrainState(app.state.terrain);
     app.levelEntrySnapshot = cloneLevelSnapshot();
     app.renderer = app.gl ? initializeRenderer(app.gl) : null;
+    if (!restoredResume || restoredResume.levelId === app.currentLevelId) {
+      touchCheckpointsAtPlayer({ reason: "initial-position" });
+    } else {
+      Promise.resolve().then(() => resumeAtSelectedCheckpoint()).catch(() => {});
+    }
 
     // Debug handle: lets DevTools (and headless checks) inspect the live
     // runtime state without reaching into module closures.

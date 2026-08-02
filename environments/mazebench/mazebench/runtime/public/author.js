@@ -127,9 +127,11 @@
     getCellTokens,
     getCellTools,
     appendCellToken,
+    isCheckpointTool,
     normalizeAuthoringCellValue,
     normalizeCellValue,
     placeCellElevationTokenIfVacant,
+    placeCheckpointTokenIfValid,
     setCellElevationToken,
     setSurfaceAttachmentToken,
     toolByName,
@@ -2774,7 +2776,8 @@
     },
     {
       match: (tool) =>
-        !isIceSlopeInventoryTool(tool) && ["player", "circle_player", "clone"].includes(tool.name),
+        !isIceSlopeInventoryTool(tool) &&
+        ["player", "circle_player", "clone", "checkpoint_secondary"].includes(tool.name),
       name: "Players & Clones"
     },
     { match: isIceSlopeInventoryTool, name: "Ice Slopes" },
@@ -4301,7 +4304,7 @@
     const previewCellToken = ownedSlopePreview?.actorToken || previewToken;
 
     cells[0][0] =
-      kind === "orange_button"
+      kind === "orange_button" || (isCheckpointTool(tool) && kind !== "player")
         ? appendCellToken(authorData.defaultFloorToken, previewCellToken)
         : previewCellToken;
 
@@ -5591,6 +5594,10 @@
     return type === "player" || type === "circle_player";
   }
 
+  function isCheckpointToken(token) {
+    return isCheckpointTool(toolByToken.get(token));
+  }
+
   function cellValueHasMainPlayerToken(value) {
     return getCellTokens(value).some((token) => isMainPlayerToken(token));
   }
@@ -5851,8 +5858,11 @@
     const currentValue = isMainPlayerPaint
       ? stripMainPlayerTokensFromCellValue(state.cells[target.paintY][target.paintX])
       : state.cells[target.paintY][target.paintX];
-    const nextValue =
-      paintLayer === null || paintLayer === undefined
+    const nextValue = isCheckpointToken(paintToken)
+      ? paintLayer === null || paintLayer === undefined || target.face !== "top"
+        ? currentValue
+        : placeCheckpointTokenIfValid(currentValue, paintToken, paintLayer)
+      : paintLayer === null || paintLayer === undefined
         ? appendTokenToCellValue(currentValue, paintToken)
         : placeCellElevationTokenIfVacant(currentValue, paintToken, paintLayer);
 
@@ -9175,7 +9185,7 @@
 
     // Publish gate: the page's publish button asks the editor for a live
     // checklist before it talks to the server (which re-enforces all of it).
-    const playerTokenPattern = /^(p|cp|p[rlud])$/;
+    const playerTokenPattern = /^(p|cp)$/;
     window.__MAZEBENCH_AUTHOR_PUBLISH_CHECKS__ = async () => {
       if (state.isDirty) {
         const choice = await promptForUnsavedChanges({

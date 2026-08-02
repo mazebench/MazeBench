@@ -67,7 +67,14 @@
    "label": "Ice Slope"
   },
   "player": {
-   "token": "p"
+   "token": "p",
+   "label": "Primary Flag",
+   "checkpoint_kind": "primary"
+  },
+  "checkpoint_secondary": {
+   "token": "F2",
+   "label": "Secondary Flag",
+   "checkpoint_kind": "secondary"
   },
   "clone": {
    "tokens": [
