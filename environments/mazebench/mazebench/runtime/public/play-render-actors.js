@@ -742,6 +742,17 @@
       return actorTieBreakerWithoutElevatedWeightless(actor);
     }
 
+    function checkpointNumbersVisible() {
+      const levelId = String(state?.levelId || app.currentLevelId || "");
+
+      return (
+        app.isEditorRenderApp === true ||
+        app.canvas?.id === "author-canvas" ||
+        levelId === "__editor_render__" ||
+        levelId.startsWith("__palette_preview_")
+      );
+    }
+
     function paintCheckpointFlag(checkpoint) {
       if (!checkpoint) {
         return;
@@ -753,14 +764,15 @@
       const surfaceLift = Math.round(TILE_SIZE * 0.26 * elevation);
       const left = x * TILE_SIZE;
       const top = y * TILE_SIZE - surfaceLift;
-      const poleX = left + TILE_SIZE * 0.1;
-      const poleBottom = top + TILE_SIZE * 0.82;
-      const poleTop = top - TILE_SIZE * 0.42;
+      const poleX = left + TILE_SIZE * 0.5;
+      const poleBottom = top + TILE_SIZE * 0.72;
+      const poleTop = top - TILE_SIZE * 0.15;
       const bannerLeft = poleX;
       const bannerTop = poleTop;
-      const bannerWidth = TILE_SIZE * 0.68;
-      const bannerHeight = TILE_SIZE * 0.42;
       const kind = checkpoint.userPlaced === true ? "user" : checkpoint.kind || "secondary";
+      const authoredEditorFlag = kind !== "user" && checkpointNumbersVisible();
+      const bannerWidth = TILE_SIZE * (authoredEditorFlag ? 0.72 : 0.54);
+      const bannerHeight = TILE_SIZE * (authoredEditorFlag ? 0.44 : 0.32);
       const active =
         checkpoint.active === true ||
         checkpoint.userPlaced === true ||
@@ -796,7 +808,7 @@
       sceneCtx.fill();
       const inset = Math.max(2, TILE_SIZE * 0.035);
       bannerPath(inset);
-      sceneCtx.fillStyle = active ? "#3fae5a" : "#41464f";
+      sceneCtx.fillStyle = authoredEditorFlag ? "#050607" : active ? "#3fae5a" : "#41464f";
       sceneCtx.fill();
 
       const symbolX = bannerLeft + bannerWidth * 0.38;
@@ -807,13 +819,13 @@
         sceneCtx.beginPath();
         sceneCtx.arc(symbolX, symbolY, bannerHeight * 0.23, 0, Math.PI * 2);
         sceneCtx.fill();
-      } else {
-        sceneCtx.font = `900 ${Math.max(12, Math.round(bannerHeight * 0.66))}px system-ui, sans-serif`;
+      } else if (checkpointNumbersVisible()) {
+        sceneCtx.font = `900 ${Math.max(14, Math.round(bannerHeight * 0.88))}px system-ui, sans-serif`;
         sceneCtx.textAlign = "center";
         sceneCtx.textBaseline = "middle";
         sceneCtx.lineJoin = "round";
         sceneCtx.strokeStyle = "#050607";
-        sceneCtx.lineWidth = Math.max(2, TILE_SIZE * 0.025);
+        sceneCtx.lineWidth = Math.max(1, TILE_SIZE * 0.015);
         sceneCtx.fillStyle = "#ffffff";
         const label = kind === "primary" ? "1" : "2";
         sceneCtx.strokeText(label, symbolX, symbolY);

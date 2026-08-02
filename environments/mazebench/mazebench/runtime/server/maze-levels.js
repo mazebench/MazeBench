@@ -844,7 +844,7 @@ function createMazeLevelService({
               }
 
               return (
-                (layer.type === "wall" || layer.type === "ice_block") &&
+                (layer.type === "wall" || layer.type === "ice_block" || layer.type === "block_asset") &&
                 layer.elevation + 1 === checkpoint.elevation
               );
             });
@@ -857,7 +857,7 @@ function createMazeLevelService({
               }
 
               if (
-                (layer.type === "wall" || layer.type === "ice_block") &&
+                (layer.type === "wall" || layer.type === "ice_block" || layer.type === "block_asset") &&
                 layer.elevation + 1 === checkpoint.elevation
               ) {
                 return false;
@@ -876,7 +876,7 @@ function createMazeLevelService({
 
             if (!validSupport || actorConflict || terrainConflict || checkpointConflict) {
               throw new Error(
-                `Secondary checkpoint at ${x},${y},${checkpoint.elevation} must stand alone on floor, wall, ice, or ice block.`
+                `Secondary checkpoint at ${x},${y},${checkpoint.elevation} must stand alone on floor, wall, ice, ice block, or bridge tile.`
               );
             }
           });

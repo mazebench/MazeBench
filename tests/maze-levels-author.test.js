@@ -411,11 +411,11 @@ assert.equal(
 
 assert.deepEqual(
   service.sanitizeEditorPayload(game, {
-    cells: [[".+F2", "#+F2", "i+F2", "I+F2"]],
+    cells: [[".+F2", "#+F2", "i+F2", "I+F2", "b1+F2"]],
     height: 1,
-    width: 4
+    width: 5
   }).cells[0],
-  [".+F2", "#+F2", "i+F2", "I+F2"]
+  [".+F2", "#+F2", "i+F2", "I+F2", "b1+F2"]
 );
 assert.throws(
   () => service.sanitizeEditorPayload(game, { cells: [["+F2"]], height: 1, width: 1 }),

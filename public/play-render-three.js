@@ -125,10 +125,9 @@
     }
     const groupLabelTextureCache = new Map();
     const groupLabelMaterialCache = new Map();
-    const checkpointBannerTextureCache = new Map();
-    const checkpointBannerMaterialCache = new Map();
     const polycubeFaceCellsCache = new Map();
     const playerLiftMarkerMeshes = new Set();
+    const checkpointFlagPivots = new Set();
     // Retained-actor tracking: scene/edge objects created for each actor in
     // the current room, so animation frames can move them in place instead
     // of tearing down and rebuilding the whole scene graph.
@@ -1794,90 +1793,77 @@
       return groupLabelMaterialCache.get(key);
     }
 
-    function checkpointBannerTexture(checkpoint) {
-      const kind = checkpoint?.userPlaced === true ? "user" : checkpoint?.kind || "secondary";
-      const active =
+    function checkpointBannerKind(checkpoint) {
+      return checkpoint?.userPlaced === true ? "user" : checkpoint?.kind || "secondary";
+    }
+
+    function checkpointBannerActive(checkpoint) {
+      const kind = checkpointBannerKind(checkpoint);
+
+      return (
         checkpoint?.active === true ||
         checkpoint?.userPlaced === true ||
         kind === "user" ||
-        app.activatedCheckpointIds?.has?.(checkpoint?.id);
-      const bannerColor = renderContextColor(active ? "#3fae5a" : "#41464f");
-      const key = `${kind}:${bannerColor}`;
-
-      if (!checkpointBannerTextureCache.has(key)) {
-        const canvas = document.createElement("canvas");
-        const context = canvas.getContext("2d");
-
-        canvas.width = 256;
-        canvas.height = 160;
-
-        if (context) {
-          context.clearRect(0, 0, canvas.width, canvas.height);
-          context.beginPath();
-          context.moveTo(8, 8);
-          context.lineTo(246, 8);
-          context.lineTo(207, 80);
-          context.lineTo(246, 152);
-          context.lineTo(8, 152);
-          context.closePath();
-          context.fillStyle = "#050607";
-          context.fill();
-
-          context.beginPath();
-          context.moveTo(18, 18);
-          context.lineTo(226, 18);
-          context.lineTo(190, 80);
-          context.lineTo(226, 142);
-          context.lineTo(18, 142);
-          context.closePath();
-          context.fillStyle = bannerColor;
-          context.fill();
-
-          if (kind === "user") {
-            context.beginPath();
-            context.arc(104, 80, 32, 0, Math.PI * 2);
-            context.fillStyle = "#050607";
-            context.fill();
-          } else {
-            context.font = "900 92px system-ui, -apple-system, BlinkMacSystemFont, sans-serif";
-            context.textAlign = "center";
-            context.textBaseline = "middle";
-            context.fillStyle = "#ffffff";
-            context.strokeStyle = "#050607";
-            context.lineWidth = 10;
-            const label = kind === "primary" ? "1" : "2";
-            context.strokeText(label, 104, 84);
-            context.fillText(label, 104, 84);
-          }
-        }
-
-        const texture = new THREE.CanvasTexture(canvas);
-        texture.colorSpace = THREE.SRGBColorSpace;
-        texture.needsUpdate = true;
-        checkpointBannerTextureCache.set(key, texture);
-      }
-
-      return checkpointBannerTextureCache.get(key);
+        app.activatedCheckpointIds?.has?.(checkpoint?.id)
+      );
     }
 
-    function checkpointBannerMaterial(checkpoint, opacity) {
-      const texture = checkpointBannerTexture(checkpoint);
-      const key = `${texture.uuid}:${Math.round(clamp01(opacity) * 1000)}`;
+    function checkpointBannerColor(checkpoint) {
+      const kind = checkpointBannerKind(checkpoint);
+      const authoredEditorFlag =
+        kind !== "user" && (isEditorRenderMode() || isPalettePreviewRenderMode());
 
-      if (!checkpointBannerMaterialCache.has(key)) {
-        checkpointBannerMaterialCache.set(
-          key,
-          new THREE.SpriteMaterial({
-            alphaTest: 0.02,
-            depthWrite: true,
-            map: texture,
-            opacity: clamp01(opacity),
-            transparent: true
-          })
-        );
+      if (authoredEditorFlag) {
+        return "#050608";
       }
 
-      return checkpointBannerMaterialCache.get(key);
+      return checkpointBannerActive(checkpoint) ? "#3fae5a" : "#41464f";
+    }
+
+    function checkpointBannerGeometry(width, height, depth) {
+      const key = [
+        "checkpoint-banner",
+        Math.round(width * 100),
+        Math.round(height * 100),
+        Math.round(depth * 100)
+      ].join(":");
+
+      if (geometryCache.has(key)) {
+        return geometryCache.get(key);
+      }
+
+      const shape = new THREE.Shape();
+
+      shape.moveTo(0, 0);
+      [0.25, 0.5, 0.75, 1].forEach((progress) => shape.lineTo(width * progress, 0));
+      shape.lineTo(width * 0.8, -height * 0.5);
+      shape.lineTo(width, -height);
+      [0.75, 0.5, 0.25, 0].forEach((progress) => shape.lineTo(width * progress, -height));
+      shape.closePath();
+
+      const geometry = new THREE.ExtrudeGeometry(shape, {
+        bevelEnabled: false,
+        curveSegments: 1,
+        depth,
+        steps: 1
+      });
+
+      geometry.computeVertexNormals();
+      return cacheGeometry(key, geometry);
+    }
+
+    function checkpointMarkerDotGeometry(radius, depth) {
+      const key = `checkpoint-marker-dot:${Math.round(radius * 100)}:${Math.round(depth * 100)}`;
+
+      if (geometryCache.has(key)) {
+        return geometryCache.get(key);
+      }
+
+      const geometry = new THREE.CylinderGeometry(radius, radius, depth, 20, 1, false);
+
+      geometry.rotateX(Math.PI / 2);
+      geometry.computeVertexNormals();
+      return cacheGeometry(key, geometry);
     }
 
     function edgeOutlinesEnabled() {
@@ -5993,6 +5979,152 @@
       });
     }
 
+    function checkpointFlagCardinalYaw() {
+      const quarterTurn = Math.PI / 2;
+      // Target yaw is the renderer's canonical facing metadata even at the
+      // straight-down camera tilt. Use it instead of inferring direction from
+      // camera position, and keep the flag on the four cardinal faces.
+      return normalizeQuarterTurns(debugCameraTargetYaw) * quarterTurn;
+    }
+
+    function positionCheckpointNumberOverlay(entry, yaw = entry?.cardinalYaw || 0) {
+      if (!entry?.numberOverlay) {
+        return;
+      }
+
+      const cos = Math.cos(yaw);
+      const sin = Math.sin(yaw);
+      const offsetX = entry.numberOverlayOffsetX;
+      const offsetZ = entry.numberOverlayOffsetZ;
+
+      // Match the banner pivot's Y rotation, but apply it to position only.
+      // The plain 3D anchor stays a direct child of the unrotated scene/room
+      // group; its projected 1/2 is later drawn in screen space on the 2D
+      // composite, where no world transform can foreshorten it.
+      entry.numberOverlay.position.set(
+        entry.numberOverlayOriginX + offsetX * cos + offsetZ * sin,
+        entry.numberOverlayY,
+        entry.numberOverlayOriginZ - offsetX * sin + offsetZ * cos
+      );
+    }
+
+    function checkpointNumberAnchorIsInActiveScene(anchor) {
+      let ancestor = anchor;
+
+      while (ancestor) {
+        if (ancestor === scene) {
+          return true;
+        }
+        ancestor = ancestor.parent;
+      }
+
+      return false;
+    }
+
+    function drawCheckpointNumberOverlays(context) {
+      if (
+        !context ||
+        !camera ||
+        checkpointFlagPivots.size === 0 ||
+        (!isEditorRenderMode() && !isPalettePreviewRenderMode())
+      ) {
+        return;
+      }
+
+      const width = Math.max(1, Number(app.boardRect?.width) || 1);
+      const height = Math.max(1, Number(app.boardRect?.height) || 1);
+      // Remain visibly readable even when the fitted 3D flag is only ~25px
+      // wide. This is deliberately screen-sized authoring UI, not gameplay
+      // decoration or simulated world geometry.
+      const fontSize = Math.max(20, Math.min(26, Math.round(Math.min(width, height) * 0.026)));
+      const projected = new THREE.Vector3();
+
+      context.save();
+      context.font = `900 ${fontSize}px system-ui, -apple-system, BlinkMacSystemFont, sans-serif`;
+      context.textAlign = "center";
+      context.textBaseline = "middle";
+      context.lineJoin = "round";
+      context.strokeStyle = "#050608";
+      context.lineWidth = Math.max(4, Math.round(fontSize * 0.22));
+      context.fillStyle = "#ffffff";
+
+      checkpointFlagPivots.forEach((entry) => {
+        const anchor = entry?.numberOverlay;
+
+        if (
+          !anchor?.parent ||
+          !entry.numberOverlayLabel ||
+          !checkpointNumberAnchorIsInActiveScene(anchor)
+        ) {
+          return;
+        }
+
+        anchor.getWorldPosition(projected);
+        projected.project(camera);
+
+        if (
+          !Number.isFinite(projected.x) ||
+          !Number.isFinite(projected.y) ||
+          projected.x < -1.1 ||
+          projected.x > 1.1 ||
+          projected.y < -1.1 ||
+          projected.y > 1.1 ||
+          projected.z < -1 ||
+          projected.z > 1
+        ) {
+          return;
+        }
+
+        const x = (projected.x * 0.5 + 0.5) * width;
+        const y = (-projected.y * 0.5 + 0.5) * height;
+
+        context.globalAlpha = clamp01(entry.numberOverlayOpacity ?? 1);
+        context.strokeText(entry.numberOverlayLabel, x, y);
+        context.fillText(entry.numberOverlayLabel, x, y);
+      });
+
+      context.restore();
+    }
+
+    function syncCheckpointFlagPivotRotations() {
+      if (checkpointFlagPivots.size === 0) {
+        return;
+      }
+
+      const yaw = checkpointFlagCardinalYaw();
+
+      checkpointFlagPivots.forEach((entry) => {
+        if (!entry?.scenePivot || entry.cardinalYaw === yaw) {
+          return;
+        }
+
+        entry.scenePivot.rotation.y = yaw;
+        entry.edgePivot.rotation.y = yaw;
+        entry.cardinalYaw = yaw;
+        positionCheckpointNumberOverlay(entry, yaw);
+      });
+    }
+
+    function trackCheckpointFlagPivots(scenePivot, edgePivot) {
+      const cardinalYaw = checkpointFlagCardinalYaw();
+      const entry = { scenePivot, edgePivot, cardinalYaw };
+
+      scenePivot.rotation.y = cardinalYaw;
+      edgePivot.rotation.y = cardinalYaw;
+      scenePivot.userData.checkpointFlagPivot = entry;
+      edgePivot.userData.checkpointFlagPivot = entry;
+      checkpointFlagPivots.add(entry);
+      return entry;
+    }
+
+    function untrackCheckpointFlagPivots(container) {
+      container?.traverse?.((object) => {
+        if (object.userData?.checkpointFlagPivot) {
+          checkpointFlagPivots.delete(object.userData.checkpointFlagPivot);
+        }
+      });
+    }
+
     function trackPlayerLiftMarker(marker, direction, usesArrowImage) {
       marker.userData.playerLiftDirection = direction;
       marker.userData.playerLiftArrowImage = usesArrowImage;
@@ -8239,6 +8371,77 @@
       addGemFallback(actor, x, z, elevation, sink, scale, fade, visibility, opacity, now);
     }
 
+    function addCheckpointPivotEdgeLines(geometry, position, opacity, edgePivot) {
+      const edges = addEdgeLines(geometry, position, 18, opacity);
+
+      if (!edges) {
+        return null;
+      }
+
+      edgeScene.remove(edges);
+      edgePivot.add(edges);
+      return edges;
+    }
+
+    function addCheckpointBannerMarker(checkpoint, options) {
+      const {
+        bannerDepth,
+        bannerHeight,
+        bannerLeft,
+        bannerTop,
+        bannerWidth,
+        flagEntry,
+        opacity,
+        poleX,
+        poleZ,
+        pivot
+      } = options;
+      const kind = checkpointBannerKind(checkpoint);
+      const markerX = bannerWidth * 0.38;
+
+      if (kind === "user") {
+        const dotDepth = bannerDepth * 1.75;
+        const dot = new THREE.Mesh(
+          checkpointMarkerDotGeometry(bannerHeight * 0.19, dotDepth),
+          material("#050608", opacity)
+        );
+
+        dot.position.set(
+          bannerLeft + markerX,
+          bannerTop - bannerHeight * 0.5,
+          0
+        );
+        dot.castShadow = renderContextCastsShadows();
+        dot.receiveShadow = false;
+        pivot.add(dot);
+        return;
+      }
+
+      // Primary/secondary numbers are authoring affordances, not gameplay
+      // decoration. Keep them in the editor and its toolbox previews only.
+      if (!isEditorRenderMode() && !isPalettePreviewRenderMode()) {
+        return;
+      }
+
+      // Keep only a 3D anchor here. The numeral itself is painted in fixed
+      // screen pixels after WebGL compositing, so the steep editor camera can
+      // never foreshorten it. Its projected anchor still follows the true 3D
+      // banner center through all four cardinal rotations.
+      const numeralAnchor = new THREE.Object3D();
+
+      numeralAnchor.userData.checkpointNumberOverlay = true;
+      flagEntry.numberOverlay = numeralAnchor;
+      flagEntry.numberOverlayLabel = kind === "primary" ? "1" : "2";
+      flagEntry.numberOverlayOriginX = poleX;
+      flagEntry.numberOverlayOriginZ = poleZ;
+      flagEntry.numberOverlayOffsetX = bannerLeft + markerX;
+      flagEntry.numberOverlayOffsetZ = bannerDepth * 1.05;
+      flagEntry.numberOverlayY = bannerTop - bannerHeight * 0.5;
+      flagEntry.numberOverlayOpacity = opacity;
+      positionCheckpointNumberOverlay(flagEntry);
+      scene.add(numeralAnchor);
+    }
+
     function addCheckpointFlag(checkpoint) {
       if (!checkpoint || !Number.isFinite(Number(checkpoint.x)) || !Number.isFinite(Number(checkpoint.y))) {
         return;
@@ -8254,10 +8457,12 @@
       const center = cellCenter(Number(checkpoint.x), Number(checkpoint.y));
       const elevation = Math.max(0, Number(checkpoint.elevation) || 0);
       const baseY = elevation * elevationUnit + unit * 0.02;
-      const poleHeight = unit * 1.38;
-      const poleRadius = Math.max(1, unit * 0.035);
-      const poleX = center.x - unit * 0.38;
-      const poleZ = center.z - unit * 0.38;
+      const poleHeight = unit * 0.96;
+      const poleRadius = Math.max(1, unit * 0.03);
+      // The planted point is the exact tile center. The cloth extends from
+      // that point, but the checkpoint itself no longer sits in a corner.
+      const poleX = center.x;
+      const poleZ = center.z;
       const poleGeometry = cylinderGeometry(poleRadius, poleHeight, 12);
       const pole = new THREE.Mesh(poleGeometry, material("#111318", opacity));
 
@@ -8267,12 +8472,38 @@
       scene.add(pole);
       addEdgeLines(poleGeometry, pole.position, 18, opacity);
 
-      const bannerWidth = unit * 0.68;
-      const bannerHeight = unit * 0.42;
-      // A Sprite keeps the banner legible through all four camera rotations;
-      // the pole/base remain ordinary scene geometry, so the flag still reads
-      // as a planted 3D object rather than a screen overlay.
-      const banner = new THREE.Sprite(checkpointBannerMaterial(checkpoint, opacity));
+      const kind = checkpointBannerKind(checkpoint);
+      const authoredEditorFlag =
+        kind !== "user" && (isEditorRenderMode() || isPalettePreviewRenderMode());
+      // Gameplay stays compact and unobtrusive. Authoring flags get a larger
+      // cloth and glyph so their 1/2 identity is immediately legible at the
+      // editor's normal zoom and in palette previews.
+      const bannerWidth = unit * (authoredEditorFlag ? 0.72 : 0.54);
+      const bannerHeight = unit * (authoredEditorFlag ? 0.44 : 0.32);
+      const bannerDepth = Math.max(2, unit * 0.045);
+      const bannerLeft = poleRadius * 0.35;
+      const bannerTop = baseY + poleHeight - unit * 0.08;
+      const bannerGeometry = checkpointBannerGeometry(bannerWidth, bannerHeight, bannerDepth);
+      const pivot = new THREE.Group();
+      const edgePivot = new THREE.Group();
+
+      // The cloth remains real extruded geometry, but this pole-rooted pivot
+      // yaws toward the camera so its broad face stays readable. Marking it as
+      // dynamic keeps room-group batching from baking one camera angle in.
+      pivot.position.set(poleX, 0, poleZ);
+      pivot.userData.dynamicActorObject = true;
+      edgePivot.position.set(poleX, 0, poleZ);
+      edgePivot.userData.dynamicActorObject = true;
+      scene.add(pivot);
+      edgeScene.add(edgePivot);
+      const flagEntry = trackCheckpointFlagPivots(pivot, edgePivot);
+
+      const banner = new THREE.Mesh(
+        bannerGeometry,
+        material(checkpointBannerColor(checkpoint), opacity, {
+          doubleSide: true
+        })
+      );
       const sourceLayer = Math.max(0, Math.floor(elevation));
       const topY = baseY + poleHeight;
       const editorPick = editorPickForRenderContext({
@@ -8295,17 +8526,32 @@
         sourceLayer
       });
 
-      banner.position.set(poleX + bannerWidth * 0.47, topY - bannerHeight * 0.52, poleZ);
-      banner.scale.set(bannerWidth, bannerHeight, 1);
-      banner.renderOrder = 5;
-      banner.castShadow = false;
-      banner.receiveShadow = false;
+      banner.position.set(bannerLeft, bannerTop, -bannerDepth / 2);
+      banner.castShadow = renderContextCastsShadows();
+      banner.receiveShadow = true;
       banner.userData.editorPick = editorPick;
-      scene.add(banner);
+      pivot.add(banner);
+      addCheckpointPivotEdgeLines(bannerGeometry, banner.position, opacity, edgePivot);
+      addCheckpointBannerMarker(checkpoint, {
+        bannerDepth,
+        bannerHeight,
+        bannerLeft,
+        bannerTop,
+        bannerWidth,
+        flagEntry,
+        opacity,
+        poleX,
+        poleZ,
+        pivot
+      });
 
       if (isEditorRenderMode() && editorPick) {
+        // Keep selection independent of the banner's cardinal facing. This
+        // direct scene child is centered on the tile and covers the flag's
+        // full swept footprint, so the editor's non-recursive raycast sees it
+        // at 0/90/180/270 degrees without reaching into the visual pivot.
         const pickMesh = new THREE.Mesh(
-          boxGeometry(unit * 0.7, poleHeight, unit * 0.48),
+          boxGeometry(unit * 1.1, poleHeight, unit * 1.1),
           invisibleEditorPickMaterial()
         );
 
@@ -8811,6 +9057,8 @@
       if (!targetScene) {
         return;
       }
+
+      untrackCheckpointFlagPivots(targetScene);
 
       for (let i = targetScene.children.length - 1; i >= 0; i -= 1) {
         const child = targetScene.children[i];
@@ -10928,6 +11176,8 @@
     }
 
     function disposeWorldViewRoomEntry(entry) {
+      untrackCheckpointFlagPivots(entry.group);
+      untrackCheckpointFlagPivots(entry.edgeGroup);
       [entry.group, entry.edgeGroup].forEach((container) => {
         container.parent?.remove(container);
         container.traverse((child) => {
@@ -11122,6 +11372,31 @@
       worldConsolidation.ownedMaterials?.forEach((material) => material.dispose());
       worldConsolidation.ownedTextures?.forEach((texture) => texture.dispose());
       worldConsolidation = null;
+    }
+
+    function invalidateWorldConsolidationForCheckpointYaw() {
+      if (
+        !worldConsolidation ||
+        worldConsolidation.fromSnapshot === true ||
+        app.isFlyoverMode
+      ) {
+        return false;
+      }
+
+      const quarterTurn = normalizeQuarterTurns(debugCameraTargetYaw);
+
+      if (worldConsolidation.checkpointQuarterTurn === quarterTurn) {
+        return false;
+      }
+
+      // An interactive live merge bakes checkpoint pivot matrices. A
+      // camera-only render cannot repair those vertices, so discard the stale
+      // merge and dirty content exactly once. Snapshot/flyover worlds stay on
+      // their intentionally cheap baked presentation path above.
+      disposeWorldConsolidation();
+      lastSceneSignature = "";
+      lastSceneContentSignature = "";
+      return true;
     }
 
     // ---- World snapshot: serialized consolidated geometry ----
@@ -12133,14 +12408,23 @@
         return;
       }
 
-      const consolidationSignature = consolidationParts.slice().sort().join("|");
+      const consolidationSignature = [
+        ...consolidationParts.slice().sort(),
+        `checkpoint-yaw:${normalizeQuarterTurns(debugCameraTargetYaw)}`
+      ].join("|");
 
       if (!worldConsolidation || worldConsolidation.signature !== consolidationSignature) {
         disposeWorldConsolidation();
+        // Consolidation intentionally bakes the dynamic flag descendants for
+        // draw-call efficiency. Rotate them to the signature's cardinal yaw
+        // immediately before matrix capture; the yaw token above guarantees
+        // one safe rebuild when the camera turns to another cardinal face.
+        syncCheckpointFlagPivotRotations();
         scene.updateMatrixWorld(true);
         edgeScene.updateMatrixWorld(true);
         worldConsolidation = {
           signature: consolidationSignature,
+          checkpointQuarterTurn: normalizeQuarterTurns(debugCameraTargetYaw),
           // The merged geometry bakes room offsets relative to this anchor;
           // the attach paths refuse to re-attach under any other anchor.
           anchorLevelId: String(app.currentLevelId || ""),
@@ -13139,6 +13423,7 @@
 
     function renderSceneToComposite(shouldUpdateShadowMap) {
       syncPlayerLiftMarkerRotations();
+      syncCheckpointFlagPivotRotations();
       renderer.info?.reset?.();
       renderer.setClearColor("#050608", 1);
       renderer.clear(true, true, true);
@@ -13183,6 +13468,8 @@
         renderer.render(edgeScene, camera);
         drawToonOutlineOverlay(app.sceneCtx);
       }
+
+      drawCheckpointNumberOverlays(app.sceneCtx);
 
       const totalRenderInfo = renderer.info?.render
         ? { ...renderer.info.render }
@@ -13349,6 +13636,8 @@
         return true;
       }
 
+      invalidateWorldConsolidationForCheckpointYaw();
+
       const contentSignature = forceRender ? "" : sceneContentSignature(now);
       const signature = forceRender ? "" : `${contentSignature};${debugCameraSignature()}`;
       const contentChanged =
@@ -13498,6 +13787,7 @@
       disposeWorldViewRoomGroups();
       disposeCameraFlightRoomGroups();
       disposeScene();
+      checkpointFlagPivots.clear();
       geometryCache.forEach((geometry) => geometry.dispose());
       geometryCache.clear();
       edgeGeometryCache.forEach((geometry) => geometry.dispose());
@@ -13514,10 +13804,6 @@
       textureCache.clear();
       groupLabelTextureCache.forEach((texture) => texture?.dispose?.());
       groupLabelTextureCache.clear();
-      checkpointBannerMaterialCache.forEach((cached) => cached.dispose());
-      checkpointBannerMaterialCache.clear();
-      checkpointBannerTextureCache.forEach((texture) => texture?.dispose?.());
-      checkpointBannerTextureCache.clear();
       keyLight?.shadow?.dispose();
       keyLight?.dispose();
       ambientLight = null;

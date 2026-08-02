@@ -611,11 +611,12 @@ assert.equal(adapter.placeCheckpointTokenIfValid(".", "F2", 0), ".+F2");
 assert.equal(adapter.placeCheckpointTokenIfValid("i", "F2", 0), "i+F2");
 assert.equal(adapter.placeCheckpointTokenIfValid("W", "F2", 1), "W+F2");
 assert.equal(adapter.placeCheckpointTokenIfValid("I", "F2", 1), "I+F2");
+assert.equal(adapter.placeCheckpointTokenIfValid("b1", "F2", 1), "b1+F2");
 assert.equal(adapter.placeCheckpointTokenIfValid(".", "p", 0), ".+p");
+assert.equal(adapter.placeCheckpointTokenIfValid("b1", "p", 1), "b1+p");
 assert.equal(adapter.placeCheckpointTokenIfValid("+", "F2", 0), "+");
 assert.equal(adapter.placeCheckpointTokenIfValid(".+B", "F2", 0), ".+B");
 assert.equal(adapter.placeCheckpointTokenIfValid("Sr", "F2", 1), "Sr");
-assert.equal(adapter.placeCheckpointTokenIfValid("b1", "F2", 1), "b1");
 assert.equal(adapter.placeCheckpointTokenIfValid(".+F2", "F2", 0), ".+F2");
 
 console.log("author play data tests passed");

@@ -928,7 +928,10 @@
           return true;
         }
 
-        return (type === "wall" || type === "ice_block") && entry.elevation + 1 === elevation;
+        return (
+          (type === "wall" || type === "ice_block" || type === "block_asset") &&
+          entry.elevation + 1 === elevation
+        );
       });
 
       if (!validSupport) {

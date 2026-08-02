@@ -1,4 +1,6 @@
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 const { performance } = require("node:perf_hooks");
 const { loadBrowserScript } = require("./helpers/browser-module-loader");
 
@@ -233,6 +235,28 @@ function createApp(playData) {
 }
 
 {
+  const bridgeLevel = levelState("level_CxI", {
+    primaryX: 0,
+    actors: [{ type: "player", x: 1, y: 0, elevation: 1, removed: false }]
+  });
+  bridgeLevel.terrain[0][1] = {
+    type: "block_asset",
+    layers: [{ type: "block_asset", elevation: 0 }]
+  };
+  const app = createApp(bridgeLevel);
+  assert.deepEqual(
+    app.canPlaceUserCheckpointFlag(),
+    { allowed: true, reason: null },
+    "bridge tiles support user checkpoint flags on their top surface"
+  );
+  assert.equal(app.placeUserCheckpointFlag().placed, true);
+  assert.equal(
+    app.selectedCheckpointForLevel().id,
+    "level_CxI:checkpoint:user:1:0:1"
+  );
+}
+
+{
   const app = createApp(levelState("level_CxB", {
     playerX: 1,
     primaryX: 0,
@@ -447,6 +471,160 @@ for (const invalidCustom of [
     app.exportCheckpointProgress().activated.includes("level_KxA:checkpoint:primary"),
     false
   );
+}
+
+{
+  const root = path.join(__dirname, "..");
+  const threeSource = fs.readFileSync(path.join(root, "public", "play-render-three.js"), "utf8");
+  const canvasSource = fs.readFileSync(
+    path.join(root, "public", "play-render-actors.js"),
+    "utf8"
+  );
+  const bannerGeometrySection = threeSource.slice(
+    threeSource.indexOf("function checkpointBannerGeometry"),
+    threeSource.indexOf("function checkpointMarkerDotGeometry")
+  );
+  const bannerColorSection = threeSource.slice(
+    threeSource.indexOf("function checkpointBannerColor"),
+    threeSource.indexOf("function checkpointBannerGeometry")
+  );
+  const bannerMarkerSection = threeSource.slice(
+    threeSource.indexOf("function addCheckpointBannerMarker"),
+    threeSource.indexOf("function addCheckpointFlag")
+  );
+  const compositeOverlaySection = threeSource.slice(
+    threeSource.indexOf("function drawCheckpointNumberOverlays"),
+    threeSource.indexOf("function syncCheckpointFlagPivotRotations")
+  );
+  const threeFlagSection = threeSource.slice(
+    threeSource.indexOf("function addCheckpointFlag"),
+    threeSource.indexOf("function addFloatingFloor")
+  );
+  const canvasFlagSection = canvasSource.slice(
+    canvasSource.indexOf("function checkpointNumbersVisible"),
+    canvasSource.indexOf("function buildDrawItems")
+  );
+  const pivotRotationSection = threeSource.slice(
+    threeSource.indexOf("function checkpointFlagCardinalYaw"),
+    threeSource.indexOf("function trackCheckpointFlagPivots")
+  );
+  const consolidationSection = threeSource.slice(
+    threeSource.indexOf("const consolidationSignature ="),
+    threeSource.indexOf("// Swap the individual groups out")
+  );
+  const consolidationInvalidationSection = threeSource.slice(
+    threeSource.indexOf("function invalidateWorldConsolidationForCheckpointYaw"),
+    threeSource.indexOf("// ---- World snapshot")
+  );
+  const renderSceneSection = threeSource.slice(
+    threeSource.indexOf("function renderScene(now"),
+    threeSource.indexOf("function disposeRenderer")
+  );
+
+  assert.match(bannerGeometrySection, /new THREE\.ExtrudeGeometry/);
+  assert.doesNotMatch(threeSource, /checkpointBannerWaveOffset/);
+  assert.match(bannerColorSection, /kind !== "user" && \(isEditorRenderMode\(\)/);
+  assert.match(bannerColorSection, /return "#050608"/);
+  assert.doesNotMatch(threeFlagSection, /new THREE\.Sprite/);
+  assert.match(threeFlagSection, /const poleHeight = unit \* 0\.96/);
+  assert.match(threeFlagSection, /const poleX = center\.x/);
+  assert.match(
+    threeFlagSection,
+    /const bannerWidth = unit \* \(authoredEditorFlag \? 0\.72 : 0\.54\)/
+  );
+  assert.match(
+    threeFlagSection,
+    /const bannerHeight = unit \* \(authoredEditorFlag \? 0\.44 : 0\.32\)/
+  );
+  assert.match(threeFlagSection, /const pivot = new THREE\.Group\(\)/);
+  assert.match(threeFlagSection, /trackCheckpointFlagPivots\(pivot, edgePivot\)/);
+  assert.match(threeFlagSection, /pivot\.userData\.dynamicActorObject = true/);
+  assert.match(threeFlagSection, /boxGeometry\(unit \* 1\.1, poleHeight, unit \* 1\.1\)/);
+  assert.match(
+    threeFlagSection,
+    /pickMesh\.position\.set\(center\.x, baseY \+ poleHeight \/ 2, poleZ\)/
+  );
+  assert.match(bannerMarkerSection, /if \(kind === "user"\)[\s\S]*?checkpointMarkerDotGeometry/);
+  assert.match(
+    bannerMarkerSection,
+    /if \(!isEditorRenderMode\(\) && !isPalettePreviewRenderMode\(\)\)[\s\S]*?return;/
+  );
+  assert.match(bannerMarkerSection, /const numeralAnchor = new THREE\.Object3D\(\)/);
+  assert.match(bannerMarkerSection, /bannerDepth \* 1\.05/);
+  assert.match(bannerMarkerSection, /flagEntry\.numberOverlay = numeralAnchor/);
+  assert.match(bannerMarkerSection, /positionCheckpointNumberOverlay\(flagEntry\)/);
+  assert.match(bannerMarkerSection, /scene\.add\(numeralAnchor\)/);
+  assert.doesNotMatch(bannerMarkerSection, /new THREE\.Sprite|SpriteMaterial/);
+  assert.doesNotMatch(bannerMarkerSection, /addCheckpointPivotEdgeLines/);
+  assert.doesNotMatch(bannerMarkerSection, /boxGeometry|checkpointNumberSegments/);
+  assert.match(compositeOverlaySection, /const fontSize = Math\.max\(20, Math\.min\(26/);
+  assert.match(threeSource, /function checkpointNumberAnchorIsInActiveScene/);
+  assert.match(threeSource, /if \(ancestor === scene\)/);
+  assert.match(
+    compositeOverlaySection,
+    /!checkpointNumberAnchorIsInActiveScene\(anchor\)/
+  );
+  assert.match(compositeOverlaySection, /anchor\.getWorldPosition\(projected\)/);
+  assert.match(compositeOverlaySection, /projected\.project\(camera\)/);
+  assert.match(compositeOverlaySection, /projected\.x < -1\.1/);
+  assert.match(compositeOverlaySection, /projected\.x > 1\.1/);
+  assert.match(compositeOverlaySection, /projected\.y < -1\.1/);
+  assert.match(compositeOverlaySection, /projected\.y > 1\.1/);
+  assert.match(compositeOverlaySection, /context\.strokeText\(entry\.numberOverlayLabel, x, y\)/);
+  assert.match(compositeOverlaySection, /context\.fillText\(entry\.numberOverlayLabel, x, y\)/);
+  assert.match(
+    threeSource,
+    /drawToonOutlineOverlay\(app\.sceneCtx\);[\s\S]*?drawCheckpointNumberOverlays\(app\.sceneCtx\);/
+  );
+  assert.doesNotMatch(threeSource, /checkpointNumberSpriteMaterial|checkpointNumberTexture/);
+  assert.doesNotMatch(threeSource, /function checkpointNumberSegments/);
+  assert.match(canvasFlagSection, /function checkpointNumbersVisible\(\)/);
+  assert.match(canvasFlagSection, /authoredEditorFlag \? "#050607"/);
+  assert.match(
+    canvasFlagSection,
+    /const bannerWidth = TILE_SIZE \* \(authoredEditorFlag \? 0\.72 : 0\.54\)/
+  );
+  assert.match(
+    canvasFlagSection,
+    /const bannerHeight = TILE_SIZE \* \(authoredEditorFlag \? 0\.44 : 0\.32\)/
+  );
+  assert.match(canvasFlagSection, /else if \(checkpointNumbersVisible\(\)\)/);
+  assert.match(threeSource, /function syncCheckpointFlagPivotRotations\(\)/);
+  assert.match(
+    pivotRotationSection,
+    /return normalizeQuarterTurns\(debugCameraTargetYaw\) \* quarterTurn/
+  );
+  assert.doesNotMatch(pivotRotationSection, /camera\.position|Math\.atan2|worldPosition/);
+  assert.doesNotMatch(pivotRotationSection, /updateMatrixWorld|checkpointPivotRoot/);
+  assert.match(pivotRotationSection, /entry\.cardinalYaw === yaw/);
+  assert.match(pivotRotationSection, /function positionCheckpointNumberOverlay/);
+  assert.match(pivotRotationSection, /entry\.numberOverlay\.position\.set/);
+  assert.match(pivotRotationSection, /positionCheckpointNumberOverlay\(entry, yaw\)/);
+  assert.match(consolidationSection, /checkpoint-yaw:\$\{normalizeQuarterTurns\(debugCameraTargetYaw\)\}/);
+  assert.match(
+    consolidationSection,
+    /checkpointQuarterTurn: normalizeQuarterTurns\(debugCameraTargetYaw\)/
+  );
+  assert.match(
+    consolidationInvalidationSection,
+    /worldConsolidation\.checkpointQuarterTurn === quarterTurn/
+  );
+  assert.match(
+    consolidationInvalidationSection,
+    /worldConsolidation\.fromSnapshot === true/
+  );
+  assert.match(consolidationInvalidationSection, /app\.isFlyoverMode/);
+  assert.match(consolidationInvalidationSection, /disposeWorldConsolidation\(\)/);
+  assert.match(consolidationInvalidationSection, /lastSceneContentSignature = ""/);
+  assert.match(
+    renderSceneSection,
+    /invalidateWorldConsolidationForCheckpointYaw\(\);[\s\S]*?const contentSignature =/
+  );
+  assert.match(
+    consolidationSection,
+    /syncCheckpointFlagPivotRotations\(\);[\s\S]*?scene\.updateMatrixWorld\(true\);[\s\S]*?buildConsolidatedObjects\(scene/
+  );
+  assert.match(threeSource, /syncCheckpointFlagPivotRotations\(\);/);
 }
 
 console.log("play-checkpoints: activation, persistence, reset, custom flags, and migration passed.");

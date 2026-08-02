@@ -804,7 +804,8 @@
         const elevation = checkpointInteger(layer?.elevation);
         return (
           ((type === "floor" || type === "ice") && elevation === checkpoint.elevation) ||
-          ((type === "wall" || type === "ice_block") && elevation + 1 === checkpoint.elevation)
+          ((type === "wall" || type === "ice_block" || type === "block_asset") &&
+            elevation + 1 === checkpoint.elevation)
         );
       });
       if (!hasValidSupport) return false;
@@ -1492,7 +1493,7 @@
 
     function customFlagPlacementSurface(player) {
       if (!player) return null;
-      const allowedTypes = new Set(["floor", "wall", "ice", "ice_block"]);
+      const allowedTypes = new Set(["floor", "wall", "ice", "ice_block", "block_asset"]);
       return terrainLayersAt(player.x, player.y).find((layer) =>
         allowedTypes.has(layer.type) &&
         terrainLayerSurfaceHeight(
