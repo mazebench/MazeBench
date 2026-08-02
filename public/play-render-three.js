@@ -125,6 +125,8 @@
     }
     const groupLabelTextureCache = new Map();
     const groupLabelMaterialCache = new Map();
+    const checkpointBannerTextureCache = new Map();
+    const checkpointBannerMaterialCache = new Map();
     const polycubeFaceCellsCache = new Map();
     const playerLiftMarkerMeshes = new Set();
     // Retained-actor tracking: scene/edge objects created for each actor in
@@ -1790,6 +1792,92 @@
       }
 
       return groupLabelMaterialCache.get(key);
+    }
+
+    function checkpointBannerTexture(checkpoint) {
+      const kind = checkpoint?.userPlaced === true ? "user" : checkpoint?.kind || "secondary";
+      const active =
+        checkpoint?.active === true ||
+        checkpoint?.userPlaced === true ||
+        kind === "user" ||
+        app.activatedCheckpointIds?.has?.(checkpoint?.id);
+      const bannerColor = renderContextColor(active ? "#3fae5a" : "#41464f");
+      const key = `${kind}:${bannerColor}`;
+
+      if (!checkpointBannerTextureCache.has(key)) {
+        const canvas = document.createElement("canvas");
+        const context = canvas.getContext("2d");
+
+        canvas.width = 256;
+        canvas.height = 160;
+
+        if (context) {
+          context.clearRect(0, 0, canvas.width, canvas.height);
+          context.beginPath();
+          context.moveTo(8, 8);
+          context.lineTo(246, 8);
+          context.lineTo(207, 80);
+          context.lineTo(246, 152);
+          context.lineTo(8, 152);
+          context.closePath();
+          context.fillStyle = "#050607";
+          context.fill();
+
+          context.beginPath();
+          context.moveTo(18, 18);
+          context.lineTo(226, 18);
+          context.lineTo(190, 80);
+          context.lineTo(226, 142);
+          context.lineTo(18, 142);
+          context.closePath();
+          context.fillStyle = bannerColor;
+          context.fill();
+
+          if (kind === "user") {
+            context.beginPath();
+            context.arc(104, 80, 32, 0, Math.PI * 2);
+            context.fillStyle = "#050607";
+            context.fill();
+          } else {
+            context.font = "900 92px system-ui, -apple-system, BlinkMacSystemFont, sans-serif";
+            context.textAlign = "center";
+            context.textBaseline = "middle";
+            context.fillStyle = "#ffffff";
+            context.strokeStyle = "#050607";
+            context.lineWidth = 10;
+            const label = kind === "primary" ? "1" : "2";
+            context.strokeText(label, 104, 84);
+            context.fillText(label, 104, 84);
+          }
+        }
+
+        const texture = new THREE.CanvasTexture(canvas);
+        texture.colorSpace = THREE.SRGBColorSpace;
+        texture.needsUpdate = true;
+        checkpointBannerTextureCache.set(key, texture);
+      }
+
+      return checkpointBannerTextureCache.get(key);
+    }
+
+    function checkpointBannerMaterial(checkpoint, opacity) {
+      const texture = checkpointBannerTexture(checkpoint);
+      const key = `${texture.uuid}:${Math.round(clamp01(opacity) * 1000)}`;
+
+      if (!checkpointBannerMaterialCache.has(key)) {
+        checkpointBannerMaterialCache.set(
+          key,
+          new THREE.SpriteMaterial({
+            alphaTest: 0.02,
+            depthWrite: true,
+            map: texture,
+            opacity: clamp01(opacity),
+            transparent: true
+          })
+        );
+      }
+
+      return checkpointBannerMaterialCache.get(key);
     }
 
     function edgeOutlinesEnabled() {
@@ -8151,6 +8239,82 @@
       addGemFallback(actor, x, z, elevation, sink, scale, fade, visibility, opacity, now);
     }
 
+    function addCheckpointFlag(checkpoint) {
+      if (!checkpoint || !Number.isFinite(Number(checkpoint.x)) || !Number.isFinite(Number(checkpoint.y))) {
+        return;
+      }
+
+      const visibility = transitionPieceProgressForCell(checkpoint.x, checkpoint.y);
+      const opacity = renderContextOpacity() * visibility;
+
+      if (opacity <= 0.015) {
+        return;
+      }
+
+      const center = cellCenter(Number(checkpoint.x), Number(checkpoint.y));
+      const elevation = Math.max(0, Number(checkpoint.elevation) || 0);
+      const baseY = elevation * elevationUnit + unit * 0.02;
+      const poleHeight = unit * 1.38;
+      const poleRadius = Math.max(1, unit * 0.035);
+      const poleX = center.x - unit * 0.38;
+      const poleZ = center.z - unit * 0.38;
+      const poleGeometry = cylinderGeometry(poleRadius, poleHeight, 12);
+      const pole = new THREE.Mesh(poleGeometry, material("#111318", opacity));
+
+      pole.position.set(poleX, baseY + poleHeight / 2, poleZ);
+      pole.castShadow = renderContextCastsShadows();
+      pole.receiveShadow = false;
+      scene.add(pole);
+      addEdgeLines(poleGeometry, pole.position, 18, opacity);
+
+      const bannerWidth = unit * 0.68;
+      const bannerHeight = unit * 0.42;
+      // A Sprite keeps the banner legible through all four camera rotations;
+      // the pole/base remain ordinary scene geometry, so the flag still reads
+      // as a planted 3D object rather than a screen overlay.
+      const banner = new THREE.Sprite(checkpointBannerMaterial(checkpoint, opacity));
+      const sourceLayer = Math.max(0, Math.floor(elevation));
+      const topY = baseY + poleHeight;
+      const editorPick = editorPickForRenderContext({
+        kind: "actor",
+        cells: [
+          {
+            gridX: checkpoint.x,
+            gridY: checkpoint.y,
+            left: checkpoint.x * unit + renderOffsetX(),
+            right: (checkpoint.x + 1) * unit + renderOffsetX(),
+            top: checkpoint.y * unit + renderOffsetZ(),
+            bottom: (checkpoint.y + 1) * unit + renderOffsetZ()
+          }
+        ],
+        logicalBottomLayer: sourceLayer,
+        logicalLayerCount: 1,
+        logicalSourceFollowsPaint: true,
+        topY,
+        bottomY: baseY,
+        sourceLayer
+      });
+
+      banner.position.set(poleX + bannerWidth * 0.47, topY - bannerHeight * 0.52, poleZ);
+      banner.scale.set(bannerWidth, bannerHeight, 1);
+      banner.renderOrder = 5;
+      banner.castShadow = false;
+      banner.receiveShadow = false;
+      banner.userData.editorPick = editorPick;
+      scene.add(banner);
+
+      if (isEditorRenderMode() && editorPick) {
+        const pickMesh = new THREE.Mesh(
+          boxGeometry(unit * 0.7, poleHeight, unit * 0.48),
+          invisibleEditorPickMaterial()
+        );
+
+        pickMesh.position.set(center.x, baseY + poleHeight / 2, poleZ);
+        pickMesh.userData.editorPick = editorPick;
+        scene.add(pickMesh);
+      }
+    }
+
     function addFloatingFloor(actor, center, elevation, scale, sink, fade, opacity, visibility, now) {
       const hover = Math.max(0, app.floatingFloorHoverOffset(actor, now));
       const width = unit * scale;
@@ -9040,6 +9204,25 @@
       ].join(":");
     }
 
+    function checkpointSignature(checkpoint) {
+      const active =
+        checkpoint?.active === true ||
+        checkpoint?.userPlaced === true ||
+        checkpoint?.kind === "user" ||
+        app.activatedCheckpointIds?.has?.(checkpoint?.id);
+
+      return [
+        "checkpoint",
+        checkpoint?.id || "",
+        checkpoint?.kind || "",
+        checkpoint?.userPlaced ? 1 : 0,
+        active ? 1 : 0,
+        checkpoint?.x,
+        checkpoint?.y,
+        checkpoint?.elevation ?? 0
+      ].join(":");
+    }
+
     function levelStateSignature(levelState) {
       if (levelStateSignatureCache.has(levelState)) {
         return levelStateSignatureCache.get(levelState);
@@ -9061,6 +9244,9 @@
 
       (levelState.actors || []).forEach((actor) => {
         parts.push(actorSignature(actor));
+      });
+      (levelState.checkpoints || []).forEach((checkpoint) => {
+        parts.push(checkpointSignature(checkpoint));
       });
 
       const signature = parts.join(";");
@@ -9189,6 +9375,7 @@
           transition ? "transition" : "no-transition",
           worldAction ? "world-action" : "no-world-action",
           cameraFlightSignature ? `camera-flight:${cameraFlightSignature}` : "no-camera-flight",
+          `checkpoint-render:${Number(app.checkpointRenderVersion) || 0}`,
           `flyover-whole:${Number(app.flyoverSceneVersion) || 0}`,
           `renderable:${app.flyoverRenderableLevelIds?.size || 0}`,
           `world-levels:${Number(app.flyoverWorldTotalLevelCount) || 0}`
@@ -9246,6 +9433,8 @@
         `solver-ghost:${solverGhostVersion}`
       ];
 
+      parts.push(`checkpoint-render:${Number(app.checkpointRenderVersion) || 0}`);
+
       surroundingViews.forEach((view) => {
         parts.push(`neighbor:${view.dx},${view.dy}:${signatureToken(levelStateSignature(view.levelState))}`);
       });
@@ -9254,6 +9443,9 @@
 
       app.state.actors.forEach((actor) => {
         parts.push(actorSignature(actor));
+      });
+      (app.state.checkpoints || []).forEach((checkpoint) => {
+        parts.push(checkpointSignature(checkpoint));
       });
 
       return parts.join(";");
@@ -9287,6 +9479,9 @@
 
       app.state.actors.forEach((actor) => {
         parts.push(actorSignature(actor));
+      });
+      (app.state.checkpoints || []).forEach((checkpoint) => {
+        parts.push(checkpointSignature(checkpoint));
       });
 
       return parts.join(";");
@@ -9927,6 +10122,13 @@
       }
 
       state.actors.forEach((actor) => {
+        if (
+          isEditorRenderMode() &&
+          (actor.hidePlayerBodyInEditor === true || actor.isPrimaryCheckpointSpawn === true)
+        ) {
+          return;
+        }
+
         if (shouldHidePlayerActor(actor)) {
           return;
         }
@@ -9956,6 +10158,8 @@
 
         addActor(actor, now);
       });
+
+      (state.checkpoints || []).forEach((checkpoint) => addCheckpointFlag(checkpoint));
     }
 
     function runtimeLevelState() {
@@ -9964,7 +10168,8 @@
         width: app.state.width,
         height: app.state.height,
         terrain: app.state.terrain,
-        actors: app.state.actors
+        actors: app.state.actors,
+        checkpoints: app.state.checkpoints || []
       };
     }
 
@@ -10685,6 +10890,7 @@
       const edges = edgeOutlinesEnabled() ? 1 : 0;
       const version = app.horizontalNeighborStatesVersion || 0;
       const modelsVersion = modelAssetsVersion;
+      const checkpointsVersion = Number(app.checkpointRenderVersion) || 0;
       const hit = worldViewRoomSignatureMemo.get(view.levelId);
 
       if (
@@ -10693,6 +10899,7 @@
         hit.edges === edges &&
         hit.version === version &&
         hit.modelsVersion === modelsVersion &&
+        hit.checkpointsVersion === checkpointsVersion &&
         hit.state === view.levelState
       ) {
         return hit.value;
@@ -10704,6 +10911,7 @@
         bKey,
         edges,
         modelsVersion,
+        checkpointsVersion,
         boundaryNeighborStatesToken(view.levelId)
       ].join(":");
 
@@ -10712,6 +10920,7 @@
         edges,
         version,
         modelsVersion,
+        checkpointsVersion,
         state: view.levelState,
         value
       });
@@ -12064,6 +12273,7 @@
             Math.round(brightness * 1000),
             edgeOutlinesEnabled() ? 1 : 0,
             modelAssetsVersion,
+            Number(app.checkpointRenderVersion) || 0,
             boundaryNeighborStatesToken(levelId)
           ].join(":");
           let entry = cameraFlightRoomGroups.get(levelId);
@@ -13304,6 +13514,10 @@
       textureCache.clear();
       groupLabelTextureCache.forEach((texture) => texture?.dispose?.());
       groupLabelTextureCache.clear();
+      checkpointBannerMaterialCache.forEach((cached) => cached.dispose());
+      checkpointBannerMaterialCache.clear();
+      checkpointBannerTextureCache.forEach((texture) => texture?.dispose?.());
+      checkpointBannerTextureCache.clear();
       keyLight?.shadow?.dispose();
       keyLight?.dispose();
       ambientLight = null;

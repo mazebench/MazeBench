@@ -45,9 +45,14 @@
       "demo": { "layout": ["p i i+$ i+I i+I ."], "moves": "R" }
     },
     "p": {
-      "name": "Player",
-      "description": "The starting position for this room. Place exactly one.",
+      "name": "Primary Flag",
+      "description": "The room's primary checkpoint and initial player position. Place exactly one per room.",
       "demo": { "layout": [". . .", ". $ .", ". . ."], "moves": "RL" }
+    },
+    "F2": {
+      "name": "Secondary Flag",
+      "description": "An additional checkpoint for another accessible section of the room. Place as many as the room needs.",
+      "demo": { "layout": ["p . .", ". . .", ". . $"], "moves": "RRDD" }
     },
     "c0": {
       "name": "Clone 0",

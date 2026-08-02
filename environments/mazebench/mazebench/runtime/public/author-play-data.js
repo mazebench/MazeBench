@@ -100,6 +100,16 @@
       return tool?.type || tool?.name;
     }
 
+    function checkpointKind(tool) {
+      const kind = tool?.checkpointKind;
+
+      return kind === "primary" || kind === "secondary" ? kind : null;
+    }
+
+    function isCheckpointTool(tool) {
+      return checkpointKind(tool) !== null;
+    }
+
     function normalizeLegacyToken(token) {
       const trimmedToken = String(token ?? "").trim();
       return trimmedToken === "h" ? "" : trimmedToken;
@@ -188,9 +198,30 @@
           return;
         }
 
+        const toolCheckpointKind = checkpointKind(tool);
+
+        if (toolCheckpointKind === "secondary") {
+          entries.push({
+            checkpointKind: toolCheckpointKind,
+            elevation: Math.max(0, surfaceHeight ?? 0),
+            index,
+            isAir: false,
+            token,
+            tool
+          });
+          return;
+        }
+
         if (isActorTool(tool)) {
           const elevation = Math.max(0, surfaceHeight ?? 0);
-          entries.push({ elevation, index, isAir: false, token, tool });
+          entries.push({
+            checkpointKind: toolCheckpointKind,
+            elevation,
+            index,
+            isAir: false,
+            token,
+            tool
+          });
 
           surfaceHeight = elevation + actorToolLayerSlotHeight(tool);
           previousSurfaceTerrain = false;
@@ -220,6 +251,10 @@
 
     function stackEntryCreatesElevationSlot(entry) {
       if (!entry || entry.isAir || !entry.tool) {
+        return false;
+      }
+
+      if (checkpointKind(entry.tool) === "secondary") {
         return false;
       }
 
@@ -574,6 +609,7 @@
       const exitTool = toolByName.get("exit") || null;
       const terrainLayers = [];
       const actors = [];
+      const checkpoints = [];
       let surfaceHeight = null;
       let previousSurfaceTerrain = false;
       let hasAirEntry = false;
@@ -599,6 +635,19 @@
         }
 
         const tool = entry;
+        const toolCheckpointKind = checkpointKind(tool);
+
+        if (toolCheckpointKind) {
+          checkpoints.push({
+            elevation: Math.max(0, surfaceHeight ?? 0),
+            kind: toolCheckpointKind,
+            tool
+          });
+
+          if (toolCheckpointKind === "secondary") {
+            return;
+          }
+        }
 
         if (isActorTool(tool)) {
           const elevation = Math.max(0, surfaceHeight ?? 0);
@@ -683,6 +732,7 @@
 
         return {
           actors,
+          checkpoints,
           terrain: buildTerrainCell(raisedBlockLayer.type, raisedBlockLayer, {
             layers,
             underlay: buildTerrainCell(
@@ -696,6 +746,7 @@
       if (terrainLayer?.type === "exit") {
         return {
           actors,
+          checkpoints,
           terrain: buildTerrainCell("exit", exitTool || terrainLayerTool || terrainLayer, {
             layers
           })
@@ -708,6 +759,7 @@
 
         return {
           actors,
+          checkpoints,
           terrain: buildTerrainCell(terrainType, tool, {
             layers,
             raised: terrainType === "player_lift" ? terrainLayer.raised === true : undefined
@@ -718,6 +770,7 @@
       if (!hasAirEntry && actors.some(({ tool }) => !isSurfaceAttachmentTool(tool))) {
         return {
           actors,
+          checkpoints,
           terrain: buildTerrainCell("floor", floorTool, {
             layers: [buildTerrainLayer(floorTool || { name: "floor", type: "floor" }, 0)]
           })
@@ -726,6 +779,7 @@
 
       return {
         actors,
+        checkpoints,
         terrain: buildTerrainCell("empty", null, { layers: [] })
       };
     }
@@ -852,6 +906,79 @@
       return normalizeTokenRows(enforceBottomSurfaceRows(tokens));
     }
 
+    function placeCheckpointTokenIfValid(currentValue, token, targetElevation) {
+      const normalizedToken = normalizeCellValue(token);
+      const tool = resolveTool(normalizedToken);
+
+      if (!isCheckpointTool(tool)) {
+        return normalizeAuthoringCellValue(currentValue);
+      }
+
+      const elevation = Math.max(0, Math.floor(Number(targetElevation) || 0));
+      const tokens = enforceBottomSurfaceRows(getCellTokens(currentValue));
+      const metadata = cellStackMetadata(tokens);
+      const validSupport = metadata.entries.find((entry) => {
+        if (entry.isAir || !entry.tool) {
+          return false;
+        }
+
+        const type = toolType(entry.tool);
+
+        if ((type === "floor" || type === "ice") && entry.elevation === elevation) {
+          return true;
+        }
+
+        return (type === "wall" || type === "ice_block") && entry.elevation + 1 === elevation;
+      });
+
+      if (!validSupport) {
+        return normalizeAuthoringCellValue(currentValue);
+      }
+
+      const conflictsAtElevation = metadata.entries.some((entry) => {
+        if (entry.isAir || !entry.tool || entry === validSupport) {
+          return false;
+        }
+
+        if (isCheckpointTool(entry.tool)) {
+          return entry.elevation === elevation;
+        }
+
+        if (isBaseSurfaceTool(entry.tool)) {
+          return false;
+        }
+
+        const height = isActorTool(entry.tool)
+          ? Math.max(1, actorToolLayerSlotHeight(entry.tool))
+          : Math.max(1, terrainToolLayerSlotHeight(entry.tool));
+
+        return elevation >= entry.elevation && elevation < entry.elevation + height;
+      });
+
+      if (conflictsAtElevation) {
+        return normalizeAuthoringCellValue(currentValue);
+      }
+
+      // The primary token is also the real player and intentionally consumes
+      // one actor slot. The secondary marker is metadata only and must not
+      // change the elevation of anything written after it.
+      if (checkpointKind(tool) === "primary") {
+        return placeCellElevationTokenIfVacant(currentValue, normalizedToken, elevation);
+      }
+
+      const targetAirEntry = metadata.entries.find(
+        (entry) => entry.isAir && entry.elevation === elevation
+      );
+
+      if (targetAirEntry) {
+        tokens[targetAirEntry.index] = normalizedToken;
+      } else {
+        tokens.splice(validSupport.index + 1, 0, normalizedToken);
+      }
+
+      return normalizeTokenRows(enforceBottomSurfaceRows(tokens));
+    }
+
     function eraseCellElevationValue(currentValue, targetElevation) {
       const tokens = getCellTokens(currentValue);
       const elevation = Math.max(0, Math.floor(Number(targetElevation) || 0));
@@ -903,6 +1030,8 @@
       const cells = Array.isArray(options.cells) ? options.cells : [];
       const terrain = [];
       const actors = [];
+      const checkpoints = [];
+      const levelId = options.levelId || "__editor__";
 
       for (let y = 0; y < height; y += 1) {
         const terrainRow = [];
@@ -912,12 +1041,30 @@
           const cellStack = buildCellStack(entries);
 
           terrainRow.push(cellStack.terrain);
+          const cellCheckpointIds = new Map();
+          cellStack.checkpoints.forEach(({ elevation, kind }) => {
+            const id =
+              kind === "primary"
+                ? `${levelId}:checkpoint:primary`
+                : `${levelId}:checkpoint:secondary:${x}:${y}:${elevation}`;
+
+            cellCheckpointIds.set(kind, id);
+            checkpoints.push({
+              id,
+              kind,
+              x,
+              y,
+              elevation,
+              active: false,
+              userPlaced: false
+            });
+          });
           cellStack.actors.forEach(({ tool, elevation }) => {
             if (!includeGems && tool.name === "gem") {
               return;
             }
 
-            actors.push({
+            const actor = {
               type: toolType(tool),
               groupId:
                 toolType(tool) === "weightless_box" || toolType(tool) === "clone"
@@ -934,7 +1081,16 @@
               elevation,
               x,
               y
-            });
+            };
+
+            if (checkpointKind(tool) === "primary") {
+              actor.primaryCheckpointId =
+                cellCheckpointIds.get("primary") || `${levelId}:checkpoint:primary`;
+              actor.isPrimaryCheckpointSpawn = true;
+              actor.hidePlayerBodyInEditor = options.editorRender === true;
+            }
+
+            actors.push(actor);
           });
         }
 
@@ -944,7 +1100,7 @@
       return {
         gameId: options.gameId || authorData?.game?.id || "maze",
         playApiBaseUrl: options.playApiBaseUrl || authorData?.playApiBaseUrl || "",
-        levelId: options.levelId || "__editor__",
+        levelId,
         levelLabel: options.levelLabel || options.levelId || "__editor__",
         editorRender: options.editorRender === true,
         disableHorizontalNeighborFetches:
@@ -954,6 +1110,7 @@
         height,
         terrain,
         actors,
+        checkpoints,
         cameraView: options.cameraView || null,
         worldColumns: options.worldColumns || null,
         worldRows: options.worldRows || null
@@ -970,9 +1127,11 @@
       getCellTools,
       appendCellToken,
       isActorTool,
+      isCheckpointTool,
       normalizeAuthoringCellValue,
       normalizeCellValue,
       placeCellElevationTokenIfVacant,
+      placeCheckpointTokenIfValid,
       setCellElevationToken,
       setSurfaceAttachmentToken,
       toolByName,

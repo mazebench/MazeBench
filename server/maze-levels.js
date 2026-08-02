@@ -203,6 +203,10 @@ function createMazeLevelService({
       const modelPath = relativeModelPath ? resolveGameAssetPath(game.id, relativeModelPath) : null;
 
       return {
+        checkpointKind:
+          config?.checkpoint_kind === "primary" || config?.checkpoint_kind === "secondary"
+            ? config.checkpoint_kind
+            : null,
         initialRaised: config?.initial_raised === true,
         name,
         tokens: getDefinitionTokens(config),
@@ -302,6 +306,16 @@ function createMazeLevelService({
     return definition?.type || definition?.name;
   }
 
+  function checkpointKindForDefinition(definition) {
+    const kind = definition?.checkpointKind;
+
+    return kind === "primary" || kind === "secondary" ? kind : null;
+  }
+
+  function isCheckpointDefinition(definition) {
+    return checkpointKindForDefinition(definition) !== null;
+  }
+
   function isActorDefinition(definition) {
     const type = definitionType(definition);
 
@@ -332,7 +346,7 @@ function createMazeLevelService({
   }
 
   function isTerrainDefinition(definition) {
-    return Boolean(definition) && !isActorDefinition(definition);
+    return Boolean(definition) && !isActorDefinition(definition) && !isCheckpointDefinition(definition);
   }
 
   function isRaisedTerrainDefinition(definition) {
@@ -392,6 +406,7 @@ function createMazeLevelService({
   function buildCellStack(cellDefinitions, floorDefinition, exitDefinition) {
     const terrainLayers = [];
     const actors = [];
+    const checkpoints = [];
     let surfaceHeight = null;
     let previousSurfaceTerrain = false;
     let hasAirEntry = false;
@@ -414,6 +429,25 @@ function createMazeLevelService({
         consumedBaseVoid = true;
         previousSurfaceTerrain = false;
         return;
+      }
+
+      const checkpointKind = checkpointKindForDefinition(definition);
+
+      if (checkpointKind) {
+        checkpoints.push({
+          definition,
+          elevation: Math.max(0, surfaceHeight ?? 0),
+          kind: checkpointKind
+        });
+
+        // The existing `p` token remains the real player actor for backwards
+        // compatibility. F2 is metadata only: it never enters terrain,
+        // physics, or consumes a written stack slot.
+        if (checkpointKind === "secondary") {
+          previousSurfaceTerrain = false;
+          previousCarrier = false;
+          return;
+        }
       }
 
       if (isActorDefinition(definition)) {
@@ -504,6 +538,7 @@ function createMazeLevelService({
 
       return {
         actors,
+        checkpoints,
         terrain: buildTerrainCell(raisedBlockLayer.type, raisedBlockLayer, {
           layers,
           underlay: buildTerrainCell(
@@ -517,6 +552,7 @@ function createMazeLevelService({
     if (terrainLayer?.type === "exit") {
       return {
         actors,
+        checkpoints,
         terrain: buildTerrainCell("exit", exitDefinition || terrainLayer, {
           layers
         })
@@ -526,6 +562,7 @@ function createMazeLevelService({
     if (terrainLayer) {
       return {
         actors,
+        checkpoints,
         terrain: buildTerrainCell(terrainLayer.type, terrainLayer, {
           layers,
           raised: terrainLayer.type === "player_lift" ? terrainLayer.raised === true : undefined
@@ -536,6 +573,7 @@ function createMazeLevelService({
     if (!hasAirEntry && actors.some(({ definition }) => !isSurfaceAttachmentDefinition(definition))) {
       return {
         actors,
+        checkpoints,
         terrain: buildTerrainCell("floor", floorDefinition, {
           layers: [buildTerrainLayer(floorDefinition || { type: "floor", name: "floor" }, 0)]
         })
@@ -544,6 +582,7 @@ function createMazeLevelService({
 
     return {
       actors,
+      checkpoints,
       terrain: buildTerrainCell("empty", null, { layers: [] })
     };
   }
@@ -561,6 +600,7 @@ function createMazeLevelService({
     const exitDefinition = definitions.byName.get("exit") || null;
     const terrain = [];
     const actors = [];
+    const checkpoints = [];
     const family = isMazeFamilyGame(game);
     const config = family ? worldConfigFor(game) : null;
     const rawWidth = rawRows.reduce((maxColumns, row) => Math.max(maxColumns, row.length), 0);
@@ -593,15 +633,35 @@ function createMazeLevelService({
           .filter(Boolean);
         const cellStack = hasSourceCell
           ? buildCellStack(cellDefinitions, floorDefinition, exitDefinition)
-          : {
+            : {
               actors: [],
+              checkpoints: [],
               terrain: buildTerrainCell("floor", floorDefinition)
             };
 
         terrainRow.push(cellStack.terrain);
 
+        const cellCheckpointIds = new Map();
+        cellStack.checkpoints.forEach(({ elevation, kind }) => {
+          const id =
+            kind === "primary"
+              ? `${level.id}:checkpoint:primary`
+              : `${level.id}:checkpoint:secondary:${index}:${y}:${elevation}`;
+
+          cellCheckpointIds.set(kind, id);
+          checkpoints.push({
+            id,
+            kind,
+            x: index,
+            y,
+            elevation,
+            active: false,
+            userPlaced: false
+          });
+        });
+
         cellStack.actors.forEach(({ definition, elevation }) => {
-          actors.push({
+          const actor = {
             type: definitionType(definition),
             groupId:
               definitionType(definition) === "weightless_box" ||
@@ -619,7 +679,14 @@ function createMazeLevelService({
             elevation,
             x: index,
             y
-          });
+          };
+
+          if (checkpointKindForDefinition(definition) === "primary") {
+            actor.primaryCheckpointId = cellCheckpointIds.get("primary") || `${level.id}:checkpoint:primary`;
+            actor.isPrimaryCheckpointSpawn = true;
+          }
+
+          actors.push(actor);
         });
       });
 
@@ -635,6 +702,7 @@ function createMazeLevelService({
       height: boardHeight,
       terrain,
       actors,
+      checkpoints,
       cameraView: family
         ? {
             width: config.cameraView.width,
@@ -747,6 +815,77 @@ function createMazeLevelService({
         normalizeEditorCellValue(game, definitions, payload.cells?.[y]?.[x] ?? floorToken, floorToken)
       )
     );
+    const floorDefinition = definitions.byName.get("floor") || null;
+    const exitDefinition = definitions.byName.get("exit") || null;
+    let primaryCheckpointCount = 0;
+
+    cells.forEach((row, y) => {
+      row.forEach((cell, x) => {
+        const cellDefinitions = parseCellStack(game.parser, cell)
+          .map((token) => {
+            const normalizedToken = String(token).trim();
+            return normalizedToken.length === 0
+              ? { isAir: true }
+              : definitions.resolveToken(normalizedToken);
+          })
+          .filter(Boolean);
+        const cellStack = buildCellStack(cellDefinitions, floorDefinition, exitDefinition);
+
+        primaryCheckpointCount += cellStack.checkpoints.filter(
+          (checkpoint) => checkpoint.kind === "primary"
+        ).length;
+
+        cellStack.checkpoints
+          .filter((checkpoint) => checkpoint.kind === "secondary")
+          .forEach((checkpoint) => {
+            const validSupport = (cellStack.terrain.layers || []).some((layer) => {
+              if ((layer.type === "floor" || layer.type === "ice") && layer.elevation === checkpoint.elevation) {
+                return true;
+              }
+
+              return (
+                (layer.type === "wall" || layer.type === "ice_block") &&
+                layer.elevation + 1 === checkpoint.elevation
+              );
+            });
+            const actorConflict = cellStack.actors.some(
+              (actor) => actor.elevation === checkpoint.elevation
+            );
+            const terrainConflict = (cellStack.terrain.layers || []).some((layer) => {
+              if (layer.type === "floor" || layer.type === "ice") {
+                return false;
+              }
+
+              if (
+                (layer.type === "wall" || layer.type === "ice_block") &&
+                layer.elevation + 1 === checkpoint.elevation
+              ) {
+                return false;
+              }
+
+              const height = layer.type === "tree" ? 3 : 1;
+              return (
+                checkpoint.elevation >= layer.elevation &&
+                checkpoint.elevation < layer.elevation + height
+              );
+            });
+            const checkpointConflict =
+              cellStack.checkpoints.filter(
+                (candidate) => candidate.elevation === checkpoint.elevation
+              ).length > 1;
+
+            if (!validSupport || actorConflict || terrainConflict || checkpointConflict) {
+              throw new Error(
+                `Secondary checkpoint at ${x},${y},${checkpoint.elevation} must stand alone on floor, wall, ice, or ice block.`
+              );
+            }
+          });
+      });
+    });
+
+    if (primaryCheckpointCount > 1) {
+      throw new Error("A room may contain only one primary checkpoint.");
+    }
 
     return {
       cells,
@@ -781,6 +920,7 @@ function createMazeLevelService({
               ? `${definition?.label || titleCase(name)} ${entry.token}`
               : definition?.label || titleCase(name)),
           initialRaised: definition.initialRaised || entry.initialRaised,
+          checkpointKind: definition.checkpointKind || null,
           name,
           selectable:
             config?.selectable !== false &&
