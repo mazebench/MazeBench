@@ -742,99 +742,6 @@
       return actorTieBreakerWithoutElevatedWeightless(actor);
     }
 
-    function checkpointNumbersVisible() {
-      const levelId = String(state?.levelId || app.currentLevelId || "");
-
-      return (
-        app.isEditorRenderApp === true ||
-        app.canvas?.id === "author-canvas" ||
-        levelId === "__editor_render__" ||
-        levelId.startsWith("__palette_preview_")
-      );
-    }
-
-    function paintCheckpointFlag(checkpoint) {
-      if (!checkpoint) {
-        return;
-      }
-
-      const x = Number(checkpoint.x) || 0;
-      const y = Number(checkpoint.y) || 0;
-      const elevation = Math.max(0, Number(checkpoint.elevation) || 0);
-      const surfaceLift = Math.round(TILE_SIZE * 0.26 * elevation);
-      const left = x * TILE_SIZE;
-      const top = y * TILE_SIZE - surfaceLift;
-      const poleX = left + TILE_SIZE * 0.5;
-      const poleBottom = top + TILE_SIZE * 0.72;
-      const poleTop = top - TILE_SIZE * 0.15;
-      const bannerLeft = poleX;
-      const bannerTop = poleTop;
-      const kind = checkpoint.userPlaced === true ? "user" : checkpoint.kind || "secondary";
-      const authoredEditorFlag = kind !== "user" && checkpointNumbersVisible();
-      const bannerWidth = TILE_SIZE * (authoredEditorFlag ? 0.72 : 0.54);
-      const bannerHeight = TILE_SIZE * (authoredEditorFlag ? 0.44 : 0.32);
-      const active =
-        checkpoint.active === true ||
-        checkpoint.userPlaced === true ||
-        kind === "user" ||
-        app.activatedCheckpointIds?.has?.(checkpoint.id);
-
-      sceneCtx.save();
-      sceneCtx.lineCap = "round";
-      sceneCtx.strokeStyle = "#050607";
-      sceneCtx.lineWidth = Math.max(3, TILE_SIZE * 0.07);
-      sceneCtx.beginPath();
-      sceneCtx.moveTo(poleX, poleBottom);
-      sceneCtx.lineTo(poleX, poleTop);
-      sceneCtx.stroke();
-
-      function bannerPath(inset) {
-        const x0 = bannerLeft + inset;
-        const y0 = bannerTop + inset;
-        const width = bannerWidth - inset * 2;
-        const height = bannerHeight - inset * 2;
-
-        sceneCtx.beginPath();
-        sceneCtx.moveTo(x0, y0);
-        sceneCtx.lineTo(x0 + width, y0);
-        sceneCtx.lineTo(x0 + width * 0.82, y0 + height / 2);
-        sceneCtx.lineTo(x0 + width, y0 + height);
-        sceneCtx.lineTo(x0, y0 + height);
-        sceneCtx.closePath();
-      }
-
-      bannerPath(0);
-      sceneCtx.fillStyle = "#050607";
-      sceneCtx.fill();
-      const inset = Math.max(2, TILE_SIZE * 0.035);
-      bannerPath(inset);
-      sceneCtx.fillStyle = authoredEditorFlag ? "#050607" : active ? "#3fae5a" : "#41464f";
-      sceneCtx.fill();
-
-      const symbolX = bannerLeft + bannerWidth * 0.38;
-      const symbolY = bannerTop + bannerHeight * 0.52;
-
-      if (kind === "user") {
-        sceneCtx.fillStyle = "#050607";
-        sceneCtx.beginPath();
-        sceneCtx.arc(symbolX, symbolY, bannerHeight * 0.23, 0, Math.PI * 2);
-        sceneCtx.fill();
-      } else if (checkpointNumbersVisible()) {
-        sceneCtx.font = `900 ${Math.max(14, Math.round(bannerHeight * 0.88))}px system-ui, sans-serif`;
-        sceneCtx.textAlign = "center";
-        sceneCtx.textBaseline = "middle";
-        sceneCtx.lineJoin = "round";
-        sceneCtx.strokeStyle = "#050607";
-        sceneCtx.lineWidth = Math.max(1, TILE_SIZE * 0.015);
-        sceneCtx.fillStyle = "#ffffff";
-        const label = kind === "primary" ? "1" : "2";
-        sceneCtx.strokeText(label, symbolX, symbolY);
-        sceneCtx.fillText(label, symbolX, symbolY);
-      }
-
-      sceneCtx.restore();
-    }
-
     function buildDrawItems(now = performance.now()) {
       const drawItems = [];
       const animatedWeightlessGroups = new Set();
@@ -889,13 +796,6 @@
       }
 
       state.actors.forEach((actor, index) => {
-        if (
-          app.isEditorRenderApp &&
-          (actor.hidePlayerBodyInEditor === true || actor.isPrimaryCheckpointSpawn === true)
-        ) {
-          return;
-        }
-
         const isCollectedGem = actor.type === "gem" && actor.showCollectedGhost === true;
 
         if (actor.removed && !isCollectedGem) {
@@ -962,17 +862,6 @@
         }
       });
 
-      (state.checkpoints || []).forEach((checkpoint, index) => {
-        drawItems.push({
-          depth: (Number(checkpoint.y) || 0) + 1,
-          tieBreaker: 3.5,
-          order: state.actors.length + index,
-          paint: function () {
-            paintCheckpointFlag(checkpoint);
-          }
-        });
-      });
-
       queueWeightlessGroupSeamCoverItems(drawItems);
       queueElevatedSideBleedCoverItems(drawItems, now);
 
@@ -1006,13 +895,6 @@
     }
 
     function paintActor(actor, now = performance.now()) {
-      if (
-        app.isEditorRenderApp &&
-        (actor.hidePlayerBodyInEditor === true || actor.isPrimaryCheckpointSpawn === true)
-      ) {
-        return;
-      }
-
       const isCollectedGem = actor.type === "gem" && actor.showCollectedGhost === true;
 
       if (actor.removed && !isCollectedGem) {
@@ -1243,8 +1125,7 @@
       actorTieBreaker,
       paintDepthSortedScene,
       buildDrawItems,
-      paintActor,
-      paintCheckpointFlag
+      paintActor
     };
   };
 })();

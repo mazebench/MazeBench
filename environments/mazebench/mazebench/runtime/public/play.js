@@ -224,10 +224,9 @@
     if (playData.hostOwnsPlayHud === true) return;
     const roomTarget = document.getElementById("play-hud-rooms");
     const gemTarget = document.getElementById("play-hud-gems");
-    const checkpointVisitedRooms = app.visitedCheckpointLevelIds?.();
-    const roomCount = checkpointVisitedRooms instanceof Set
-      ? checkpointVisitedRooms.size
-      : visitedPlayRoomIds.size;
+    const currentLevelId = String(app.currentLevelId || playData.levelId || "");
+    if (currentLevelId) visitedPlayRoomIds.add(currentLevelId);
+    const roomCount = Math.max(currentLevelId ? 1 : 0, visitedPlayRoomIds.size);
     const gemCount = app.collectedGemIds instanceof Set ? app.collectedGemIds.size : 0;
 
     if (roomTarget) {
@@ -237,28 +236,6 @@
     if (gemTarget) {
       gemTarget.querySelector("[data-play-hud-value]").textContent = String(gemCount);
       gemTarget.setAttribute("aria-label", `${gemCount} gem${gemCount === 1 ? "" : "s"} collected`);
-    }
-  }
-
-  function syncCheckpointControls() {
-    const placeButton = document.querySelector('[data-action="place-flag"]');
-    const removeButton = document.querySelector('[data-action="remove-flag"]');
-    const switchButton = document.querySelector('[data-action="switch-flag"]');
-    const placeEligibility = app.canPlaceUserCheckpointFlag?.() || { allowed: false };
-    const removeEligibility = app.canRemoveUserCheckpointFlag?.() || { allowed: false };
-    const switchAllowed = (app.activatedCheckpointsForLevel?.(app.currentLevelId)?.length || 0) >= 2;
-
-    if (placeButton) {
-      placeButton.disabled = placeEligibility.allowed !== true;
-      placeButton.setAttribute("aria-disabled", placeButton.disabled ? "true" : "false");
-    }
-    if (removeButton) {
-      removeButton.disabled = removeEligibility.allowed !== true;
-      removeButton.setAttribute("aria-disabled", removeButton.disabled ? "true" : "false");
-    }
-    if (switchButton) {
-      switchButton.disabled = !switchAllowed;
-      switchButton.setAttribute("aria-disabled", switchButton.disabled ? "true" : "false");
     }
   }
 
@@ -584,16 +561,8 @@
   function renderPlayWorldMap() {
     const grid = document.getElementById("world-map-grid");
     const backdrop = document.getElementById("world-map-backdrop");
-    const visitedLevelIds = app.visitedCheckpointLevelIds?.();
-    const cells = worldMapCells().filter((cell) =>
-      !(visitedLevelIds instanceof Set) || visitedLevelIds.has(cell.id)
-    );
-    if (!grid || !backdrop) return;
-    if (cells.length === 0) {
-      grid.replaceChildren();
-      backdrop.innerHTML = "";
-      return;
-    }
+    const cells = worldMapCells();
+    if (!grid || !backdrop || cells.length === 0) return;
     const minColumn = Math.min(...cells.map((cell) => cell.columnIndex));
     const maxColumn = Math.max(...cells.map((cell) => cell.columnIndex));
     const minRow = Math.min(...cells.map((cell) => cell.rowIndex));
@@ -644,10 +613,6 @@
         button.append(label);
       }
       if (cell.id === app.currentLevelId) button.classList.add("is-current");
-      if (app.hasCheckpointSpawnForLevel?.(cell.id) === false) {
-        button.disabled = true;
-        button.setAttribute("aria-disabled", "true");
-      }
       grid.append(button);
     });
   }
@@ -703,13 +668,11 @@
   }
 
   function playWorldMapResetSnapshot(outgoingLevel) {
-    const checkpointResetSnapshot = app.checkpointResetState?.()?.snapshot || null;
-    const resetSnapshot = checkpointResetSnapshot || app.levelEntrySnapshot;
-    if (!resetSnapshot || typeof app.prepareLevelRenderState !== "function") {
+    if (!app.levelEntrySnapshot || typeof app.prepareLevelRenderState !== "function") {
       return outgoingLevel;
     }
 
-    return app.prepareLevelRenderState(resetSnapshot) || outgoingLevel;
+    return app.prepareLevelRenderState(app.levelEntrySnapshot) || outgoingLevel;
   }
 
   function finishPlayWorldMapSwitch(levelId) {
@@ -725,13 +688,6 @@
     if (!levelId || worldMapSwitching) return;
     if (levelId === app.currentLevelId && options.reloadCurrent !== true) {
       setWorldMapOpen(false);
-      return;
-    }
-    const requiresCheckpointSpawn =
-      options.allowUnvisited !== true &&
-      typeof app.hasCheckpointSpawnForLevel === "function" &&
-      worldSolverRequested !== true;
-    if (requiresCheckpointSpawn && app.hasCheckpointSpawnForLevel(levelId) !== true) {
       return;
     }
     worldMapSwitching = true;
@@ -758,15 +714,7 @@
         app.rememberHorizontalNeighborLevelState?.(outgoingResetLevel);
       }
 
-      const loadedLevelState = await app.loadLevelState(levelId);
-      if (
-        requiresCheckpointSpawn &&
-        typeof app.selectedCheckpointForLevel === "function" &&
-        app.selectedCheckpointForLevel(levelId) === null
-      ) {
-        return;
-      }
-      const levelState = app.prepareLevelStateAtSelectedCheckpoint?.(loadedLevelState) || loadedLevelState;
+      const levelState = await app.loadLevelState(levelId);
       app.applyLevelState(levelState, {
         deferRender: canAnimate,
         immediateCamera: true,
@@ -881,12 +829,6 @@
         app.undoMove?.();
       } else if (button.dataset.action === "reset") {
         app.resetPositions?.();
-      } else if (button.dataset.action === "switch-flag") {
-        if (app.hostOwnsCheckpointControls !== true) app.cycleCheckpointAndReset?.();
-      } else if (button.dataset.action === "place-flag") {
-        if (app.hostOwnsCheckpointControls !== true) app.placeUserCheckpointFlag?.();
-      } else if (button.dataset.action === "remove-flag") {
-        if (app.hostOwnsCheckpointControls !== true) app.removeUserCheckpointFlag?.();
       } else if (button.dataset.action === "controls") {
         setControlsOverlayOpen(true);
       } else if (button.dataset.action === "world-map") {
@@ -1083,18 +1025,9 @@
     window.addEventListener("resize", () => {
       if (worldMapOverlay?.hidden === false) renderPlayWorldMap();
     });
-    window.addEventListener("mazebench:checkpoint-progress", () => {
-      syncPlayHud();
-      syncCheckpointControls();
-      if (worldMapOverlay?.hidden === false) renderPlayWorldMap();
-    });
     syncPlayOverlayInputLock();
     syncPlayHud();
-    syncCheckpointControls();
-    window.setInterval(() => {
-      syncPlayHud();
-      syncCheckpointControls();
-    }, 200);
+    window.setInterval(syncPlayHud, 200);
   }
 
   function primeWorldStates() {

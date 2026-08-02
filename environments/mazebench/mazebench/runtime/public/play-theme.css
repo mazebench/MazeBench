@@ -405,9 +405,6 @@ a.save-button:focus-visible {
   gap: 8px;
   justify-content: flex-end;
 }
-.checkpoint-mobile-actions {
-  display: none;
-}
 .play-hud {
   align-items: center;
   display: flex;
@@ -1534,27 +1531,6 @@ a.save-button:focus-visible {
   .top-play-actions .control-button {
     min-width: 0;
   }
-  .checkpoint-mobile-actions {
-    bottom: max(12px, env(safe-area-inset-bottom));
-    display: grid;
-    gap: 6px;
-    left: 50%;
-    pointer-events: auto;
-    position: absolute;
-    transform: translateX(-50%);
-    width: min(34vw, 148px);
-  }
-  .checkpoint-mobile-actions .control-button {
-    font-size: 11px;
-    min-height: 34px;
-    min-width: 0;
-    padding: 6px 8px;
-    width: 100%;
-  }
-  .checkpoint-mobile-actions .control-button:disabled {
-    cursor: not-allowed;
-    opacity: 0.42;
-  }
   .control-pad {
     bottom: max(12px, env(safe-area-inset-bottom));
     left: auto;
@@ -1584,10 +1560,6 @@ a.save-button:focus-visible {
     top: var(--mazebench-dpad-top, calc(var(--mazebench-topbar-height) + 92px));
   }
   .camera-pad {
-    bottom: auto;
-    top: var(--mazebench-dpad-top, calc(var(--mazebench-topbar-height) + 92px));
-  }
-  .checkpoint-mobile-actions {
     bottom: auto;
     top: var(--mazebench-dpad-top, calc(var(--mazebench-topbar-height) + 92px));
   }

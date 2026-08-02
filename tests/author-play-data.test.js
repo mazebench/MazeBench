@@ -58,22 +58,6 @@ const authorData = {
     { direction: "up", imageUrl: null, label: "Puncher Up", name: "puncher", token: "pu", type: "puncher" },
     { direction: "down", imageUrl: null, label: "Puncher Down", name: "puncher", token: "pd", type: "puncher" },
     { imageUrl: null, label: "Player", name: "player", token: "P" },
-    {
-      checkpointKind: "primary",
-      imageUrl: null,
-      label: "Primary Flag",
-      name: "player",
-      token: "p",
-      type: "player"
-    },
-    {
-      checkpointKind: "secondary",
-      imageUrl: null,
-      label: "Secondary Flag",
-      name: "checkpoint_secondary",
-      token: "F2",
-      type: "checkpoint_secondary"
-    },
     { imageUrl: null, label: "Circle Player", name: "circle_player", token: "CP" },
     { imageUrl: null, label: "Clone 0", name: "clone", token: "c0", type: "clone" },
     { imageUrl: null, label: "Clone 1", name: "clone", token: "c1", type: "clone" },
@@ -554,70 +538,6 @@ assert.deepEqual(
   blockAssetPlayData.actors.map((actor) => [actor.type, actor.elevation]),
   [["player", 1]]
 );
-
-const checkpointPlayData = adapter.buildPlayData({
-  cells: [[".+p+G", ".+F2+G", "W+F2", "i+F2", "I+F2"]],
-  editorRender: true,
-  height: 1,
-  levelId: "level_QxR",
-  width: 5
-});
-const primaryCheckpoint = checkpointPlayData.checkpoints.find(
-  (checkpoint) => checkpoint.kind === "primary"
-);
-const primaryActor = checkpointPlayData.actors.find(
-  (actor) => actor.isPrimaryCheckpointSpawn === true
-);
-
-assert.deepEqual(primaryCheckpoint, {
-  id: "level_QxR:checkpoint:primary",
-  kind: "primary",
-  x: 0,
-  y: 0,
-  elevation: 0,
-  active: false,
-  userPlaced: false
-});
-assert.equal(primaryActor.primaryCheckpointId, "level_QxR:checkpoint:primary");
-assert.equal(primaryActor.hidePlayerBodyInEditor, true);
-assert.equal(
-  checkpointPlayData.actors.find((actor) => actor.type === "gem" && actor.x === 0).elevation,
-  1,
-  "the backwards-compatible primary player still consumes its actor slot"
-);
-assert.equal(
-  checkpointPlayData.actors.find((actor) => actor.type === "gem" && actor.x === 1).elevation,
-  0,
-  "a secondary checkpoint consumes no stack slot"
-);
-assert.equal(
-  checkpointPlayData.actors.some((actor) => actor.type === "checkpoint_secondary"),
-  false,
-  "secondary checkpoints never enter actor physics"
-);
-assert.equal(checkpointPlayData.checkpoints.filter((checkpoint) => checkpoint.kind === "secondary").length, 4);
-assert.deepEqual(
-  checkpointPlayData.checkpoints.map((checkpoint) => checkpoint.id),
-  [
-    "level_QxR:checkpoint:primary",
-    "level_QxR:checkpoint:secondary:1:0:0",
-    "level_QxR:checkpoint:secondary:2:0:1",
-    "level_QxR:checkpoint:secondary:3:0:0",
-    "level_QxR:checkpoint:secondary:4:0:1"
-  ]
-);
-
-assert.equal(adapter.placeCheckpointTokenIfValid(".", "F2", 0), ".+F2");
-assert.equal(adapter.placeCheckpointTokenIfValid("i", "F2", 0), "i+F2");
-assert.equal(adapter.placeCheckpointTokenIfValid("W", "F2", 1), "W+F2");
-assert.equal(adapter.placeCheckpointTokenIfValid("I", "F2", 1), "I+F2");
-assert.equal(adapter.placeCheckpointTokenIfValid("b1", "F2", 1), "b1+F2");
-assert.equal(adapter.placeCheckpointTokenIfValid(".", "p", 0), ".+p");
-assert.equal(adapter.placeCheckpointTokenIfValid("b1", "p", 1), "b1+p");
-assert.equal(adapter.placeCheckpointTokenIfValid("+", "F2", 0), "+");
-assert.equal(adapter.placeCheckpointTokenIfValid(".+B", "F2", 0), ".+B");
-assert.equal(adapter.placeCheckpointTokenIfValid("Sr", "F2", 1), "Sr");
-assert.equal(adapter.placeCheckpointTokenIfValid(".+F2", "F2", 0), ".+F2");
 
 console.log("author play data tests passed");
 

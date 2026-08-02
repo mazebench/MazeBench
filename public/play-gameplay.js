@@ -3552,12 +3552,6 @@
         return;
       }
 
-      if (previousState.kind === "reset" && previousState.checkpointSelection) {
-        app.restoreCheckpointSelectionState?.(previousState.checkpointSelection, {
-          reason: "undo"
-        });
-      }
-
       const undoEntries = collectUndoGroupEntries(previousState);
 
       if (undoEntries.length > 1) {
@@ -3651,14 +3645,12 @@
       app.render();
     }
 
-    function pushResetUndoSnapshot(options = {}) {
+    function pushResetUndoSnapshot() {
       moveHistory.push({
         kind: "reset",
         actors: app.cloneActorPositions(),
         terrain: app.cloneTerrainState(state.terrain),
         raisedOrangeWalls: Array.from(computeRaisedOrangeWallSet()),
-        checkpointSelection:
-          options.checkpointSelectionUndo || app.checkpointSelectionState?.() || null,
         undoGroupId: null
       });
 
@@ -3667,28 +3659,21 @@
       }
     }
 
-    function resetPositions(options = {}) {
+    function resetPositions() {
       if (app.isAnimating || app.isTransitioningLevel) {
-        queueLateAction({ type: "reset", inputSource: options.inputSource || "" });
+        queueLateAction({ type: "reset" });
         return;
       }
 
       // Reset is a normal reversible game action. Preserve both the exact
       // pre-reset room state and the older move history so one undo restores
       // an accidental reset and subsequent undos can continue normally.
-      pushResetUndoSnapshot(options);
-      const checkpointReset = app.checkpointResetState?.() || null;
-      const resetTerrain = checkpointReset?.snapshot?.terrain || app.initialTerrain;
-      const resetPositions = checkpointReset?.positions || app.initialPositions;
-      const resetRaisedOrangeWalls =
-        checkpointReset?.snapshot?.raisedOrangeWalls ||
-        app.levelEntrySnapshot?.raisedOrangeWalls ||
-        [];
-      restoreTerrainState(resetTerrain);
+      pushResetUndoSnapshot();
+      restoreTerrainState(app.initialTerrain);
       app.gateRenderOverride = computeRaisedPlayerGateSet();
       app.orangeWallRenderOverride = computeRaisedOrangeWallSet();
-      setRaisedOrangeWallState(resetRaisedOrangeWalls);
-      const moves = buildMovesToPositions(resetPositions, {
+      setRaisedOrangeWallState(app.levelEntrySnapshot?.raisedOrangeWalls || []);
+      const moves = buildMovesToPositions(app.initialPositions, {
         collectedGemVisual: "ghost"
       });
 
@@ -3701,64 +3686,6 @@
       app.orangeWallRenderOverride = null;
       syncFloatingFloorTicker();
       app.render();
-    }
-
-    function cycleCheckpointAndReset(options = {}) {
-      if (app.isAnimating || app.isTransitioningLevel) {
-        queueLateAction({ type: "cycle-checkpoint", inputSource: options.inputSource || "" });
-        return false;
-      }
-
-      const checkpointSelectionUndo = app.checkpointSelectionState?.() || null;
-      const checkpoint = app.selectNextCheckpointForLevel?.(app.currentLevelId) || null;
-      if (!checkpoint) return false;
-      resetPositions({ ...options, checkpointSelectionUndo });
-      return true;
-    }
-
-    function rejectCheckpointAction(action, reason) {
-      if (typeof window.dispatchEvent === "function" && typeof window.CustomEvent === "function") {
-        window.dispatchEvent(new window.CustomEvent("mazebench:checkpoint-action-rejected", {
-          detail: {
-            action,
-            levelId: app.currentLevelId,
-            reason: reason || "unavailable"
-          }
-        }));
-      }
-    }
-
-    function placeUserCheckpointFlag(options = {}) {
-      if (app.isAnimating || app.isTransitioningLevel) {
-        queueLateAction({ type: "place-checkpoint", inputSource: options.inputSource || "" });
-        return { changed: false, reason: "busy" };
-      }
-
-      const result = app.placeUserCheckpointAtPlayer?.() || { placed: false, reason: "unavailable" };
-      if (result.placed !== true) rejectCheckpointAction("place-user-checkpoint", result.reason);
-      app.renderOncePerFrame?.();
-      return { changed: result.placed === true, ...result };
-    }
-
-    function removeUserCheckpointFlag(options = {}) {
-      if (app.isAnimating || app.isTransitioningLevel) {
-        queueLateAction({ type: "remove-checkpoint", inputSource: options.inputSource || "" });
-        return { changed: false, reason: "busy" };
-      }
-
-      const eligibility = app.canRemoveUserCheckpointFlag?.() || { allowed: false, reason: "unavailable" };
-      const removed = eligibility.allowed === true
-        ? app.removeUserCheckpointAtPlayer?.(eligibility.checkpointId) === true
-        : false;
-      if (!removed) rejectCheckpointAction("remove-user-checkpoint", eligibility.reason);
-      app.renderOncePerFrame?.();
-      return { changed: removed, removed, reason: removed ? null : eligibility.reason };
-    }
-
-    function toggleUserCheckpointFlag(options = {}) {
-      return app.canRemoveUserCheckpointFlag?.().allowed === true
-        ? removeUserCheckpointFlag(options)
-        : placeUserCheckpointFlag(options);
     }
 
     function runAction(action) {
@@ -3777,27 +3704,7 @@
       }
 
       if (action.type === "reset") {
-        resetPositions({ inputSource: action.inputSource || "" });
-        return;
-      }
-
-      if (action.type === "cycle-checkpoint") {
-        cycleCheckpointAndReset({ inputSource: action.inputSource || "" });
-        return;
-      }
-
-      if (action.type === "toggle-checkpoint") {
-        toggleUserCheckpointFlag({ inputSource: action.inputSource || "" });
-        return;
-      }
-
-      if (action.type === "place-checkpoint") {
-        placeUserCheckpointFlag({ inputSource: action.inputSource || "" });
-        return;
-      }
-
-      if (action.type === "remove-checkpoint") {
-        removeUserCheckpointFlag({ inputSource: action.inputSource || "" });
+        resetPositions();
       }
     }
 
@@ -3846,24 +3753,7 @@
 
       if (matchesGameplayControl(event, "reset", ["KeyR"])) {
         event.preventDefault();
-        resetPositions({ inputSource: `key:${event.code}` });
-        return;
-      }
-
-      if (matchesGameplayControl(event, "switchFlag", ["Space"])) {
-        event.preventDefault();
-        if (event.repeat) return;
-        cycleCheckpointAndReset({ inputSource: `key:${event.code}` });
-        return;
-      }
-
-      if (
-        matchesGameplayControl(event, "toggleFlag", ["KeyF"]) ||
-        matchesGameplayControl(event, "placeFlag", [])
-      ) {
-        event.preventDefault();
-        if (event.repeat) return;
-        toggleUserCheckpointFlag({ inputSource: `key:${event.code}` });
+        resetPositions();
       }
     }
 
@@ -3883,10 +3773,6 @@
       movePlayers,
       undoMove,
       resetPositions,
-      cycleCheckpointAndReset,
-      placeUserCheckpointFlag,
-      removeUserCheckpointFlag,
-      toggleUserCheckpointFlag,
       runQueuedAction,
       finishMoveUndoGroup,
       runAction,

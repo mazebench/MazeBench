@@ -177,8 +177,7 @@ assert.doesNotMatch(pages, /id="play-hud-room">Room --/);
 assert.doesNotMatch(pages, /data-action="undo"[^>]*><svg/);
 assert.match(playScript, /const visitedPlayRoomIds = new Set\(\)/);
 assert.match(playScript, /if \(playData\.hostOwnsPlayHud === true\) return/);
-assert.match(playScript, /app\.visitedCheckpointLevelIds\?\.\(\)/);
-assert.doesNotMatch(playScript, /visitedPlayRoomIds\.add\(currentLevelId\)/);
+assert.match(playScript, /visitedPlayRoomIds\.add\(currentLevelId\)/);
 assert.match(playScript, /roomTarget\.setAttribute\("aria-label", `\$\{roomCount\} room/);
 
 const cameraDirectionStart = playScript.indexOf("function cameraDirectionForKey(event)");
@@ -421,14 +420,12 @@ assert.match(router, /segments\.length === 5 \|\| segments\.length === 6/);
 assert.match(router, /segments\[5\] === "cancel"/);
 assert.match(router, /segments\[5\] === "regenerate"/);
 assert.match(playCore, /hostOwnsWorldMapNavigation: playData\?\.hostOwnsWorldMapNavigation === true/);
-assert.match(playCore, /hostOwnsCheckpointControls: playData\?\.hostOwnsCheckpointControls === true/);
-assert.match(playScript, /if \(app\.hostOwnsCheckpointControls !== true\) app\.cycleCheckpointAndReset\?\.\(\)/);
 assert.match(playCore, /if \(!app\.isEditorRenderApp && areOrangeButtonsPressed\(actors\)\)/);
 assert.match(playCore, /autoUndoPlayerFalls: playData\?\.autoUndoPlayerFalls === true/);
 assert.match(playCore, /new window\.CustomEvent\("mazebench:level-state-applied"/);
 assert.match(
   playCore,
-  /function rememberHorizontalNeighborLevelState\(levelState\) \{\s*registerAuthoredCheckpoints\(levelState,[\s\S]*?rememberCanonicalLevelPlayerStart\(levelState\)/
+  /function rememberHorizontalNeighborLevelState\(levelState\) \{\s*rememberCanonicalLevelPlayerStart\(levelState\)/
 );
 assert.match(playCore, /`\$\{nextPath\}\$\{window\.location\.search \|\| ""\}\$\{window\.location\.hash \|\| ""\}`/);
 assert.match(playCore, /\{ \.\.\.\(window\.history\.state \|\| \{\}\), levelId: app\.currentLevelId \}/);
