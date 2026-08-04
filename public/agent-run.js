@@ -1877,7 +1877,7 @@
 
   function renderTokenUsage(usage, deferRender = false) {
     const signature = JSON.stringify(usage || {});
-    if (signature === state.tokenSignature) return;
+    if (signature === state.tokenSignature && !(state.tokenRenderDeferred && !deferRender)) return;
     state.tokenSignature = signature;
 
     let agentCountsChanged = false;
@@ -1907,7 +1907,11 @@
       ran: Math.max(0, Math.floor(Number(usage?.agents_ran) || 0))
     };
     if (agentCountsChanged) state.feedVersion += 1;
-    if (deferRender) return;
+    if (deferRender) {
+      state.tokenRenderDeferred = true;
+      return;
+    }
+    state.tokenRenderDeferred = false;
 
     const available = Boolean(usage?.available);
     document.getElementById("run-token-total").textContent = available ? formatTokens(usage.total_tokens) : "—";
