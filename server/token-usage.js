@@ -141,6 +141,87 @@ function withApiCostEstimate(usage, pricing) {
   };
 }
 
+function withActionCostTimeline(usage) {
+  const totalCost = Number(usage?.api_cost_estimate_usd);
+  const points = Array.isArray(usage?.actions) ? usage.actions : [];
+  const costEvents = Array.isArray(usage?.cost_events) ? usage.cost_events : [];
+  if (!Number.isFinite(totalCost) || totalCost < 0 || (!points.length && !costEvents.length)) return usage;
+
+  const pricing = usage?.api_pricing || {};
+  const inputRate = Number(pricing.input);
+  const outputRate = Number(pricing.output);
+  const cacheReadRate = Number(pricing.cache_read);
+  const cacheWriteRate = Number(pricing.cache_write);
+  const cacheWrite5mRate = Number(pricing.cache_write_5m);
+  const cacheWrite1hRate = Number(pricing.cache_write_1h);
+  const cacheReadTokens = number(usage.cache_read_input_tokens);
+  const cacheWriteTokens = number(usage.cache_creation_input_tokens);
+  const cacheWrite5mTokens = number(usage.cache_creation_5m_input_tokens);
+  const cacheWrite1hTokens = number(usage.cache_creation_1h_input_tokens);
+  const cacheWriteUnknownTokens = number(usage.cache_creation_unknown_input_tokens);
+  const pricedCachedTokens = cacheReadTokens + cacheWriteTokens;
+  const pricedCachedCost =
+    cacheReadTokens * (Number.isFinite(cacheReadRate) ? cacheReadRate : inputRate) +
+    cacheWrite5mTokens * (Number.isFinite(cacheWrite5mRate) ? cacheWrite5mRate : inputRate) +
+    cacheWrite1hTokens * (Number.isFinite(cacheWrite1hRate) ? cacheWrite1hRate : inputRate) +
+    cacheWriteUnknownTokens * (
+      Number.isFinite(cacheWriteRate)
+        ? cacheWriteRate
+        : Number.isFinite(cacheWrite1hRate)
+          ? cacheWrite1hRate
+          : inputRate
+    );
+  const blendedCachedRate = pricedCachedTokens > 0 && Number.isFinite(pricedCachedCost)
+    ? pricedCachedCost / pricedCachedTokens
+    : Number.isFinite(cacheReadRate)
+      ? cacheReadRate
+      : inputRate;
+  const hasTokenPricing = Number.isFinite(inputRate) && inputRate >= 0 &&
+    Number.isFinite(outputRate) && outputRate >= 0;
+  const weightedTimeline = (entries, sorter) => [...entries]
+    .sort(sorter)
+    .map((point) => {
+      const inputTokens = Math.max(0, number(point.input_tokens));
+      const cachedTokens = Math.min(inputTokens, Math.max(0, number(point.cached_input_tokens)));
+      const uncachedTokens = Math.max(0, inputTokens - cachedTokens);
+      const outputTokens = Math.max(0, number(point.output_tokens));
+      const fallbackTokens = Math.max(0, number(point.total_tokens)) || inputTokens + outputTokens;
+      const weight = hasTokenPricing
+        ? uncachedTokens * inputRate + cachedTokens * blendedCachedRate + outputTokens * outputRate
+        : fallbackTokens;
+      return { point, weight: Math.max(0, Number.isFinite(weight) ? weight : fallbackTokens) };
+    });
+  const annotate = (weighted) => {
+    const totalWeight = weighted.reduce((sum, entry) => sum + entry.weight, 0);
+    if (!(totalWeight > 0)) return weighted.map(({ point }) => point);
+    let cumulative = 0;
+    return weighted.map(({ point, weight }, index) => {
+      cumulative += totalCost * weight / totalWeight;
+      return {
+        ...point,
+        api_cost_cumulative_usd: index === weighted.length - 1 ? totalCost : cumulative
+      };
+    });
+  };
+  const actions = annotate(weightedTimeline(
+    points,
+    (left, right) => number(left?.action) - number(right?.action)
+  ));
+  const apiCostTimeline = annotate(weightedTimeline(
+    costEvents,
+    (left, right) => number(left?.at_ms) - number(right?.at_ms)
+  )).map((point) => ({
+    at_ms: number(point.at_ms),
+    api_cost_cumulative_usd: point.api_cost_cumulative_usd
+  }));
+  const { cost_events: _costEvents, ...publicUsage } = usage;
+  return {
+    ...publicUsage,
+    actions,
+    ...(apiCostTimeline.length ? { api_cost_timeline: apiCostTimeline } : {})
+  };
+}
+
 function codexUsageShape(usage = {}) {
   const input = number(usage.input_tokens);
   const output = number(usage.output_tokens);
@@ -570,6 +651,7 @@ function claudeApiCost(details, pricing) {
 
 function parseClaudeEvents(raw) {
   const points = [];
+  const costEvents = [];
   const pending = new Map();
   const pendingAgents = new Set();
   const allAgentTools = new Set();
@@ -594,7 +676,7 @@ function parseClaudeEvents(raw) {
   let selectedModelWeight = -1;
   let sawAgentTools = false;
 
-  for (const event of jsonLines(raw)) {
+  for (const [eventIndex, event] of jsonLines(raw).entries()) {
     if (event.type === "stream_event" && event.event?.type === "message_delta" && event.event.usage) {
       latest = claudeUsageShape(event.event.usage);
       streamedResponses += 1;
@@ -609,6 +691,11 @@ function parseClaudeEvents(raw) {
       streamedDetails.cache_creation_1h_input_tokens += cacheCreation.one_hour;
       streamedDetails.cache_creation_unknown_input_tokens += cacheCreation.unknown;
       streamedDetails.output_tokens += number(event.event.usage.output_tokens);
+      const timestamp = Date.parse(event.timestamp || event._mazebench_received_at || "");
+      costEvents.push({
+        ...latest,
+        at_ms: Number.isFinite(timestamp) ? timestamp : eventIndex
+      });
       continue;
     }
 
@@ -725,6 +812,7 @@ function parseClaudeEvents(raw) {
       agentsTotal: 1 + allAgentTools.size
     }),
     ...finalDetails,
+    cost_events: costEvents,
     api_cost_estimate_usd: apiCostEstimate ?? (reportedCost || null),
     api_pricing: pricing ? { model: selectedModelId, ...pricing } : null
   };
@@ -1272,5 +1360,6 @@ module.exports = {
   parsePrimeAgentEvents,
   parsePrimeLiveUsage,
   parsePrimeResults,
+  withActionCostTimeline,
   withApiCostEstimate
 };

@@ -81,6 +81,10 @@
   const boardStateScope = document.getElementById("run-board-state-scope");
   const boardStateCustomWindow = document.getElementById("run-board-state-custom-window");
   const boardStateWindowInput = document.getElementById("run-board-state-window");
+  let heatmapExportLimitKind = document.getElementById("run-heatmap-export-limit-kind");
+  let heatmapExportLimitField = document.getElementById("run-heatmap-export-limit-field");
+  let heatmapExportLimitUnit = document.getElementById("run-heatmap-export-limit-unit");
+  let heatmapExportLimitInput = document.getElementById("run-heatmap-export-limit-value");
   let heatmapExportFormat = document.getElementById("run-heatmap-export-format");
   let heatmapExportButton = document.getElementById("run-heatmap-export");
   const swarmSection = document.getElementById("run-swarm-section");
@@ -197,6 +201,38 @@
         heatmapSummary.append(stat);
       });
     }
+    if (actions && !heatmapExportLimitKind) {
+      heatmapExportLimitKind = document.createElement("select");
+      heatmapExportLimitKind.id = "run-heatmap-export-limit-kind";
+      heatmapExportLimitKind.className = "run-heatmap__format";
+      heatmapExportLimitKind.setAttribute("aria-label", "Heatmap export range");
+      [["all", "Full run"], ["move", "Up to move"], ["cost", "Up to API cost"]].forEach(([value, label]) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        heatmapExportLimitKind.append(option);
+      });
+      heatmapExportLimitKind.hidden = true;
+      actions.insertBefore(heatmapExportLimitKind, heatmapExportFormat || heatmapExportButton);
+    }
+    if (actions && !heatmapExportLimitInput) {
+      heatmapExportLimitField = document.createElement("label");
+      heatmapExportLimitField.id = "run-heatmap-export-limit-field";
+      heatmapExportLimitField.className = "run-heatmap__limit";
+      heatmapExportLimitField.hidden = true;
+      heatmapExportLimitUnit = document.createElement("span");
+      heatmapExportLimitUnit.id = "run-heatmap-export-limit-unit";
+      heatmapExportLimitUnit.textContent = "Move";
+      heatmapExportLimitInput = document.createElement("input");
+      heatmapExportLimitInput.id = "run-heatmap-export-limit-value";
+      heatmapExportLimitInput.type = "number";
+      heatmapExportLimitInput.min = "0";
+      heatmapExportLimitInput.step = "1";
+      heatmapExportLimitInput.inputMode = "decimal";
+      heatmapExportLimitInput.setAttribute("aria-label", "Maximum move to export");
+      heatmapExportLimitField.append(heatmapExportLimitUnit, heatmapExportLimitInput);
+      actions.insertBefore(heatmapExportLimitField, heatmapExportFormat || heatmapExportButton);
+    }
     if (actions && !heatmapExportFormat) {
       heatmapExportFormat = document.createElement("select");
       heatmapExportFormat.id = "run-heatmap-export-format";
@@ -244,6 +280,8 @@
     reasoning: new Map(), // move# -> reasoning text
     agentCounts: new Map(), // move# -> agents active when the move was made
     tokenCounts: new Map(), // move# -> lead + worker tokens attributed to the move
+    apiCostByMove: new Map(), // move# -> cumulative API-equivalent cost through the move
+    apiCostTimeline: [], // timestamped cumulative API-equivalent cost events
     tokenUsagePoints: new Map(), // move# -> context chart point
     swarmAgents: { running: 0, ran: 0 },
     instanceActivity: { active: 0, instances: 0, auxiliary_actions: 0, auxiliary_action_attempts: 0 },
@@ -277,6 +315,7 @@
     jsonObservationPending: false,
     videoShown: false,
     tokenSignature: "",
+    historySyncComplete: false,
     explorationSignature: "",
     initialPlayer: initial.initial_player || null,
     initialBoardStateHash: String(initial.initial_board_state_hash || initial.board_state_hash || ""),
@@ -1881,6 +1920,16 @@
     state.tokenSignature = signature;
 
     let agentCountsChanged = false;
+    let costTimelineChanged = false;
+    const apiCostTimeline = Array.isArray(usage?.api_cost_timeline)
+      ? usage.api_cost_timeline.filter((point) =>
+          Number.isFinite(Number(point?.at_ms)) && Number.isFinite(Number(point?.api_cost_cumulative_usd))
+        )
+      : [];
+    if (apiCostTimeline.length && JSON.stringify(apiCostTimeline) !== JSON.stringify(state.apiCostTimeline)) {
+      state.apiCostTimeline = apiCostTimeline;
+      costTimelineChanged = true;
+    }
     (Array.isArray(usage?.actions) ? usage.actions : []).forEach((point, index) => {
       const action = Number(point.action) || index + 1;
       const count = Math.max(0, Math.floor(Number(point.active_agents) || 0));
@@ -1892,6 +1941,11 @@
       if (state.tokenCounts.get(action) !== tokens) {
         state.tokenCounts.set(action, tokens);
         agentCountsChanged = true;
+      }
+      const cumulativeCost = Number(point.api_cost_cumulative_usd);
+      if (Number.isFinite(cumulativeCost) && state.apiCostByMove.get(action) !== cumulativeCost) {
+        state.apiCostByMove.set(action, cumulativeCost);
+        costTimelineChanged = true;
       }
       const context = Number(point.context_tokens) || 0;
       if (context > 0) {
@@ -1907,6 +1961,7 @@
       ran: Math.max(0, Math.floor(Number(usage?.agents_ran) || 0))
     };
     if (agentCountsChanged) state.feedVersion += 1;
+    if (costTimelineChanged) updateHeatmapExportLimitControl();
     if (deferRender) {
       state.tokenRenderDeferred = true;
       return;
@@ -2374,7 +2429,7 @@
       : null;
   }
 
-  function heatmapVisitData() {
+  function heatmapVisitData(maxMove = Infinity) {
     const roomSize = 16;
     const roomVisits = new Map();
     const counts = [];
@@ -2392,7 +2447,9 @@
       totalVisits += 1;
     };
     add(state.initialPlayer, state.initialRoom);
-    state.moves.forEach((move) => add(move.player, move.roomId || move.room));
+    state.moves.forEach((move, turn) => {
+      if (Number(turn) <= maxMove) add(move.player, move.roomId || move.room);
+    });
     if (!roomVisits.size) return null;
 
     const worldLevels = new Map(runWorldMapLevels().map((level) => [level.id, level]));
@@ -2450,7 +2507,7 @@
     };
   }
 
-  function heatmapVisitSequence(data) {
+  function heatmapVisitSequence(data, maxMove = Infinity) {
     if (!data) return [];
     const sequence = [];
     const add = (player, roomValue) => {
@@ -2466,7 +2523,9 @@
     add(state.initialPlayer, state.initialRoom);
     [...state.moves.entries()]
       .sort(([left], [right]) => Number(left) - Number(right))
-      .forEach(([, move]) => add(move.player, move.roomId || move.room));
+      .forEach(([turn, move]) => {
+        if (Number(turn) <= maxMove) add(move.player, move.roomId || move.room);
+      });
     return sequence;
   }
 
@@ -2567,6 +2626,104 @@
     return heatmapExportFormat?.value === "mp4" ? "mp4" : "gif";
   }
 
+  function latestHeatmapMove() {
+    return Math.max(0, ...[...state.moves.keys()].map((turn) => Number(turn) || 0));
+  }
+
+  function selectedHeatmapExportLimit() {
+    const kind = heatmapExportLimitKind?.value || "all";
+    if (kind === "all") {
+      return { valid: true, maxMove: Infinity, description: "the full run", suffix: "" };
+    }
+    const value = Number(heatmapExportLimitInput?.value);
+    if (!Number.isFinite(value) || value < 0) {
+      return { valid: false, error: kind === "cost" ? "Enter a maximum API cost." : "Enter a maximum move." };
+    }
+    if (kind === "move") {
+      const maxMove = Math.min(latestHeatmapMove(), Math.max(0, Math.floor(value)));
+      return {
+        valid: true,
+        maxMove,
+        description: `through move ${maxMove.toLocaleString()}`,
+        suffix: `-through-move-${maxMove}`
+      };
+    }
+    if (!state.historySyncComplete) {
+      return { valid: false, error: "Wait for the full usage history before exporting by API cost." };
+    }
+    const timestampedCosts = (Array.isArray(state.apiCostTimeline) ? state.apiCostTimeline : [])
+      .map((point) => ({
+        at: Number(point.at_ms),
+        cost: Number(point.api_cost_cumulative_usd)
+      }))
+      .filter((point) => Number.isFinite(point.at) && Number.isFinite(point.cost))
+      .sort((left, right) => left.at - right.at);
+    const timestampedMoves = [...state.moves.entries()]
+      .map(([move, entry]) => ({ move: Number(move), at: Date.parse(entry.timestamp || "") }))
+      .filter((entry) => Number.isFinite(entry.move) && Number.isFinite(entry.at))
+      .sort((left, right) => left.at - right.at || left.move - right.move);
+    if (timestampedCosts.length && timestampedMoves.length) {
+      let costIndex = -1;
+      let maxMove = 0;
+      for (const move of timestampedMoves) {
+        while (costIndex + 1 < timestampedCosts.length && timestampedCosts[costIndex + 1].at <= move.at) {
+          costIndex += 1;
+        }
+        const moveCost = costIndex >= 0 ? timestampedCosts[costIndex].cost : 0;
+        if (moveCost <= value + Number.EPSILON) maxMove = Math.max(maxMove, move.move);
+        else break;
+      }
+      return {
+        valid: true,
+        maxMove,
+        description: `through $${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} API cost (move ${maxMove.toLocaleString()})`,
+        suffix: `-through-${String(value).replace(/[^0-9]+/g, "-").replace(/^-|-$/g, "") || "0"}-usd`
+      };
+    }
+    const timeline = [...state.apiCostByMove.entries()]
+      .map(([move, cost]) => [Number(move), Number(cost)])
+      .filter(([move, cost]) => Number.isFinite(move) && Number.isFinite(cost))
+      .sort(([left], [right]) => left - right);
+    if (!timeline.length) {
+      return { valid: false, error: "API cost history is unavailable for this run." };
+    }
+    const eligible = timeline.filter(([, cost]) => cost <= value + Number.EPSILON).at(-1);
+    const maxMove = eligible ? eligible[0] : 0;
+    return {
+      valid: true,
+      maxMove,
+      description: `through $${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} API cost (move ${maxMove.toLocaleString()})`,
+      suffix: `-through-${String(value).replace(/[^0-9]+/g, "-").replace(/^-|-$/g, "") || "0"}-usd`
+    };
+  }
+
+  function updateHeatmapExportLimitControl() {
+    if (!heatmapExportLimitKind || !heatmapExportLimitField || !heatmapExportLimitInput) return;
+    const kind = heatmapExportLimitKind.value;
+    const available = Boolean(state.heatmapData);
+    heatmapExportLimitKind.hidden = !available;
+    heatmapExportLimitField.hidden = !available || kind === "all";
+    if (kind === "move") {
+      heatmapExportLimitUnit.textContent = "Move";
+      heatmapExportLimitInput.step = "1";
+      heatmapExportLimitInput.max = String(latestHeatmapMove());
+      heatmapExportLimitInput.placeholder = String(latestHeatmapMove());
+      heatmapExportLimitInput.setAttribute("aria-label", "Maximum move to export");
+    } else if (kind === "cost") {
+      const costs = [
+        ...state.apiCostByMove.values(),
+        ...state.apiCostTimeline.map((point) => point.api_cost_cumulative_usd)
+      ].map(Number).filter(Number.isFinite);
+      const latestCost = costs.length ? Math.max(...costs) : NaN;
+      heatmapExportLimitUnit.textContent = "$";
+      heatmapExportLimitInput.step = "0.01";
+      heatmapExportLimitInput.removeAttribute("max");
+      heatmapExportLimitInput.placeholder = Number.isFinite(latestCost) ? latestCost.toFixed(2) : "0.00";
+      heatmapExportLimitInput.setAttribute("aria-label", "Maximum API cost in US dollars to export");
+    }
+    updateHeatmapExportControl();
+  }
+
   function updateHeatmapExportControl() {
     if (!heatmapExportButton) return;
     const mp4Option = heatmapExportFormat?.querySelector('option[value="mp4"]');
@@ -2574,18 +2731,26 @@
     if (mp4Option) mp4Option.disabled = !mp4Supported;
     if (!mp4Supported && heatmapExportFormat?.value === "mp4") heatmapExportFormat.value = "gif";
     const format = selectedHeatmapExportFormat();
-    if (!state.heatmapExporting) heatmapExportButton.textContent = `Export ${format.toUpperCase()}`;
-    heatmapExportButton.disabled = state.heatmapExporting || (format === "mp4" && !mp4Supported);
+    const limit = selectedHeatmapExportLimit();
+    if (!state.heatmapExporting) {
+      const moveSuffix = limit.valid && Number.isFinite(limit.maxMove)
+        ? ` to move ${limit.maxMove.toLocaleString()}`
+        : "";
+      heatmapExportButton.textContent = `Export ${format.toUpperCase()}${moveSuffix}`;
+    }
+    heatmapExportButton.disabled = state.heatmapExporting || !limit.valid || (format === "mp4" && !mp4Supported);
+    if (heatmapExportLimitKind) heatmapExportLimitKind.disabled = state.heatmapExporting;
+    if (heatmapExportLimitInput) heatmapExportLimitInput.disabled = state.heatmapExporting;
     heatmapExportButton.title = format === "mp4"
-      ? "Export a compact black-background MP4 of the heatmap forming"
-      : "Export a compact black-background animated GIF of the heatmap forming";
+      ? `Export a compact black-background MP4 of the heatmap forming ${limit.valid ? limit.description : ""}`.trim()
+      : `Export a compact black-background animated GIF of the heatmap forming ${limit.valid ? limit.description : ""}`.trim();
   }
 
-  function downloadHeatmapExport(blob, extension) {
+  function downloadHeatmapExport(blob, extension, suffix = "") {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `maze-heatmap-${String(runId || "run").replace(/[^a-z0-9_-]+/gi, "-")}.${extension}`;
+    link.download = `maze-heatmap-${String(runId || "run").replace(/[^a-z0-9_-]+/gi, "-")}${suffix}.${extension}`;
     document.body.append(link);
     link.click();
     link.remove();
@@ -2768,10 +2933,26 @@
     return new Uint8Array(bytes);
   }
 
+  function selectedHeatmapExportData() {
+    const limit = selectedHeatmapExportLimit();
+    if (!limit.valid) return { limit, data: null, sequence: [] };
+    const data = Number.isFinite(limit.maxMove)
+      ? heatmapVisitData(limit.maxMove)
+      : state.heatmapData || heatmapVisitData();
+    return {
+      limit,
+      data,
+      sequence: heatmapVisitSequence(data, limit.maxMove)
+    };
+  }
+
   async function exportHeatmapGif() {
     if (!heatmapExportButton || state.heatmapExporting) return;
-    const data = state.heatmapData || heatmapVisitData();
-    const sequence = heatmapVisitSequence(data);
+    const { limit, data, sequence } = selectedHeatmapExportData();
+    if (!limit.valid) {
+      setStatus(limit.error, true);
+      return;
+    }
     if (!data || sequence.length === 0) {
       setStatus("There are no heatmap visits to export yet.", true);
       return;
@@ -2780,7 +2961,7 @@
     heatmapExportButton.disabled = true;
     if (heatmapExportFormat) heatmapExportFormat.disabled = true;
     heatmapExportButton.textContent = "Preparing…";
-    setStatus("Building a compact heatmap GIF…");
+    setStatus(`Building a compact heatmap GIF ${limit.description}…`);
     try {
       const gif = heatmapGifBytes(data, sequence, (progress, frameIndex) => {
         heatmapExportButton.textContent = `Exporting ${Math.round(progress * 100)}%`;
@@ -2789,8 +2970,8 @@
       await new Promise((resolve) => window.requestAnimationFrame(resolve));
       const blob = new Blob([gif], { type: "image/gif" });
       if (!blob.size) throw new Error("The exported GIF was empty.");
-      downloadHeatmapExport(blob, "gif");
-      setStatus(`Heatmap GIF exported (${heatmapExportSize(blob.size)}).`);
+      downloadHeatmapExport(blob, "gif", limit.suffix);
+      setStatus(`Heatmap GIF exported ${limit.description} (${heatmapExportSize(blob.size)}).`);
     } catch (error) {
       setStatus(error.message || "Heatmap GIF export failed.", true);
     } finally {
@@ -2803,8 +2984,11 @@
   async function exportHeatmapMp4() {
     if (!heatmapExportButton || state.heatmapExporting) return;
     const mimeType = heatmapMp4MimeType();
-    const data = state.heatmapData || heatmapVisitData();
-    const sequence = heatmapVisitSequence(data);
+    const { limit, data, sequence } = selectedHeatmapExportData();
+    if (!limit.valid) {
+      setStatus(limit.error, true);
+      return;
+    }
     if (!data || sequence.length === 0) {
       setStatus("There are no heatmap visits to export yet.", true);
       return;
@@ -2818,7 +3002,7 @@
     heatmapExportButton.disabled = true;
     if (heatmapExportFormat) heatmapExportFormat.disabled = true;
     heatmapExportButton.textContent = "Preparing…";
-    setStatus("Building a compact heatmap MP4…");
+    setStatus(`Building a compact heatmap MP4 ${limit.description}…`);
     let stream = null;
     let recorder = null;
     try {
@@ -2919,8 +3103,8 @@
 
       const blob = new Blob(chunks, { type: recorder.mimeType || mimeType });
       if (!blob.size) throw new Error("The exported MP4 was empty.");
-      downloadHeatmapExport(blob, "mp4");
-      setStatus(`Heatmap MP4 exported (${heatmapExportSize(blob.size)}).`);
+      downloadHeatmapExport(blob, "mp4", limit.suffix);
+      setStatus(`Heatmap MP4 exported ${limit.description} (${heatmapExportSize(blob.size)}).`);
     } catch (error) {
       if (recorder?.state === "recording") recorder.stop();
       setStatus(error.message || "Heatmap MP4 export failed.", true);
@@ -2948,9 +3132,11 @@
     heatmapSummary.hidden = !available;
     heatmapLegend.hidden = !available;
     heatmapEmpty.hidden = available;
+    if (heatmapExportLimitKind) heatmapExportLimitKind.hidden = !available;
     if (heatmapExportFormat) heatmapExportFormat.hidden = !available;
     if (heatmapExportButton) {
       heatmapExportButton.hidden = !available;
+      updateHeatmapExportLimitControl();
       updateHeatmapExportControl();
     }
     if (!data) return;
@@ -3335,6 +3521,15 @@
     renderBoardStateChart();
   });
   heatmapExportFormat?.addEventListener("change", updateHeatmapExportControl);
+  heatmapExportLimitKind?.addEventListener("change", () => {
+    if (heatmapExportLimitInput) heatmapExportLimitInput.value = "";
+    updateHeatmapExportLimitControl();
+    if (heatmapExportLimitKind.value !== "all") {
+      requestAnimationFrame(() => heatmapExportLimitInput?.focus());
+    }
+  });
+  heatmapExportLimitInput?.addEventListener("input", updateHeatmapExportControl);
+  heatmapExportLimitInput?.addEventListener("change", updateHeatmapExportControl);
   heatmapExportButton?.addEventListener("click", () => {
     void exportSelectedHeatmapFormat();
   });
@@ -3995,6 +4190,7 @@
         complete: true
       };
       const syncingHistory = !historySync.complete;
+      state.historySyncComplete = !syncingHistory;
       updateHistoryLoadProgress(historySync);
       state.run = progress.run;
       const initialBoardStateHash = String(progress.initial_board_state_hash || "");
@@ -4014,6 +4210,7 @@
 
       describeRun(progress.run);
       renderTokenUsage(progress.token_usage, syncingHistory);
+      updateHeatmapExportLimitControl();
       renderToolsWorkspace(progress.tools_workspace);
       renderStats(progress.run);
       renderSwarmViews(progress.swarm_views);

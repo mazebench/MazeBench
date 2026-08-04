@@ -15,7 +15,7 @@ assert.match(runScript, />FPS<\/span>/);
 assert.match(runScript, /const DEFAULT_REPLAY_FPS = 30/);
 assert.match(runScript, /: DEFAULT_REPLAY_FPS;/);
 assert.doesNotMatch(runScript, /<select data-replay-rate/);
-assert.match(pages, /agent-run\.js\?v=20260727-bounded-run-log-1/);
+assert.match(pages, /agent-run\.js\?v=20260804-heatmap-export-limits-1/);
 assert.match(pages, /id="run-history-progress"[^>]+role="progressbar"/);
 assert.doesNotMatch(pages, /Loading move 0/);
 assert.match(runScript, /function updateHistoryLoadProgress\(sync\)/);
@@ -119,6 +119,12 @@ assert.match(runScript, /function showMetricTooltip\(canvas, target, event\)/);
 assert.match(runScript, /tooltip\.textContent = `Frame \$\{target\.action\.toLocaleString\(\)\} · \$\{noun\}`/);
 assert.match(siteTheme, /\.run-metric-chart__canvas\.has-jump-target/);
 assert.match(siteTheme, /\.run-metric-chart__tooltip \{/);
+assert.match(pages, /id="run-heatmap-export-limit-kind"[\s\S]*?>Up to move<[\s\S]*?>Up to API cost</);
+assert.match(pages, /id="run-heatmap-export-limit-value" type="number" min="0"/);
+assert.match(runScript, /function selectedHeatmapExportLimit\(\)/);
+assert.match(runScript, /api_cost_cumulative_usd/);
+assert.match(runScript, /heatmapVisitData\(limit\.maxMove\)/);
+assert.match(siteTheme, /\.run-heatmap__limit \{/);
 assert.equal((pages.match(/id="run-replay-export"/g) || []).length, 1);
 assert.match(
   pages,

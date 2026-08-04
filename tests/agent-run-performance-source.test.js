@@ -20,6 +20,7 @@ assert.match(runService, /if \(actions\.length > MAX_SYNCHRONOUS_HISTORY_REPLAY_
 assert.match(runService, /const MAX_PROGRESS_LOG_BYTES = 256 \* 1024/);
 assert.match(runService, /size - requestedStart > MAX_PROGRESS_LOG_BYTES/);
 assert.match(runService, /actions: tokenUsage\.actions\.filter/);
+assert.match(runService, /api_cost_timeline: cursor === 0 \? tokenUsage\.api_cost_timeline : undefined/);
 assert.match(runService, /reasoning\.filter\(\(entry\)/);
 assert.match(runService, /apiPricingForRun\(summary, listProviderModels\("prime"\)\.models\)/);
 assert.match(runScript, /const FEED_RENDER_BATCH = 200/);

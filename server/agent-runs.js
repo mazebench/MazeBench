@@ -25,6 +25,7 @@ const {
   parsePrimeAgentEvents,
   parsePrimeLiveUsage,
   parsePrimeResults,
+  withActionCostTimeline,
   withApiCostEstimate
 } = require("./token-usage");
 const {
@@ -3468,13 +3469,14 @@ function createAgentRunService({
         return usage;
       }
     };
+    const withCostTimeline = (usage) => withActionCostTimeline(withCatalogApiEstimate(usage));
     const cached = tokenUsageCache.get(runId);
-    if (cached?.signature === signature) return withSwarmAgentStatus(withCatalogApiEstimate(cached.value));
+    if (cached?.signature === signature) return withSwarmAgentStatus(withCostTimeline(cached.value));
     const active = ["running", "pausing", "stopping"].includes(summary.status);
     const expensive = [eventsPath, codexSessionPath, ...codexSwarmSessionPaths, kimiWirePath, primeLiveUsagePath, primeResultsPath]
       .some((filePath) => fileSize(filePath) > LARGE_TELEMETRY_BYTES);
     if (active && expensive && cached && Date.now() - cached.checkedAt < LARGE_TELEMETRY_REFRESH_MS) {
-      return withSwarmAgentStatus(withCatalogApiEstimate(cached.value));
+      return withSwarmAgentStatus(withCostTimeline(cached.value));
     }
 
     let value;
@@ -3531,7 +3533,7 @@ function createAgentRunService({
     }
 
     tokenUsageCache.set(runId, { signature, checkedAt: Date.now(), value });
-    return withSwarmAgentStatus(withCatalogApiEstimate(value));
+    return withSwarmAgentStatus(withCostTimeline(value));
   }
 
   // Vision mode already records the exact image the agent saw. Text mode uses
@@ -4284,6 +4286,7 @@ function createAgentRunService({
     const incrementalTokenUsage = Array.isArray(tokenUsage?.actions)
       ? {
           ...tokenUsage,
+          api_cost_timeline: cursor === 0 ? tokenUsage.api_cost_timeline : undefined,
           actions: tokenUsage.actions.filter((point, index) =>
             Math.max(1, Number(point?.action) || index + 1) >= historyFloor &&
               Math.max(1, Number(point?.action) || index + 1) <= historyCeiling
