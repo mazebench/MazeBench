@@ -1928,8 +1928,12 @@
       : "—";
     const costDetail = document.getElementById("run-token-cost-detail");
     const pricing = usage?.api_pricing;
+    const cacheWriteRate = pricing?.cache_write ?? pricing?.cache_write_1h;
+    const cacheWriteLabel = pricing && Number.isFinite(Number(pricing.cache_write))
+      ? "writes"
+      : "1h writes";
     const pricingDetail = pricing && Number.isFinite(Number(pricing.cache_read))
-      ? `$${pricing.input}/M new · $${pricing.cache_read}/M reads · $${pricing.cache_write_1h}/M 1h writes · $${pricing.output}/M out`
+      ? `$${pricing.input}/M new · $${pricing.cache_read}/M reads · $${cacheWriteRate}/M ${cacheWriteLabel} · $${pricing.output}/M out`
       : pricing && Number.isFinite(Number(pricing.input)) && Number.isFinite(Number(pricing.output))
         ? `$${pricing.input}/M in · $${pricing.output}/M out`
         : "";
