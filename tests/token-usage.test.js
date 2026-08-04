@@ -9,6 +9,7 @@ const {
   parseCodexSession,
   parseCodexSwarmSessions,
   parseKimiWire,
+  parsePrimeAgentEvents,
   parsePrimeLiveUsage,
   parsePrimeResults,
   withApiCostEstimate
@@ -430,6 +431,68 @@ const codexCall = (verb) => ({
   assert.deepEqual(usage.actions.map((point) => point.active_agents), [2, 1]);
   assert.equal(usage.agents_current, 1);
   assert.equal(usage.agents_total, 2);
+}
+
+{
+  const usage = parsePrimeAgentEvents(
+    lines(
+      {
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "move-1", name: "maze_action", arguments: { action: "up" } }],
+          usage: {
+            input: 100,
+            output: 20,
+            cacheRead: 100,
+            cacheWrite: 50,
+            totalTokens: 220,
+            cost: { input: 0.0005, output: 0.0006, cacheRead: 0, cacheWrite: 0, total: 0.0011 }
+          }
+        }
+      },
+      {
+        type: "message_end",
+        message: {
+          role: "toolResult",
+          toolCallId: "move-1",
+          content: [{ type: "text", text: JSON.stringify({ ok: true }) }],
+          isError: false
+        }
+      },
+      {
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [],
+          usage: {
+            input: 150,
+            output: 30,
+            cacheRead: 50,
+            cacheWrite: 25,
+            totalTokens: 230,
+            cost: { input: 0.00075, output: 0.0009, cacheRead: 0, cacheWrite: 0, total: 0.00165 }
+          }
+        }
+      }
+    ),
+    250_000
+  );
+  assert.equal(usage.available, true);
+  assert.equal(usage.exact, true);
+  assert.equal(usage.input_tokens, 400);
+  assert.equal(usage.cached_input_tokens, 150);
+  assert.equal(usage.uncached_input_tokens, 250);
+  assert.equal(usage.cache_creation_input_tokens, 75);
+  assert.equal(usage.output_tokens, 50);
+  assert.equal(usage.api_cost_estimate_usd, 0.00275);
+  assert.deepEqual(usage.api_pricing, {
+    input: 5,
+    cache_read: 0,
+    cache_write: 0,
+    output: 30
+  });
+  assert.equal(usage.actions.length, 1);
 }
 
 {
