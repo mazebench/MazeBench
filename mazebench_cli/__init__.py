@@ -45,8 +45,8 @@ Launch the website (Play / Build / Agent modes in your browser):
 
 Evaluated game agents:
   Launch the Game agent from the Agent page. A fixed trusted relay gives the
-  model four game tools; the game server runs in a separate networkless Docker
-  sandbox with no host mounts.
+  model only named game controls; the game server runs in a separate Prime
+  Sandbox with no host mounts.
 
 Replay / video from a finished run or a Prime eval dir:
   mazebench replay <session-dir | session.json | results.jsonl> [video=on fast=on]

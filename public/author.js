@@ -63,6 +63,7 @@
     solverAlgorithm: document.getElementById("solver-algorithm"),
     solverCancel: document.getElementById("solver-cancel"),
     solverMaxStates: document.getElementById("solver-max-states"),
+    solverUnlimitedStates: document.getElementById("solver-unlimited-states"),
     solverModeHint: document.getElementById("solver-mode-hint"),
     solverModePicker: document.getElementById("solver-mode-picker"),
     solverModePlace: document.getElementById("solver-mode-place"),
@@ -1316,6 +1317,10 @@
   }
 
   function getSolverMaxExpandedStates() {
+    if (elements.solverUnlimitedStates.checked) {
+      return null;
+    }
+
     const value = Number(elements.solverMaxStates.value);
 
     if (!Number.isFinite(value) || value < 1) {
@@ -1328,9 +1333,18 @@
   function normalizeSolverMaxExpandedStatesInput() {
     const maxExpandedStates = getSolverMaxExpandedStates();
 
-    elements.solverMaxStates.value = String(maxExpandedStates);
+    if (maxExpandedStates !== null) {
+      elements.solverMaxStates.value = String(maxExpandedStates);
+    }
 
     return maxExpandedStates;
+  }
+
+  function syncSolverStateLimitControls() {
+    const locked = state.isSolverBusy || state.isSolutionPlaying;
+
+    elements.solverUnlimitedStates.disabled = locked;
+    elements.solverMaxStates.disabled = locked || elements.solverUnlimitedStates.checked;
   }
 
   function getSolverAlgorithm() {
@@ -1893,11 +1907,25 @@
       return;
     }
 
+    if (maxExpanded === null || maxExpanded === Infinity || !Number.isFinite(maxExpanded)) {
+      const safeExpanded = Math.max(0, expanded);
+
+      solverDock.bar.style.width = "18%";
+      solverDock.track.removeAttribute("aria-valuenow");
+      solverDock.track.setAttribute("aria-valuetext", formatStateCount(safeExpanded) + " states, unlimited");
+      solverDock.text.textContent =
+        (label ? label + " · " : "") +
+        formatStateCount(safeExpanded) +
+        " states · unlimited";
+      return;
+    }
+
     const safeMax = Math.max(1, maxExpanded);
     const safeExpanded = Math.max(0, Math.min(expanded, safeMax));
     const percent = Math.min(100, (safeExpanded / safeMax) * 100);
 
     solverDock.bar.style.width = percent.toFixed(1) + "%";
+    solverDock.track.removeAttribute("aria-valuetext");
     solverDock.track.setAttribute("aria-valuenow", String(Math.round(percent)));
     solverDock.text.textContent =
       (label ? label + " · " : "") +
@@ -2627,7 +2655,7 @@
     elements.solverModeReach.title = hasGem
       ? "Check whether the existing gem is reachable."
       : "Add a gem before choosing Reach Gem.";
-    elements.solverMaxStates.disabled = locked;
+    syncSolverStateLimitControls();
     elements.solveLevel.hidden = !mode;
     elements.solveLevel.disabled = locked || !hasPlayer || (mode === "reach_gem" && !hasGem);
     elements.solveLevel.title = locked
@@ -9518,6 +9546,7 @@
   elements.solverCancel?.addEventListener("click", cancelSolverRun);
   elements.solverAlgorithm?.addEventListener("change", syncSolverButtonState);
   elements.solverMaxStates.addEventListener("change", normalizeSolverMaxExpandedStatesInput);
+  elements.solverUnlimitedStates.addEventListener("change", syncSolverStateLimitControls);
   elements.solverModePlace.addEventListener("click", function () {
     selectSolverMode("place_gem");
   });

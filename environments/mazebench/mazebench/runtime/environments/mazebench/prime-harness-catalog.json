@@ -3,7 +3,7 @@
   "source": "pinned-prime-verifiers",
   "verifiers_version": "0.2.2.dev56",
   "verifiers_revision": "b3b8f51ed470e3c46c12bb858ad18d257dc50c5e",
-  "policy": "MazeBench uses unmodified Verifiers harnesses in isolated Prime runtimes. Each approved route pins its standard harness configuration so the model can reach the four MazeBench game tools without receiving shell, host filesystem, or repository access.",
+  "policy": "MazeBench uses unmodified Verifiers harnesses in isolated Prime runtimes. Each approved route pins its standard harness configuration so the model can reach the named MazeBench game controls without receiving shell, host filesystem, or repository access.",
   "harnesses": [
     {
       "id": "bash",
@@ -408,5 +408,5 @@
       "runtime_harness_id": ""
     }
   ],
-  "catalog_fingerprint": "3648cb8915a7117e9339bb9de5f30781d68b21137e9bf02b57b689077e487b19"
+  "catalog_fingerprint": "5a97375ae77140e84c207c7f3d5b65e4cc63ba0aff4b6ae56a79a46314adab83"
 }

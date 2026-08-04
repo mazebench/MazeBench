@@ -148,7 +148,7 @@ assert.doesNotMatch(agentScript, /id: "kimi-code",\s*name: "Kimi Code"/);
 assert.match(agentScript, /kind: "prime",\s*harness: effectiveHarnessId\(\)/);
 assert.doesNotMatch(agentScript, /kind: "local",\s*subscription: true/);
 assert.match(pages, /id="custom-harness-panel"/);
-assert.match(pages, /framework harness receives exactly four game tools through standard MCP wiring/);
+assert.match(pages, /framework harness receives only named game controls through standard MCP wiring/);
 assert.match(pages, /authoritative game server runs in a separate sandbox/);
 assert.doesNotMatch(pages, /id="harness-execution"|data-execution="local"|id="local-run-status"/);
 assert.doesNotMatch(agentScript, /provider-card__avail/);

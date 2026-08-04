@@ -3047,6 +3047,73 @@ for (const { name, dx, dy } of [
 }
 
 {
+  // IxB regression: a vertical rigid box punched downward lands with its
+  // upper member on a second puncher. Preserve the group's relative
+  // elevations before scanning for chained punches, then move both adjacent
+  // rigid groups as one punch train.
+  const terrain = floorTerrain(8, 6);
+  terrain[5][5] = { type: "wall" };
+  terrain[4][0] = { type: "wall" };
+  terrain[0][1] = { type: "wall" };
+  const { engine, state } = createState({
+    width: 8,
+    height: 6,
+    terrain,
+    actors: [
+      { type: "player", x: 7, y: 0, elevation: 0, removed: false },
+      { type: "weightless_box", groupId: "incoming", x: 6, y: 0, elevation: 0, removed: false },
+      { type: "weightless_box", groupId: "incoming", x: 6, y: 0, elevation: 1, removed: false },
+      { type: "puncher", direction: "down", x: 5, y: 0, elevation: 1, removed: false },
+      { type: "puncher", direction: "left", x: 5, y: 4, elevation: 1, removed: false },
+      { type: "weightless_box", groupId: "target", x: 4, y: 4, elevation: 0, removed: false },
+      { type: "weightless_box", groupId: "target", x: 4, y: 4, elevation: 1, removed: false },
+      { type: "weightless_box", groupId: "target", x: 4, y: 4, elevation: 2, removed: false },
+      { type: "puncher", direction: "up", x: 1, y: 4, elevation: 1, removed: false }
+    ]
+  });
+
+  const result = engine.move(state, -1, 0);
+  const puncherMoves = result.moves.filter((move) => move.actorType === "puncher" && move.visualOnly);
+
+  assert.equal(result.moved, true);
+  assert.deepEqual(
+    [
+      state.actorX[1], state.actorY[1], state.actorElevation[1],
+      state.actorX[2], state.actorY[2], state.actorElevation[2]
+    ],
+    [2, 4, 0, 2, 4, 1]
+  );
+  assert.deepEqual(
+    [
+      state.actorX[5], state.actorY[5], state.actorElevation[5],
+      state.actorX[6], state.actorY[6], state.actorElevation[6],
+      state.actorX[7], state.actorY[7], state.actorElevation[7]
+    ],
+    [1, 1, 0, 1, 1, 1, 1, 1, 2]
+  );
+  assert.deepEqual(
+    result.moves
+      .find((move) => move.actorIndex === 2 && !move.visualOnly)
+      .punchSegments.map(({ sequence, fromX, fromY, toX, toY, toElevation }) => ({
+        sequence,
+        fromX,
+        fromY,
+        toX,
+        toY,
+        toElevation
+      })),
+    [
+      { sequence: 0, fromX: 5, fromY: 0, toX: 5, toY: 4, toElevation: 1 },
+      { sequence: 1, fromX: 5, fromY: 4, toX: 2, toY: 4, toElevation: 1 }
+    ]
+  );
+  assert.deepEqual(
+    puncherMoves.map((move) => move.punchSequence).sort(),
+    [0, 1, 2]
+  );
+}
+
+{
   const terrain = floorTerrain(4, 1);
   terrain[0][2] = { type: "hole", layers: [{ type: "hole", elevation: 0 }] };
   terrain[0][3] = { type: "wall" };

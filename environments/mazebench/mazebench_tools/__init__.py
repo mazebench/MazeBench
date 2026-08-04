@@ -2,7 +2,7 @@
 
 Prime runs this evaluator-owned tool server in a sandbox separate from the
 framework-selected harness. The game lives in the tool-server sandbox and only
-four narrow controls cross that boundary.
+named game controls cross that boundary.
 """
 
 from __future__ import annotations
@@ -55,6 +55,7 @@ BoundedAction = Annotated[str, Field(min_length=1, max_length=MAX_ACTION_LENGTH)
 BoundedActionSequence = Annotated[
     list[BoundedAction], Field(min_length=1, max_length=MAX_ACTION_SEQUENCE_LENGTH)
 ]
+WorldCoordinate = Annotated[str, Field(pattern=r"^[A-Za-z]$")]
 
 
 class MazeBenchToolsetConfig(vf.ToolsetConfig):
@@ -227,14 +228,15 @@ of transcribing the tool result."""
     )
     return f"""Play the hidden 3D grid game using only the supplied game controls.
 
-Call `start` exactly once first. Inspect its sanitized {mode} observation, then call
-`action` for a single action. A saved solver may instead call `action_sequence`
+Call `start` exactly once first and inspect its sanitized {mode} observation. Use the
+named action tools `up`, `down`, `left`, `right`, `rotate_camera_up`,
+`rotate_camera_down`, `rotate_camera_left`, `rotate_camera_right`, `undo`, `reset`,
+`go_to_level`, and, when permitted, `quit`. A saved solver may instead call `action_sequence`
 with an ordered `actions` array of at most 1,000 items. By default the
 sequence result contains compact step summaries plus `final_observation`.
 {sequence_observation_policy} Use `observe` only when you need to inspect the current state without
-consuming an action. Valid actions include up, down, left, right,
-rotate camera up, rotate camera down, rotate camera left, rotate camera right, undo, reset,
-and go to level X Y.{mode_policy}
+consuming an action. `go_to_level` accepts the two world-coordinate letters for a
+previously visited room.{mode_policy}
 The controls do not report whether a movement was blocked; infer its effect only from the
 returned observation.{python_policy}
 
@@ -276,7 +278,7 @@ still be called exactly once by this new harness process.
 
 
 class MazeBenchToolset(vf.Toolset[MazeBenchToolsetConfig, MazeBenchToolTraceState]):
-    """Four model controls backed by a game in this tool-server sandbox."""
+    """Named model controls backed by a game in this tool-server sandbox."""
 
     TOOL_PREFIX = None
 
@@ -623,10 +625,7 @@ class MazeBenchToolset(vf.Toolset[MazeBenchToolsetConfig, MazeBenchToolTraceStat
         async with self._lock:
             return await self._tool_response(self._result())
 
-    @vf.tool
-    async def action(self, action: str) -> Any:
-        """Apply one allowed game action, such as up, down, left, right, undo, reset, or rotate camera left."""
-
+    async def _single_action(self, action: str) -> Any:
         async with self._lock:
             if self._terminal():
                 return await self._tool_response(
@@ -634,13 +633,80 @@ class MazeBenchToolset(vf.Toolset[MazeBenchToolsetConfig, MazeBenchToolTraceStat
                         error="The run has ended; no further action is available."
                     )
                 )
-            raw = str(action or "").strip()
-            if not raw or len(raw) > MAX_ACTION_LENGTH:
-                raise ValueError(
-                    f"action must contain between 1 and {MAX_ACTION_LENGTH} characters."
-                )
-            error, _recorded = await self._apply_action(raw)
+            error, _recorded = await self._apply_action(action)
             return await self._tool_response(self._result(error=error))
+
+    @vf.tool
+    async def up(self) -> Any:
+        """Move one screen-relative step up."""
+
+        return await self._single_action("up")
+
+    @vf.tool
+    async def down(self) -> Any:
+        """Move one screen-relative step down."""
+
+        return await self._single_action("down")
+
+    @vf.tool
+    async def left(self) -> Any:
+        """Move one screen-relative step left."""
+
+        return await self._single_action("left")
+
+    @vf.tool
+    async def right(self) -> Any:
+        """Move one screen-relative step right."""
+
+        return await self._single_action("right")
+
+    @vf.tool
+    async def rotate_camera_up(self) -> Any:
+        """Tilt the camera up."""
+
+        return await self._single_action("rotate camera up")
+
+    @vf.tool
+    async def rotate_camera_down(self) -> Any:
+        """Tilt the camera down."""
+
+        return await self._single_action("rotate camera down")
+
+    @vf.tool
+    async def rotate_camera_left(self) -> Any:
+        """Rotate the camera left."""
+
+        return await self._single_action("rotate camera left")
+
+    @vf.tool
+    async def rotate_camera_right(self) -> Any:
+        """Rotate the camera right."""
+
+        return await self._single_action("rotate camera right")
+
+    @vf.tool
+    async def undo(self) -> Any:
+        """Undo the most recent game action."""
+
+        return await self._single_action("undo")
+
+    @vf.tool
+    async def reset(self) -> Any:
+        """Reset the current room."""
+
+        return await self._single_action("reset")
+
+    @vf.tool
+    async def go_to_level(self, x: str, y: str) -> Any:
+        """Return to a visited room using its two world-coordinate letters."""
+
+        return await self._single_action(f"go to level {x} {y}")
+
+    @vf.tool
+    async def quit(self) -> Any:
+        """End the run when quitting is enabled for this task."""
+
+        return await self._single_action("quit")
 
     async def _apply_action(self, raw: str) -> tuple[str, bool]:
         """Apply one action while the caller holds the toolset lock."""
@@ -839,7 +905,8 @@ class MazeBenchToolset(vf.Toolset[MazeBenchToolsetConfig, MazeBenchToolTraceStat
         return result
 
 
-MazeBenchToolset.action.__annotations__["action"] = BoundedAction
+MazeBenchToolset.go_to_level.__annotations__["x"] = WorldCoordinate
+MazeBenchToolset.go_to_level.__annotations__["y"] = WorldCoordinate
 MazeBenchToolset.action_sequence.__annotations__["actions"] = BoundedActionSequence
 
 

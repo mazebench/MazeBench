@@ -133,7 +133,7 @@ def discover() -> dict[str, Any]:
         "policy": (
             "MazeBench uses unmodified Verifiers harnesses in isolated Prime runtimes. "
             "Each approved route pins its standard harness configuration so the model can "
-            "reach the four MazeBench game tools without receiving shell, host filesystem, "
+            "reach the named MazeBench game controls without receiving shell, host filesystem, "
             "or repository access."
         ),
         "harnesses": harnesses,

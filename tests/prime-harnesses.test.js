@@ -509,6 +509,24 @@ try {
   assert.equal(traced.length, 1);
   assert.equal(traced[0].reasoning, "reasoned move");
   assert.equal(traced[0].action, "up");
+  const namedToolsTrace = agenticConversationTurns({
+    nodes: [
+      {
+        message: {
+          role: "assistant",
+          content: "",
+          reasoning_content: "named moves",
+          tool_calls: [
+            { id: "move-1", name: "up", arguments: "{}" },
+            { id: "move-2", name: "go_to_level", arguments: '{"x":"H","y":"I"}' }
+          ]
+        }
+      },
+      { message: { role: "tool", content: "moved", tool_call_id: "move-1" } },
+      { message: { role: "tool", content: "moved", tool_call_id: "move-2" } }
+    ]
+  });
+  assert.deepEqual(namedToolsTrace.map((turn) => turn.action), ["up", "go to level H I"]);
 
   const artifactTrace = path.join(runDir, "artifact-traces.jsonl");
   fs.writeFileSync(

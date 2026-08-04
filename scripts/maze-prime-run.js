@@ -976,11 +976,29 @@ function agenticConversationTurns(row) {
         action: String(messageText(message.content) || "").trim()
       };
       for (const call of message.tool_calls || []) {
-        if (!/(?:^|__)(?:game_)?action$/.test(String(call?.name || ""))) continue;
+        const toolName = String(call?.name || "").split("__").pop();
         try {
           const args = JSON.parse(String(call.arguments || "{}"));
+          const action = {
+            up: "up",
+            down: "down",
+            left: "left",
+            right: "right",
+            rotate_camera_up: "rotate camera up",
+            rotate_camera_down: "rotate camera down",
+            rotate_camera_left: "rotate camera left",
+            rotate_camera_right: "rotate camera right",
+            undo: "undo",
+            reset: "reset",
+            quit: "quit"
+          }[toolName] || ((toolName === "action" || toolName === "game_action")
+            ? String(args.action || "").trim()
+            : toolName === "go_to_level"
+              ? `go to level ${args.x || ""} ${args.y || ""}`.trim()
+              : "");
+          if (!action) continue;
           pendingGameActions.set(String(call.id || ""), {
-            action: String(args.action || "").trim(),
+            action,
             reasoning: assistant.reasoning
           });
         } catch (_error) {
