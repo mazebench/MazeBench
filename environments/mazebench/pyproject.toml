@@ -2,7 +2,7 @@
 name = "mazebench"
 description = "JS-backed ASCII maze benchmark for multi-turn language models."
 tags = ["maze", "game", "ascii", "reasoning", "train", "eval"]
-version = "0.1.17"
+version = "0.1.18"
 license = "MIT"
 requires-python = ">=3.11,<3.14"
 dependencies = [
