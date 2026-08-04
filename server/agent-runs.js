@@ -22,6 +22,7 @@ const {
   parseCodexSession,
   parseCodexSwarmSessions,
   parseKimiWire,
+  parsePrimeAgentEvents,
   parsePrimeLiveUsage,
   parsePrimeResults,
   withApiCostEstimate
@@ -421,6 +422,30 @@ function apiPricingForRun(summary, models) {
   const output = Number(model?.pricing?.output);
   if (!Number.isFinite(input) || input < 0 || !Number.isFinite(output) || output < 0) return null;
   return { model: model.id, input, output };
+}
+
+// Large provider event streams can exceed Node's maximum string size. Keep
+// only the event types needed by the usage parser while reading incrementally.
+function readFilteredUsageLines(filePath, keep) {
+  if (!filePath || !fs.existsSync(filePath)) return "";
+  const kept = [];
+  const fd = fs.openSync(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(1024 * 1024);
+    let carry = "";
+    let bytes = 0;
+    while ((bytes = fs.readSync(fd, buffer, 0, buffer.length, null)) > 0) {
+      const lines = `${carry}${buffer.toString("utf8", 0, bytes)}`.split("\n");
+      carry = lines.pop() || "";
+      for (const line of lines) {
+        if (line && keep(line)) kept.push(line);
+      }
+    }
+    if (carry && keep(carry)) kept.push(carry);
+  } finally {
+    fs.closeSync(fd);
+  }
+  return kept.join("\n");
 }
 
 function primeEvaluationReward(sample, scorecard = null) {
@@ -3477,6 +3502,16 @@ function createAgentRunService({
               note: "Waiting for Kimi Code usage…",
               actions: []
             };
+      } else if (summary.provider === "prime-agent") {
+        value = parsePrimeAgentEvents(
+          readFilteredUsageLines(
+            eventsPath,
+            (line) =>
+              line.includes('"message_end"') ||
+              line.includes('"tool_execution_end"') ||
+              line.includes('"compaction_end"')
+          )
+        );
       } else {
         const hasFinalResults = primeResultsPath && fs.statSync(primeResultsPath).size > 0;
         value = hasFinalResults
