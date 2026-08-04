@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import json
 import os
+import tempfile
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -12,6 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import mazebench_tools
+from mazebench.mazebench import resolve_default_node_bin
 import verifiers.v1.mcp.launch as mcp_launch
 import verifiers.v1.rollout as rollout_module
 from mcp.types import CallToolResult, ImageContent
@@ -46,6 +48,19 @@ EXPECTED_GAME_TOOLS = {
 
 
 class GameRuntimeIsolationTests(unittest.TestCase):
+    def test_default_node_uses_the_packaged_python_sibling(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_dir:
+            bin_dir = Path(temporary_dir) / "bin"
+            bin_dir.mkdir()
+            python = bin_dir / "python"
+            node = bin_dir / "node"
+            node.touch()
+
+            self.assertEqual(resolve_default_node_bin(python), str(node))
+
+            node.unlink()
+            self.assertEqual(resolve_default_node_bin(python), "node")
+
     def test_tool_server_uses_a_dedicated_prime_runtime(self) -> None:
         config = mazebench_tools.MazeBenchToolsetConfig()
 
