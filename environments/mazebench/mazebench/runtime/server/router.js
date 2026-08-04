@@ -396,13 +396,15 @@ function createRequestRouter({
       }
 
       if (segments[4] === "video" && segments[5] === "regenerate" && request.method === "POST") {
-        const run = agentRuns.regenerateRunVideo(runId);
+        const payload = await readJsonBody(request);
+        const run = agentRuns.regenerateRunVideo(runId, payload);
         sendJson(response, 202, { run, message: "Replay video regeneration started." });
         return;
       }
 
       if (segments.length === 5 && segments[4] === "video" && request.method === "POST") {
-        const run = agentRuns.generateRunVideo(runId);
+        const payload = await readJsonBody(request);
+        const run = agentRuns.generateRunVideo(runId, payload);
         sendJson(response, 202, { run, message: "Replay video generation started." });
         return;
       }

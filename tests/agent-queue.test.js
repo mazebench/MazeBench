@@ -434,15 +434,29 @@ try {
     path.join(primeVideoDir, "actions.jsonl"),
     `${JSON.stringify({ turn: 1, command_text: "up", status: {} })}\n`
   );
-  const primeVideo = service.generateRunVideo(primeVideoId);
+  assert.throws(
+    () => service.generateRunVideo(primeVideoId, { action_limit: 0 }),
+    /action_limit must be a positive integer/
+  );
+  const primeVideo = service.generateRunVideo(primeVideoId, {
+    action_limit: 1,
+    api_cost_limit_usd: 12.5,
+    quality: "raw"
+  });
   assert.equal(primeVideo.status, "failed");
   assert.equal(primeVideo.video_status, "rendering");
+  assert.equal(primeVideo.video_snapshot_turns, 1);
+  assert.equal(primeVideo.video_action_limit, 1);
+  assert.equal(primeVideo.video_cost_limit_usd, 12.5);
+  assert.equal(primeVideo.video_quality, "raw");
   const primeVideoArgsDeadline = Date.now() + 3000;
   while (!fs.existsSync(path.join(primeVideoDir, "video-args.json")) && Date.now() < primeVideoArgsDeadline) {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   const primeVideoArgs = loadJson(path.join(primeVideoDir, "video-args.json"), []);
   assert.equal(primeVideoArgs[0], path.join(primeVideoDir, "actions.jsonl"));
+  assert.deepEqual(primeVideoArgs.slice(primeVideoArgs.indexOf("--action-limit"), primeVideoArgs.indexOf("--action-limit") + 2), ["--action-limit", "1"]);
+  assert.equal(primeVideoArgs.includes("--max-video-mib"), false);
   service.cancelRunVideo(primeVideoId);
   service.deleteRun(primeVideoId);
 
@@ -496,6 +510,13 @@ try {
     []
   );
   assert.equal(interruptedPrimeVideoArgs[0], interruptedPrimeActions);
+  assert.deepEqual(
+    interruptedPrimeVideoArgs.slice(
+      interruptedPrimeVideoArgs.indexOf("--max-video-mib"),
+      interruptedPrimeVideoArgs.indexOf("--max-video-mib") + 2
+    ),
+    ["--max-video-mib", "24"]
+  );
   service.cancelRunVideo(interruptedPrimeVideoId);
   service.deleteRun(interruptedPrimeVideoId);
 

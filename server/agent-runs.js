@@ -22,8 +22,10 @@ const {
   parseCodexSession,
   parseCodexSwarmSessions,
   parseKimiWire,
+  parsePrimeAgentEvents,
   parsePrimeLiveUsage,
   parsePrimeResults,
+  withActionCostTimeline,
   withApiCostEstimate
 } = require("./token-usage");
 const {
@@ -421,6 +423,30 @@ function apiPricingForRun(summary, models) {
   const output = Number(model?.pricing?.output);
   if (!Number.isFinite(input) || input < 0 || !Number.isFinite(output) || output < 0) return null;
   return { model: model.id, input, output };
+}
+
+// Large provider event streams can exceed Node's maximum string size. Keep
+// only the event types needed by the usage parser while reading incrementally.
+function readFilteredUsageLines(filePath, keep) {
+  if (!filePath || !fs.existsSync(filePath)) return "";
+  const kept = [];
+  const fd = fs.openSync(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(1024 * 1024);
+    let carry = "";
+    let bytes = 0;
+    while ((bytes = fs.readSync(fd, buffer, 0, buffer.length, null)) > 0) {
+      const lines = `${carry}${buffer.toString("utf8", 0, bytes)}`.split("\n");
+      carry = lines.pop() || "";
+      for (const line of lines) {
+        if (line && keep(line)) kept.push(line);
+      }
+    }
+    if (carry && keep(carry)) kept.push(carry);
+  } finally {
+    fs.closeSync(fd);
+  }
+  return kept.join("\n");
 }
 
 function primeEvaluationReward(sample, scorecard = null) {
@@ -3443,13 +3469,14 @@ function createAgentRunService({
         return usage;
       }
     };
+    const withCostTimeline = (usage) => withActionCostTimeline(withCatalogApiEstimate(usage));
     const cached = tokenUsageCache.get(runId);
-    if (cached?.signature === signature) return withSwarmAgentStatus(withCatalogApiEstimate(cached.value));
+    if (cached?.signature === signature) return withSwarmAgentStatus(withCostTimeline(cached.value));
     const active = ["running", "pausing", "stopping"].includes(summary.status);
     const expensive = [eventsPath, codexSessionPath, ...codexSwarmSessionPaths, kimiWirePath, primeLiveUsagePath, primeResultsPath]
       .some((filePath) => fileSize(filePath) > LARGE_TELEMETRY_BYTES);
     if (active && expensive && cached && Date.now() - cached.checkedAt < LARGE_TELEMETRY_REFRESH_MS) {
-      return withSwarmAgentStatus(withCatalogApiEstimate(cached.value));
+      return withSwarmAgentStatus(withCostTimeline(cached.value));
     }
 
     let value;
@@ -3477,6 +3504,16 @@ function createAgentRunService({
               note: "Waiting for Kimi Code usage…",
               actions: []
             };
+      } else if (summary.provider === "prime-agent") {
+        value = parsePrimeAgentEvents(
+          readFilteredUsageLines(
+            eventsPath,
+            (line) =>
+              line.includes('"message_end"') ||
+              line.includes('"tool_execution_end"') ||
+              line.includes('"compaction_end"')
+          )
+        );
       } else {
         const hasFinalResults = primeResultsPath && fs.statSync(primeResultsPath).size > 0;
         value = hasFinalResults
@@ -3496,7 +3533,7 @@ function createAgentRunService({
     }
 
     tokenUsageCache.set(runId, { signature, checkedAt: Date.now(), value });
-    return withSwarmAgentStatus(withCatalogApiEstimate(value));
+    return withSwarmAgentStatus(withCostTimeline(value));
   }
 
   // Vision mode already records the exact image the agent saw. Text mode uses
@@ -4249,6 +4286,7 @@ function createAgentRunService({
     const incrementalTokenUsage = Array.isArray(tokenUsage?.actions)
       ? {
           ...tokenUsage,
+          api_cost_timeline: cursor === 0 ? tokenUsage.api_cost_timeline : undefined,
           actions: tokenUsage.actions.filter((point, index) =>
             Math.max(1, Number(point?.action) || index + 1) >= historyFloor &&
               Math.max(1, Number(point?.action) || index + 1) <= historyCeiling
@@ -6033,7 +6071,30 @@ function createAgentRunService({
     return launchRun(base);
   }
 
-  function generateRunVideo(runId) {
+  function replayVideoRequest(options, totalActions) {
+    const request = options && typeof options === "object" ? options : {};
+    const quality = request.quality === "raw" ? "raw" : "website";
+    const hasActionLimit = request.action_limit !== undefined && request.action_limit !== null && request.action_limit !== "";
+    const requestedActionLimit = hasActionLimit ? Number(request.action_limit) : null;
+    if (hasActionLimit && (!Number.isInteger(requestedActionLimit) || requestedActionLimit < 1)) {
+      throw new Error("Replay video action_limit must be a positive integer.");
+    }
+    const hasCostLimit = request.api_cost_limit_usd !== undefined && request.api_cost_limit_usd !== null && request.api_cost_limit_usd !== "";
+    const apiCostLimitUsd = hasCostLimit ? Number(request.api_cost_limit_usd) : null;
+    if (hasCostLimit && (!Number.isFinite(apiCostLimitUsd) || apiCostLimitUsd < 0)) {
+      throw new Error("Replay video api_cost_limit_usd must be a non-negative number.");
+    }
+    if (hasCostLimit && !hasActionLimit) {
+      throw new Error("Replay video api_cost_limit_usd requires the matching action_limit.");
+    }
+    return {
+      quality,
+      actionLimit: hasActionLimit ? Math.min(totalActions, requestedActionLimit) : null,
+      apiCostLimitUsd
+    };
+  }
+
+  function generateRunVideo(runId, options = {}) {
     const meta = readRunMeta(runId);
 
     if (!meta) {
@@ -6073,7 +6134,12 @@ function createAgentRunService({
       throw new Error("This run has no completed eval result, saved session, or action log to render.");
     }
 
-    const snapshotTurns = readActions(runId).length;
+    const totalActions = readActions(runId).length;
+    if (totalActions < 1) {
+      throw new Error("This run has no actions to render.");
+    }
+    const videoRequest = replayVideoRequest(options, totalActions);
+    const snapshotTurns = videoRequest.actionLimit ?? totalActions;
     const generationId = crypto.randomUUID();
     fs.writeFileSync(
       path.join(runDir, "replay-progress.json"),
@@ -6089,15 +6155,21 @@ function createAgentRunService({
         "--out-dir", runDir,
         "--fps", "24",
         // The native recorder produces a high-bitrate intermediate. The replay
-        // exporter applies this quality setting to every final MP4 and enforces
-        // a Pages-safe ceiling for unusually long runs.
+        // exporter applies this quality setting to every final MP4. Website
+        // quality adds a Pages-safe ceiling; raw quality keeps the larger
+        // optimized recording without the size-constraining second pass.
         "--crf", "25",
-        "--max-video-mib", "24",
         "--preset", "veryfast",
         "--tail-seconds", "1",
         "--accelerated",
         "--intro"
       ];
+      if (videoRequest.quality === "website") {
+        videoArgs.push("--max-video-mib", "24");
+      }
+      if (videoRequest.actionLimit !== null) {
+        videoArgs.push("--action-limit", String(videoRequest.actionLimit));
+      }
       if (normalizeObservationMode(meta.mode) === "text") {
         videoArgs.push("--width", "1280", "--height", "720", "--ascii-side-by-side");
       } else {
@@ -6123,6 +6195,9 @@ function createAgentRunService({
       video_generation_id: generationId,
       video_pid: child.pid,
       video_snapshot_turns: snapshotTurns,
+      video_action_limit: videoRequest.actionLimit ?? undefined,
+      video_cost_limit_usd: videoRequest.apiCostLimitUsd ?? undefined,
+      video_quality: videoRequest.quality,
       video_status: "rendering"
     });
 
@@ -6205,6 +6280,9 @@ function createAgentRunService({
       video_generation_id: _videoGenerationId,
       video_pid: _videoPid,
       video_snapshot_turns: _videoSnapshotTurns,
+      video_action_limit: _videoActionLimit,
+      video_cost_limit_usd: _videoCostLimitUsd,
+      video_quality: _videoQuality,
       video_status: _videoStatus,
       ...cleanMeta
     } = meta;
@@ -6222,14 +6300,14 @@ function createAgentRunService({
     return summarizeRun(runId);
   }
 
-  function regenerateRunVideo(runId) {
+  function regenerateRunVideo(runId, options = {}) {
     const meta = readRunMeta(runId);
     if (!meta) throw new Error(`Unknown run "${runId}".`);
     if (!["paused", "finished", "stopped", "failed"].includes(meta.status)) {
       throw new Error("Pause or end the run before regenerating its replay video.");
     }
     discardRunVideo(runId, meta);
-    return generateRunVideo(runId);
+    return generateRunVideo(runId, options);
   }
 
   function cancelPrimeEvaluation(runId) {

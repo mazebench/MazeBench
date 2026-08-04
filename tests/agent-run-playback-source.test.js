@@ -15,7 +15,7 @@ assert.match(runScript, />FPS<\/span>/);
 assert.match(runScript, /const DEFAULT_REPLAY_FPS = 30/);
 assert.match(runScript, /: DEFAULT_REPLAY_FPS;/);
 assert.doesNotMatch(runScript, /<select data-replay-rate/);
-assert.match(pages, /agent-run\.js\?v=20260727-bounded-run-log-1/);
+assert.match(pages, /agent-run\.js\?v=20260804-replay-export-limits-1/);
 assert.match(pages, /id="run-history-progress"[^>]+role="progressbar"/);
 assert.doesNotMatch(pages, /Loading move 0/);
 assert.match(runScript, /function updateHistoryLoadProgress\(sync\)/);
@@ -119,7 +119,16 @@ assert.match(runScript, /function showMetricTooltip\(canvas, target, event\)/);
 assert.match(runScript, /tooltip\.textContent = `Frame \$\{target\.action\.toLocaleString\(\)\} · \$\{noun\}`/);
 assert.match(siteTheme, /\.run-metric-chart__canvas\.has-jump-target/);
 assert.match(siteTheme, /\.run-metric-chart__tooltip \{/);
+assert.match(pages, /id="run-heatmap-export-limit-kind"[\s\S]*?>Up to move<[\s\S]*?>Up to API cost</);
+assert.match(pages, /id="run-heatmap-export-limit-value" type="number" min="0"/);
+assert.match(runScript, /function selectedHeatmapExportLimit\(\)/);
+assert.match(runScript, /api_cost_cumulative_usd/);
+assert.match(runScript, /heatmapVisitData\(limit\.maxMove\)/);
+assert.match(siteTheme, /\.run-heatmap__limit \{/);
 assert.equal((pages.match(/id="run-replay-export"/g) || []).length, 1);
+assert.match(pages, /id="run-video-export-limit-kind"[\s\S]*?>Full run<[\s\S]*?>Up to move<[\s\S]*?>Up to API cost</);
+assert.match(pages, /id="run-video-export-limit-value" type="number" min="1"/);
+assert.match(pages, /id="run-video-export-quality"[\s\S]*?>Website quality \(&lt;25 MB\)<[\s\S]*?>Raw quality \(~100 MB\)</);
 assert.match(
   pages,
   /id="run-replay-export"[\s\S]*?id="generate-video" class="run-heatmap__export run-replay-export__button"[\s\S]*?>Generate replay<[\s\S]*?id="run-replay-progress"[\s\S]*?id="run-replay-section"/
@@ -133,6 +142,13 @@ assert.match(runScript, /\["paused", "finished", "stopped", "failed"\]\.includes
 assert.match(runScript, /Pausing now — cancelling active model and tools/);
 assert.doesNotMatch(runScript, /Pausing after move/);
 assert.match(runScript, /generateLabel\.textContent = renderingVideo \? "Generating…" : "Generate replay"/);
+assert.match(runScript, /function selectedVideoExportLimit\(\)/);
+assert.match(runScript, /action_limit: limit\.maxMove/);
+assert.match(runScript, /quality,[\s\S]*?api_cost_limit_usd: limit\.value/);
+assert.match(runScript, /videoExportQuality\?\.value === "raw"/);
+assert.match(agentRuns, /videoRequest\.quality === "website"[\s\S]*?videoArgs\.push\("--max-video-mib", "24"\)/);
+assert.match(agentRuns, /videoArgs\.push\("--action-limit", String\(videoRequest\.actionLimit\)\)/);
+assert.match(agentRuns, /video_quality: videoRequest\.quality/);
 assert.match(siteTheme, /\.run-video \{[\s\S]*?max-height: min\(62vh, 540px\);[\s\S]*?width: min\(100%, 760px\);/);
 assert.match(siteTheme, /\.run-replay-progress-panel \{[\s\S]*?margin-top: 16px/);
 

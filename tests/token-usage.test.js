@@ -9,8 +9,10 @@ const {
   parseCodexSession,
   parseCodexSwarmSessions,
   parseKimiWire,
+  parsePrimeAgentEvents,
   parsePrimeLiveUsage,
   parsePrimeResults,
+  withActionCostTimeline,
   withApiCostEstimate
 } = require("../server/token-usage");
 const { apiPricingForRun } = require("../server/agent-runs");
@@ -80,6 +82,36 @@ const lines = (...events) => events.map((event) => JSON.stringify(event)).join("
     2.75,
     "provider-reported cost remains authoritative"
   );
+}
+
+{
+  const usage = withActionCostTimeline({
+    api_cost_estimate_usd: 21,
+    api_pricing: { input: 10, cache_read: 1, output: 50 },
+    cache_read_input_tokens: 100,
+    cache_creation_input_tokens: 0,
+    cost_events: [
+      { at_ms: 1000, input_tokens: 100, cached_input_tokens: 0, output_tokens: 0, total_tokens: 100 },
+      { at_ms: 2000, input_tokens: 100, cached_input_tokens: 100, output_tokens: 0, total_tokens: 100 },
+      { at_ms: 3000, input_tokens: 0, cached_input_tokens: 0, output_tokens: 20, total_tokens: 20 }
+    ],
+    actions: [
+      { action: 1, input_tokens: 100, cached_input_tokens: 0, output_tokens: 0, total_tokens: 100 },
+      { action: 2, input_tokens: 100, cached_input_tokens: 100, output_tokens: 0, total_tokens: 100 },
+      { action: 3, input_tokens: 0, cached_input_tokens: 0, output_tokens: 20, total_tokens: 20 }
+    ]
+  });
+  assert.deepEqual(
+    usage.actions.map((point) => point.api_cost_cumulative_usd),
+    [10, 11, 21],
+    "per-action cost history respects cached-input pricing and reconciles to provider-reported total cost"
+  );
+  assert.deepEqual(usage.api_cost_timeline, [
+    { at_ms: 1000, api_cost_cumulative_usd: 10 },
+    { at_ms: 2000, api_cost_cumulative_usd: 11 },
+    { at_ms: 3000, api_cost_cumulative_usd: 21 }
+  ]);
+  assert.equal("cost_events" in usage, false, "internal token events are not exposed in the progress payload");
 }
 
 {
@@ -430,6 +462,68 @@ const codexCall = (verb) => ({
   assert.deepEqual(usage.actions.map((point) => point.active_agents), [2, 1]);
   assert.equal(usage.agents_current, 1);
   assert.equal(usage.agents_total, 2);
+}
+
+{
+  const usage = parsePrimeAgentEvents(
+    lines(
+      {
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [{ type: "toolCall", id: "move-1", name: "maze_action", arguments: { action: "up" } }],
+          usage: {
+            input: 100,
+            output: 20,
+            cacheRead: 100,
+            cacheWrite: 50,
+            totalTokens: 220,
+            cost: { input: 0.0005, output: 0.0006, cacheRead: 0, cacheWrite: 0, total: 0.0011 }
+          }
+        }
+      },
+      {
+        type: "message_end",
+        message: {
+          role: "toolResult",
+          toolCallId: "move-1",
+          content: [{ type: "text", text: JSON.stringify({ ok: true }) }],
+          isError: false
+        }
+      },
+      {
+        type: "message_end",
+        message: {
+          role: "assistant",
+          content: [],
+          usage: {
+            input: 150,
+            output: 30,
+            cacheRead: 50,
+            cacheWrite: 25,
+            totalTokens: 230,
+            cost: { input: 0.00075, output: 0.0009, cacheRead: 0, cacheWrite: 0, total: 0.00165 }
+          }
+        }
+      }
+    ),
+    250_000
+  );
+  assert.equal(usage.available, true);
+  assert.equal(usage.exact, true);
+  assert.equal(usage.input_tokens, 400);
+  assert.equal(usage.cached_input_tokens, 150);
+  assert.equal(usage.uncached_input_tokens, 250);
+  assert.equal(usage.cache_creation_input_tokens, 75);
+  assert.equal(usage.output_tokens, 50);
+  assert.equal(usage.api_cost_estimate_usd, 0.00275);
+  assert.deepEqual(usage.api_pricing, {
+    input: 5,
+    cache_read: 0,
+    cache_write: 0,
+    output: 30
+  });
+  assert.equal(usage.actions.length, 1);
 }
 
 {

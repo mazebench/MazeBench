@@ -20,6 +20,7 @@ assert.match(runService, /if \(actions\.length > MAX_SYNCHRONOUS_HISTORY_REPLAY_
 assert.match(runService, /const MAX_PROGRESS_LOG_BYTES = 256 \* 1024/);
 assert.match(runService, /size - requestedStart > MAX_PROGRESS_LOG_BYTES/);
 assert.match(runService, /actions: tokenUsage\.actions\.filter/);
+assert.match(runService, /api_cost_timeline: cursor === 0 \? tokenUsage\.api_cost_timeline : undefined/);
 assert.match(runService, /reasoning\.filter\(\(entry\)/);
 assert.match(runService, /apiPricingForRun\(summary, listProviderModels\("prime"\)\.models\)/);
 assert.match(runScript, /const FEED_RENDER_BATCH = 200/);
@@ -46,6 +47,7 @@ assert.doesNotMatch(router, /renderLiveFrame/);
 assert.match(runScript, /const renderedMoveNums = hiddenMoveCount > 0 \? moveNums\.slice\(-state\.feedRenderLimit\) : moveNums/);
 assert.match(runScript, /data-feed-load-more/);
 assert.match(runScript, /state\.tokenUsagePoints\.set\(action/);
+assert.match(runScript, /state\.tokenRenderDeferred && !deferRender/);
 assert.match(runScript, /\$\$\{pricing\.input\}\/M in · \$\$\{pricing\.output\}\/M out/);
 assert.match(siteTheme, /\.agent-feed__load-more \{/);
 

@@ -7,6 +7,13 @@ function number(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+function distributedInteger(value, count, index) {
+  const total = Math.max(0, Math.round(number(value)));
+  const parts = Math.max(1, Math.floor(number(count)));
+  const base = Math.floor(total / parts);
+  return base + (index < total % parts ? 1 : 0);
+}
+
 function jsonLines(raw) {
   return String(raw || "")
     .split(/\r?\n/)
@@ -131,6 +138,87 @@ function withApiCostEstimate(usage, pricing) {
       input: inputRate,
       output: outputRate
     }
+  };
+}
+
+function withActionCostTimeline(usage) {
+  const totalCost = Number(usage?.api_cost_estimate_usd);
+  const points = Array.isArray(usage?.actions) ? usage.actions : [];
+  const costEvents = Array.isArray(usage?.cost_events) ? usage.cost_events : [];
+  if (!Number.isFinite(totalCost) || totalCost < 0 || (!points.length && !costEvents.length)) return usage;
+
+  const pricing = usage?.api_pricing || {};
+  const inputRate = Number(pricing.input);
+  const outputRate = Number(pricing.output);
+  const cacheReadRate = Number(pricing.cache_read);
+  const cacheWriteRate = Number(pricing.cache_write);
+  const cacheWrite5mRate = Number(pricing.cache_write_5m);
+  const cacheWrite1hRate = Number(pricing.cache_write_1h);
+  const cacheReadTokens = number(usage.cache_read_input_tokens);
+  const cacheWriteTokens = number(usage.cache_creation_input_tokens);
+  const cacheWrite5mTokens = number(usage.cache_creation_5m_input_tokens);
+  const cacheWrite1hTokens = number(usage.cache_creation_1h_input_tokens);
+  const cacheWriteUnknownTokens = number(usage.cache_creation_unknown_input_tokens);
+  const pricedCachedTokens = cacheReadTokens + cacheWriteTokens;
+  const pricedCachedCost =
+    cacheReadTokens * (Number.isFinite(cacheReadRate) ? cacheReadRate : inputRate) +
+    cacheWrite5mTokens * (Number.isFinite(cacheWrite5mRate) ? cacheWrite5mRate : inputRate) +
+    cacheWrite1hTokens * (Number.isFinite(cacheWrite1hRate) ? cacheWrite1hRate : inputRate) +
+    cacheWriteUnknownTokens * (
+      Number.isFinite(cacheWriteRate)
+        ? cacheWriteRate
+        : Number.isFinite(cacheWrite1hRate)
+          ? cacheWrite1hRate
+          : inputRate
+    );
+  const blendedCachedRate = pricedCachedTokens > 0 && Number.isFinite(pricedCachedCost)
+    ? pricedCachedCost / pricedCachedTokens
+    : Number.isFinite(cacheReadRate)
+      ? cacheReadRate
+      : inputRate;
+  const hasTokenPricing = Number.isFinite(inputRate) && inputRate >= 0 &&
+    Number.isFinite(outputRate) && outputRate >= 0;
+  const weightedTimeline = (entries, sorter) => [...entries]
+    .sort(sorter)
+    .map((point) => {
+      const inputTokens = Math.max(0, number(point.input_tokens));
+      const cachedTokens = Math.min(inputTokens, Math.max(0, number(point.cached_input_tokens)));
+      const uncachedTokens = Math.max(0, inputTokens - cachedTokens);
+      const outputTokens = Math.max(0, number(point.output_tokens));
+      const fallbackTokens = Math.max(0, number(point.total_tokens)) || inputTokens + outputTokens;
+      const weight = hasTokenPricing
+        ? uncachedTokens * inputRate + cachedTokens * blendedCachedRate + outputTokens * outputRate
+        : fallbackTokens;
+      return { point, weight: Math.max(0, Number.isFinite(weight) ? weight : fallbackTokens) };
+    });
+  const annotate = (weighted) => {
+    const totalWeight = weighted.reduce((sum, entry) => sum + entry.weight, 0);
+    if (!(totalWeight > 0)) return weighted.map(({ point }) => point);
+    let cumulative = 0;
+    return weighted.map(({ point, weight }, index) => {
+      cumulative += totalCost * weight / totalWeight;
+      return {
+        ...point,
+        api_cost_cumulative_usd: index === weighted.length - 1 ? totalCost : cumulative
+      };
+    });
+  };
+  const actions = annotate(weightedTimeline(
+    points,
+    (left, right) => number(left?.action) - number(right?.action)
+  ));
+  const apiCostTimeline = annotate(weightedTimeline(
+    costEvents,
+    (left, right) => number(left?.at_ms) - number(right?.at_ms)
+  )).map((point) => ({
+    at_ms: number(point.at_ms),
+    api_cost_cumulative_usd: point.api_cost_cumulative_usd
+  }));
+  const { cost_events: _costEvents, ...publicUsage } = usage;
+  return {
+    ...publicUsage,
+    actions,
+    ...(apiCostTimeline.length ? { api_cost_timeline: apiCostTimeline } : {})
   };
 }
 
@@ -563,6 +651,7 @@ function claudeApiCost(details, pricing) {
 
 function parseClaudeEvents(raw) {
   const points = [];
+  const costEvents = [];
   const pending = new Map();
   const pendingAgents = new Set();
   const allAgentTools = new Set();
@@ -587,7 +676,7 @@ function parseClaudeEvents(raw) {
   let selectedModelWeight = -1;
   let sawAgentTools = false;
 
-  for (const event of jsonLines(raw)) {
+  for (const [eventIndex, event] of jsonLines(raw).entries()) {
     if (event.type === "stream_event" && event.event?.type === "message_delta" && event.event.usage) {
       latest = claudeUsageShape(event.event.usage);
       streamedResponses += 1;
@@ -602,6 +691,11 @@ function parseClaudeEvents(raw) {
       streamedDetails.cache_creation_1h_input_tokens += cacheCreation.one_hour;
       streamedDetails.cache_creation_unknown_input_tokens += cacheCreation.unknown;
       streamedDetails.output_tokens += number(event.event.usage.output_tokens);
+      const timestamp = Date.parse(event.timestamp || event._mazebench_received_at || "");
+      costEvents.push({
+        ...latest,
+        at_ms: Number.isFinite(timestamp) ? timestamp : eventIndex
+      });
       continue;
     }
 
@@ -718,6 +812,7 @@ function parseClaudeEvents(raw) {
       agentsTotal: 1 + allAgentTools.size
     }),
     ...finalDetails,
+    cost_events: costEvents,
     api_cost_estimate_usd: apiCostEstimate ?? (reportedCost || null),
     api_pricing: pricing ? { model: selectedModelId, ...pricing } : null
   };
@@ -866,6 +961,192 @@ function parseKimiWire(raw) {
       agentsTotal: 1
     }),
     ...details
+  };
+}
+
+// Prime Agent reports per-message token usage and provider cost inline on its
+// JSON event stream. Parse that stream directly so local Prime-Agent runs use
+// the same token and cost cards as the other providers.
+function primeAgentToolResultPayload(message = {}) {
+  for (const block of Array.isArray(message.content) ? message.content : []) {
+    if (block?.type !== "text") continue;
+    const value = parsedJson(block.text, null);
+    if (value && typeof value === "object") return value;
+  }
+  return {};
+}
+
+function parsePrimeAgentEvents(raw, contextWindow = 0) {
+  const points = [];
+  const pending = new Map();
+  const totals = {
+    total_tokens: 0,
+    input_tokens: 0,
+    cached_input_tokens: 0,
+    output_tokens: 0,
+    reasoning_tokens: 0
+  };
+  const priceBuckets = {
+    input: { tokens: 0, cost: 0 },
+    cache_read: { tokens: 0, cost: 0 },
+    cache_write: { tokens: 0, cost: 0 },
+    output: { tokens: 0, cost: 0 }
+  };
+  let previousActionTotals = { ...totals };
+  let previousActionCompactions = 0;
+  let latestTotal = null;
+  let usageRecords = 0;
+  let compactions = 0;
+  let cacheWriteTokens = 0;
+  let cost = 0;
+
+  const completeBatch = (batch, payload, failed) => {
+    const reportedCompleted = batch.sequence
+      ? Number.isFinite(Number(payload.completed_count))
+        ? Math.max(0, Math.floor(Number(payload.completed_count)))
+        : Array.isArray(payload.steps)
+          ? payload.steps.length
+          : batch.count
+      : failed
+        ? 0
+        : batch.count;
+    const completed = batch.count
+      ? Math.min(batch.count, reportedCompleted)
+      : reportedCompleted;
+    if (!completed) return;
+
+    const delta = {};
+    Object.keys(previousActionTotals).forEach((key) => {
+      delta[key] = Math.max(0, number(batch.cumulative[key]) - number(previousActionTotals[key]));
+    });
+    previousActionTotals = batch.cumulative;
+    const compacted = batch.compactions > previousActionCompactions;
+    previousActionCompactions = batch.compactions;
+
+    for (let index = 0; index < completed; index += 1) {
+      points.push({
+        action: points.length + 1,
+        total_tokens: distributedInteger(delta.total_tokens, completed, index),
+        input_tokens: distributedInteger(delta.input_tokens, completed, index),
+        cached_input_tokens: distributedInteger(delta.cached_input_tokens, completed, index),
+        output_tokens: distributedInteger(delta.output_tokens, completed, index),
+        reasoning_tokens: 0,
+        context_tokens: batch.context_tokens,
+        compacted: compacted && index === 0,
+        active_agents: 1
+      });
+    }
+  };
+
+  for (const event of jsonLines(raw)) {
+    if (event?.type === "compaction_end" && event.result && !event.aborted && !event.errorMessage) {
+      compactions += 1;
+      continue;
+    }
+
+    if (event?.type === "tool_execution_end" && pending.has(event.toolCallId)) {
+      const batch = pending.get(event.toolCallId);
+      pending.delete(event.toolCallId);
+      const payload = primeAgentToolResultPayload(event.result);
+      completeBatch(batch, payload, Boolean(
+        event.isError || event.result?.isError || payload.error || payload.isError || payload.ok === false
+      ));
+      continue;
+    }
+
+    if (event?.type !== "message_end") continue;
+
+    if (event.message?.role === "assistant") {
+      const usage = event.message.usage;
+      if (!usage) continue;
+      const uncachedInput = number(usage.input);
+      const output = number(usage.output);
+      const cacheRead = number(usage.cacheRead);
+      const cacheWrite = number(usage.cacheWrite);
+      const input = uncachedInput + cacheRead;
+      const total = number(usage.totalTokens) || input + output;
+      if (!total) continue;
+
+      usageRecords += 1;
+      totals.input_tokens += input;
+      totals.output_tokens += output;
+      totals.cached_input_tokens += cacheRead;
+      totals.total_tokens += total;
+      cacheWriteTokens += cacheWrite;
+      cost += number(usage.cost?.total);
+      latestTotal = total;
+
+      priceBuckets.input.tokens += uncachedInput;
+      priceBuckets.input.cost += number(usage.cost?.input);
+      priceBuckets.cache_read.tokens += cacheRead;
+      priceBuckets.cache_read.cost += number(usage.cost?.cacheRead);
+      priceBuckets.cache_write.tokens += cacheWrite;
+      priceBuckets.cache_write.cost += number(usage.cost?.cacheWrite);
+      priceBuckets.output.tokens += output;
+      priceBuckets.output.cost += number(usage.cost?.output);
+
+      for (const block of Array.isArray(event.message.content) ? event.message.content : []) {
+        if (block?.type !== "toolCall" || !block.id) continue;
+        const toolName = String(block.name || "");
+        const sequence = /(?:^|__)(?:maze|game)_action_sequence$/.test(toolName);
+        const single = /(?:^|__)(?:maze|game)_action$/.test(toolName);
+        if (!single && !sequence) continue;
+        const args = parsedJson(block.arguments);
+        if (args.clone_id) continue;
+        const plannedActions = actionsFromToolCall(toolName, args);
+        if (!sequence && !plannedActions.length) continue;
+        pending.set(block.id, {
+          count: plannedActions.length,
+          sequence,
+          cumulative: { ...totals },
+          context_tokens: total,
+          compactions
+        });
+      }
+      continue;
+    }
+
+    if (event.message?.role !== "toolResult" || !pending.has(event.message.toolCallId)) continue;
+    const batch = pending.get(event.message.toolCallId);
+    pending.delete(event.message.toolCallId);
+    const payload = primeAgentToolResultPayload(event.message);
+    completeBatch(batch, payload, Boolean(
+      event.message.isError || payload.error || payload.isError || payload.ok === false
+    ));
+  }
+
+  reconcilePointTotals(points, totals);
+  const observedRate = ({ tokens, cost: observedCost }) => tokens > 0
+    ? Number((observedCost * 1_000_000 / tokens).toFixed(6))
+    : null;
+  const apiPricing = Object.fromEntries(
+    Object.entries(priceBuckets).map(([key, bucket]) => [key, observedRate(bucket)])
+  );
+  const hasObservedPricing = Number.isFinite(apiPricing.input) && Number.isFinite(apiPricing.output);
+
+  return {
+    ...finishUsage({
+      provider: "prime-agent",
+      points,
+      totals,
+      currentContext: latestTotal,
+      contextWindow,
+      exact: usageRecords > 0,
+      note: usageRecords > 0
+        ? "Prime Agent · provider-reported session usage"
+        : "Waiting for Prime Agent usage…",
+      averageTokensPerAction: points.length && totals.total_tokens
+        ? totals.total_tokens / points.length
+        : null,
+      agentsCurrent: 1,
+      agentsTotal: 1,
+      compactions
+    }),
+    cache_read_input_tokens: totals.cached_input_tokens,
+    cache_creation_input_tokens: cacheWriteTokens,
+    uncached_input_tokens: Math.max(0, totals.input_tokens - totals.cached_input_tokens),
+    api_cost_estimate_usd: cost || null,
+    api_pricing: hasObservedPricing ? apiPricing : null
   };
 }
 
@@ -1076,7 +1357,9 @@ module.exports = {
   parseCodexSession,
   parseCodexSwarmSessions,
   parseKimiWire,
+  parsePrimeAgentEvents,
   parsePrimeLiveUsage,
   parsePrimeResults,
+  withActionCostTimeline,
   withApiCostEstimate
 };
