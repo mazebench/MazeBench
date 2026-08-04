@@ -1,6 +1,6 @@
 [project]
 name = "mazebench"
-version = "0.2.17"
+version = "0.2.18"
 description = "Build and play persistent 3D worlds, then benchmark coding agents and Prime Intellect Verifiers against them."
 readme = "README_PYPI.md"
 license = "MIT"
