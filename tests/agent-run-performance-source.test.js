@@ -46,6 +46,7 @@ assert.doesNotMatch(router, /renderLiveFrame/);
 assert.match(runScript, /const renderedMoveNums = hiddenMoveCount > 0 \? moveNums\.slice\(-state\.feedRenderLimit\) : moveNums/);
 assert.match(runScript, /data-feed-load-more/);
 assert.match(runScript, /state\.tokenUsagePoints\.set\(action/);
+assert.match(runScript, /state\.tokenRenderDeferred && !deferRender/);
 assert.match(runScript, /\$\$\{pricing\.input\}\/M in · \$\$\{pricing\.output\}\/M out/);
 assert.match(siteTheme, /\.agent-feed__load-more \{/);
 

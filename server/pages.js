@@ -1493,7 +1493,7 @@ function createPageRenderer({
         </section>
         ${replayExportSection}
         <script>window.__AGENT_RUN__ = ${serializeForScript(clientRun)}; window.__AGENT_RUN_WORLD__ = ${serializeForScript(runWorld)};</script>
-        <script src="/agent-run.js?v=20260727-bounded-run-log-1" defer></script>`
+        <script src="/agent-run.js?v=20260804-prime-usage-display-2" defer></script>`
     });
   }
 
