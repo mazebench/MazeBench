@@ -1277,6 +1277,15 @@ function createPageRenderer({
             <h2>Heatmap</h2>
             <div class="run-heatmap__actions">
               <span id="run-heatmap-summary" class="run-heatmap__summary" hidden></span>
+              <select id="run-heatmap-export-limit-kind" class="run-heatmap__format" aria-label="Heatmap export range" hidden>
+                <option value="all">Full run</option>
+                <option value="move">Up to move</option>
+                <option value="cost">Up to API cost</option>
+              </select>
+              <label id="run-heatmap-export-limit-field" class="run-heatmap__limit" hidden>
+                <span id="run-heatmap-export-limit-unit">Move</span>
+                <input id="run-heatmap-export-limit-value" type="number" min="0" step="1" inputmode="decimal" aria-label="Maximum move to export">
+              </label>
               <select id="run-heatmap-export-format" class="run-heatmap__format" aria-label="Heatmap export format" hidden>
                 <option value="gif">GIF</option>
                 <option value="mp4">MP4</option>
@@ -1493,7 +1502,7 @@ function createPageRenderer({
         </section>
         ${replayExportSection}
         <script>window.__AGENT_RUN__ = ${serializeForScript(clientRun)}; window.__AGENT_RUN_WORLD__ = ${serializeForScript(runWorld)};</script>
-        <script src="/agent-run.js?v=20260804-prime-usage-display-2" defer></script>`
+        <script src="/agent-run.js?v=20260804-heatmap-export-limits-1" defer></script>`
     });
   }
 

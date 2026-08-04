@@ -3452,6 +3452,43 @@ body.play-body {
   opacity: 0.62;
 }
 
+.run-heatmap__limit {
+  align-items: center;
+  background: rgba(12, 17, 38, 0.82);
+  border: 1px solid rgba(124, 143, 255, 0.32);
+  border-radius: 999px;
+  color: var(--muted, #9aa3c7);
+  display: inline-flex;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 9px;
+  font-weight: 800;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 7px 0 11px;
+  text-transform: uppercase;
+}
+
+.run-heatmap__limit[hidden] {
+  display: none;
+}
+
+.run-heatmap__limit input {
+  background: rgba(3, 6, 16, 0.82);
+  border: 1px solid rgba(124, 143, 255, 0.24);
+  border-radius: 999px;
+  color: #fff3d7;
+  font: inherit;
+  min-height: 24px;
+  padding: 0 8px;
+  text-transform: none;
+  width: 86px;
+}
+
+.run-heatmap__limit input:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
 .run-heatmap__export {
   background: rgba(124, 143, 255, 0.1);
   border: 1px solid rgba(124, 143, 255, 0.32);
