@@ -1091,6 +1091,8 @@ function commandToBridgeMessage(commandText) {
   return { command: parsed.command };
 }
 
+const REPLAY_BRIDGE_MAX_BUFFER_BYTES = 256 * 1024 * 1024;
+
 function replayScorecard(actions, mazeOptions) {
   const args = [
     path.join(ROOT_DIR, "scripts", "maze-bridge.js"),
@@ -1113,7 +1115,10 @@ function replayScorecard(actions, mazeOptions) {
     cwd: ROOT_DIR,
     encoding: "utf8",
     input,
-    maxBuffer: 1024 * 1024 * 20
+    // One JSON bridge response is emitted per action. Long cost-limited
+    // exports can still contain thousands of actions, so the default 20 MiB
+    // buffer is too small even when the rendered prefix is intentional.
+    maxBuffer: REPLAY_BRIDGE_MAX_BUFFER_BYTES
   });
 
   if (result.error) {

@@ -36,6 +36,11 @@
   const cancelVideoButton = document.getElementById("cancel-video");
   const regenerateVideoButton = document.getElementById("regenerate-video");
   const downloadVideoButton = document.getElementById("download-video");
+  const videoExportLimitKind = document.getElementById("run-video-export-limit-kind");
+  const videoExportLimitField = document.getElementById("run-video-export-limit-field");
+  const videoExportLimitUnit = document.getElementById("run-video-export-limit-unit");
+  const videoExportLimitInput = document.getElementById("run-video-export-limit-value");
+  const videoExportQuality = document.getElementById("run-video-export-quality");
   const deleteButton = document.getElementById("delete-run");
   const liveImage = document.getElementById("run-live-image");
   const liveBitmap = document.getElementById("run-live-bitmap");
@@ -1774,6 +1779,7 @@
     cancelVideoButton.disabled = false;
     regenerateVideoButton.hidden = !run.has_video || renderingVideo;
     regenerateVideoButton.disabled = renderingVideo;
+    updateVideoExportLimitControl(run);
   }
 
   function formatTokens(value) {
@@ -2630,19 +2636,22 @@
     return Math.max(0, ...[...state.moves.keys()].map((turn) => Number(turn) || 0));
   }
 
-  function selectedHeatmapExportLimit() {
-    const kind = heatmapExportLimitKind?.value || "all";
+  function selectedExportLimit(kindControl, inputControl) {
+    const kind = kindControl?.value || "all";
     if (kind === "all") {
-      return { valid: true, maxMove: Infinity, description: "the full run", suffix: "" };
+      return { valid: true, kind, value: null, maxMove: Infinity, description: "the full run", suffix: "" };
     }
-    const value = Number(heatmapExportLimitInput?.value);
-    if (!Number.isFinite(value) || value < 0) {
+    const rawValue = String(inputControl?.value ?? "").trim();
+    const value = Number(rawValue);
+    if (!rawValue || !Number.isFinite(value) || value < 0) {
       return { valid: false, error: kind === "cost" ? "Enter a maximum API cost." : "Enter a maximum move." };
     }
     if (kind === "move") {
       const maxMove = Math.min(latestHeatmapMove(), Math.max(0, Math.floor(value)));
       return {
         valid: true,
+        kind,
+        value,
         maxMove,
         description: `through move ${maxMove.toLocaleString()}`,
         suffix: `-through-move-${maxMove}`
@@ -2675,6 +2684,8 @@
       }
       return {
         valid: true,
+        kind,
+        value,
         maxMove,
         description: `through $${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} API cost (move ${maxMove.toLocaleString()})`,
         suffix: `-through-${String(value).replace(/[^0-9]+/g, "-").replace(/^-|-$/g, "") || "0"}-usd`
@@ -2691,10 +2702,24 @@
     const maxMove = eligible ? eligible[0] : 0;
     return {
       valid: true,
+      kind,
+      value,
       maxMove,
       description: `through $${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} API cost (move ${maxMove.toLocaleString()})`,
       suffix: `-through-${String(value).replace(/[^0-9]+/g, "-").replace(/^-|-$/g, "") || "0"}-usd`
     };
+  }
+
+  function selectedHeatmapExportLimit() {
+    return selectedExportLimit(heatmapExportLimitKind, heatmapExportLimitInput);
+  }
+
+  function selectedVideoExportLimit() {
+    const limit = selectedExportLimit(videoExportLimitKind, videoExportLimitInput);
+    if (limit.valid && Number.isFinite(limit.maxMove) && limit.maxMove < 1) {
+      return { valid: false, error: "Choose a limit that includes at least one move." };
+    }
+    return limit;
   }
 
   function updateHeatmapExportLimitControl() {
@@ -2722,6 +2747,60 @@
       heatmapExportLimitInput.setAttribute("aria-label", "Maximum API cost in US dollars to export");
     }
     updateHeatmapExportControl();
+  }
+
+  function latestApiCost() {
+    const costs = [
+      ...state.apiCostByMove.values(),
+      ...state.apiCostTimeline.map((point) => point.api_cost_cumulative_usd)
+    ].map(Number).filter(Number.isFinite);
+    return costs.length ? Math.max(...costs) : NaN;
+  }
+
+  function updateVideoExportLimitControl(run = state.run || initial) {
+    if (!videoExportLimitKind || !videoExportLimitField || !videoExportLimitInput || !videoExportQuality) return;
+    const rendering = run?.video_status === "rendering";
+    const available = ["paused", "finished", "stopped", "failed"].includes(run?.status) && !rendering;
+    const kind = videoExportLimitKind.value;
+    videoExportLimitKind.hidden = !available;
+    videoExportQuality.hidden = !available;
+    videoExportLimitField.hidden = !available || kind === "all";
+    videoExportLimitKind.disabled = rendering;
+    videoExportLimitInput.disabled = rendering;
+    videoExportQuality.disabled = rendering;
+    if (kind === "move") {
+      videoExportLimitUnit.textContent = "Move";
+      videoExportLimitInput.min = "1";
+      videoExportLimitInput.step = "1";
+      videoExportLimitInput.max = String(latestHeatmapMove());
+      videoExportLimitInput.placeholder = String(latestHeatmapMove());
+      videoExportLimitInput.setAttribute("aria-label", "Maximum move to render");
+    } else if (kind === "cost") {
+      const cost = latestApiCost();
+      videoExportLimitUnit.textContent = "$";
+      videoExportLimitInput.min = "0";
+      videoExportLimitInput.step = "0.01";
+      videoExportLimitInput.removeAttribute("max");
+      videoExportLimitInput.placeholder = Number.isFinite(cost) ? cost.toFixed(2) : "0.00";
+      videoExportLimitInput.setAttribute("aria-label", "Maximum API cost in US dollars to render");
+    }
+    const limit = selectedVideoExportLimit();
+    const disabled = rendering || !limit.valid;
+    generateVideoButton.disabled = disabled;
+    regenerateVideoButton.disabled = disabled;
+    const moveSuffix = limit.valid && Number.isFinite(limit.maxMove)
+      ? ` to move ${limit.maxMove.toLocaleString()}`
+      : "";
+    const generateLabel = generateVideoButton.querySelector("span");
+    const regenerateLabel = regenerateVideoButton.querySelector("span");
+    if (generateLabel && !rendering) generateLabel.textContent = `Generate${moveSuffix}`;
+    if (regenerateLabel && !rendering) regenerateLabel.textContent = `Regenerate${moveSuffix}`;
+    const qualityLabel = videoExportQuality?.value === "raw" ? "raw quality" : "website quality under 25 MB";
+    const title = limit.valid
+      ? `Render ${limit.description} at ${qualityLabel}.`
+      : limit.error;
+    generateVideoButton.title = title;
+    regenerateVideoButton.title = title;
   }
 
   function updateHeatmapExportControl() {
@@ -3533,6 +3612,16 @@
   heatmapExportButton?.addEventListener("click", () => {
     void exportSelectedHeatmapFormat();
   });
+  videoExportLimitKind?.addEventListener("change", () => {
+    if (videoExportLimitInput) videoExportLimitInput.value = "";
+    updateVideoExportLimitControl();
+    if (videoExportLimitKind.value !== "all") {
+      requestAnimationFrame(() => videoExportLimitInput?.focus());
+    }
+  });
+  videoExportLimitInput?.addEventListener("input", () => updateVideoExportLimitControl());
+  videoExportLimitInput?.addEventListener("change", () => updateVideoExportLimitControl());
+  videoExportQuality?.addEventListener("change", () => updateVideoExportLimitControl());
 
   // ---- combined moves + reasoning feed --------------------------------------
 
@@ -4099,9 +4188,15 @@
       section.hidden = false;
       progressBox.hidden = true;
       downloadVideoButton.href = videoUrl;
+      downloadVideoButton.download = run.video_quality === "raw"
+        ? "maze-replay-raw.mp4"
+        : "maze-replay-website.mp4";
+      downloadVideoButton.title = run.video_quality === "raw"
+        ? "Download the raw-quality replay"
+        : "Download the website-quality replay (under 25 MB)";
       downloadVideoButton.hidden = false;
       if (!state.videoShown) {
-        video.src = `${videoUrl}?v=${encodeURIComponent(run.video_snapshot_turns || run.turns || Date.now())}`;
+        video.src = `${videoUrl}?v=${encodeURIComponent(`${run.video_snapshot_turns || run.turns || Date.now()}-${run.video_quality || "website"}`)}`;
         video.hidden = false;
         state.videoShown = true;
       }
@@ -4109,6 +4204,12 @@
     }
 
     downloadVideoButton.hidden = true;
+    if (state.videoShown) {
+      video.hidden = true;
+      video.removeAttribute("src");
+      video.load();
+      state.videoShown = false;
+    }
 
     if (run.video_status === "failed") {
       section.hidden = true;
@@ -4211,6 +4312,7 @@
       describeRun(progress.run);
       renderTokenUsage(progress.token_usage, syncingHistory);
       updateHeatmapExportLimitControl();
+      updateVideoExportLimitControl(progress.run);
       renderToolsWorkspace(progress.tools_workspace);
       renderStats(progress.run);
       renderSwarmViews(progress.swarm_views);
@@ -4341,11 +4443,11 @@
     }
   }
 
-  async function runAction(action) {
+  async function runAction(action, body = {}) {
     const response = await fetch(`/api/agent/runs/${encodeURIComponent(runId)}/${action}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: "{}"
+      body: JSON.stringify(body)
     });
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}));
@@ -4436,15 +4538,26 @@
     }
   });
 
-  async function startVideoGeneration(action, statusMessage) {
+  async function startVideoGeneration(action) {
+    const limit = selectedVideoExportLimit();
+    if (!limit.valid) {
+      setStatus(limit.error, true);
+      return;
+    }
+    const quality = videoExportQuality?.value === "raw" ? "raw" : "website";
+    const request = {
+      quality,
+      ...(Number.isFinite(limit.maxMove) ? { action_limit: limit.maxMove } : {}),
+      ...(limit.kind === "cost" ? { api_cost_limit_usd: limit.value } : {})
+    };
     generateVideoButton.disabled = true;
     regenerateVideoButton.disabled = true;
     try {
-      const payload = await runAction(action);
+      const payload = await runAction(action, request);
       state.run = payload.run || state.run;
       renderControls(state.run);
       updateReplay(state.run, { phase: "starting", percent: 0 });
-      setStatus(statusMessage);
+      setStatus(`Generating ${quality === "raw" ? "raw-quality" : "website-quality"} replay ${limit.description}…`);
       clearTimeout(state.timer);
       poll();
     } catch (error) {
@@ -4455,11 +4568,11 @@
   }
 
   generateVideoButton?.addEventListener("click", () => {
-    startVideoGeneration("video", "Generating replay video…");
+    startVideoGeneration("video");
   });
 
   regenerateVideoButton?.addEventListener("click", () => {
-    startVideoGeneration("video/regenerate", "Regenerating replay video…");
+    startVideoGeneration("video/regenerate");
   });
 
   cancelVideoButton?.addEventListener("click", async () => {
