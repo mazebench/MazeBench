@@ -167,12 +167,26 @@ function normalizeSandboxOptions(options = {}) {
   }
   const codexBin = resolvedExecutable(options.codexBin || "codex", "Codex");
   const pythonBin = findPythonExecutable(options.pythonBin || "");
+  const runUid = Number.isInteger(Number(options.runUid)) && Number(options.runUid) >= 0
+    ? Number(options.runUid)
+    : null;
+  const runGid = Number.isInteger(Number(options.runGid)) && Number(options.runGid) >= 0
+    ? Number(options.runGid)
+    : null;
+  if ((runUid === null) !== (runGid === null)) {
+    throw new Error("Python sandbox runUid and runGid must be supplied together.");
+  }
   if (deniedPaths.some((entry) => isWithin(pythonBin, entry))) {
     throw new Error("The Python interpreter must not be inside a denied path.");
   }
   fs.mkdirSync(path.join(scratchDir, ".tmp"), { recursive: true, mode: 0o700 });
   fs.mkdirSync(path.join(stateDir, "codex-home"), { recursive: true, mode: 0o700 });
-  return { scratchDir, stateDir, deniedPaths, codexBin, pythonBin };
+  if (runUid !== null && typeof process.getuid === "function" && process.getuid() === 0) {
+    for (const directory of [scratchDir, path.join(scratchDir, ".tmp"), stateDir, path.join(stateDir, "codex-home")]) {
+      fs.chownSync(directory, runUid, runGid);
+    }
+  }
+  return { scratchDir, stateDir, deniedPaths, codexBin, pythonBin, runUid, runGid };
 }
 
 function sandboxEnvironment(config) {
@@ -199,7 +213,11 @@ function pythonSandboxCommand(options = {}) {
   const permissions = { ":minimal": "read" };
   for (const root of runtimeReadRoots(config.pythonBin)) permissions[root] = "read";
   permissions[config.scratchDir] = "write";
-  permissions[config.stateDir] = "deny";
+  // Avoid nested deny mounts (for example stateDir inside a denied runDir),
+  // which Bubblewrap cannot construct after the parent has been masked.
+  if (!config.deniedPaths.some((denied) => isWithin(config.stateDir, denied))) {
+    permissions[config.stateDir] = "deny";
+  }
   for (const denied of config.deniedPaths) permissions[denied] = "deny";
   return {
     config,
@@ -253,6 +271,7 @@ function runSandboxedPython(code, options = {}) {
   const result = spawnSync(config.codexBin, argv, {
     cwd: config.scratchDir,
     env: sandboxEnvironment(config),
+    ...(config.runUid === null ? {} : { uid: config.runUid, gid: config.runGid }),
     input: source,
     encoding: "utf8",
     timeout: (timeoutSeconds + 5) * 1000,
@@ -382,7 +401,9 @@ function cliRequest(value) {
     stateDir: request.state_dir,
     deniedPaths: Array.isArray(request.denied_paths) ? request.denied_paths : [],
     codexBin: request.codex_bin || "codex",
-    pythonBin: request.python_bin || ""
+    pythonBin: request.python_bin || "",
+    runUid: request.run_uid,
+    runGid: request.run_gid
   };
   if (operation === "preflight") {
     return preflightPythonSandbox(options);

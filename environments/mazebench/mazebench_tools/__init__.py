@@ -1,6 +1,6 @@
 """MazeBench taskset for untrusted harnesses using isolated MCP game controls.
 
-Prime runs this evaluator-owned tool server in a sandbox separate from the
+MazeBench runs this evaluator-owned tool server in a sandbox separate from the
 framework-selected harness. The game lives in the tool-server sandbox and only
 named game controls cross that boundary.
 """
@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import shlex
 import shutil
@@ -19,7 +20,7 @@ import tempfile
 import time
 import uuid
 from contextvars import ContextVar
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Literal
 
 import verifiers.v1 as vf
@@ -44,13 +45,24 @@ from mazebench.mazebench import (
 )
 from mcp.types import CallToolResult, ImageContent, TextContent
 from pydantic import Field
+from verifiers.v1.harnesses.codex.harness import INSTALL as CODEX_INSTALL
 from verifiers.v1.mcp.server import ServerBase
 from verifiers.v1.runtimes import register
 from verifiers.v1.runtimes.prime import PrimeRuntime
 
+logger = logging.getLogger(__name__)
+
 GAME_SANDBOX_FINALIZATION_SECONDS = 30
 MAX_ACTION_LENGTH = 128
 MAX_ACTION_SEQUENCE_LENGTH = 1_000
+PYTHON_SANDBOX_CODEX_VERSION = "0.144.5"
+PYTHON_SANDBOX_CODEX_DIR = "/tmp/mazebench-python-codex"
+PYTHON_SANDBOX_CODEX_BIN = f"{PYTHON_SANDBOX_CODEX_DIR}/bin/codex"
+PRIME_TOOL_RUNTIME_IMAGE = os.environ.get(
+    "MAZEBENCH_PRIME_TOOL_RUNTIME_IMAGE",
+    "prime/mazebench/mazebench-tool-runtime:py313-codex-0.144.5-vf-b3b8f51-v3",
+).strip()
+PREBUILT_TOOL_MARKER = "/opt/mazebench-image/tool-runtime"
 BoundedAction = Annotated[str, Field(min_length=1, max_length=MAX_ACTION_LENGTH)]
 BoundedActionSequence = Annotated[
     list[BoundedAction], Field(min_length=1, max_length=MAX_ACTION_SEQUENCE_LENGTH)
@@ -59,12 +71,12 @@ WorldCoordinate = Annotated[str, Field(pattern=r"^[A-Za-z]$")]
 
 
 class MazeBenchToolsetConfig(vf.ToolsetConfig):
-    """A dedicated Prime sandbox for one rollout's game tool server."""
+    """A dedicated sandbox for one rollout's game tool server."""
 
     colocated: Literal[False] = False
-    runtime: vf.PrimeConfig = Field(
+    runtime: vf.RuntimeConfig = Field(
         default_factory=lambda: vf.PrimeConfig(
-            image="python:3.13-slim",
+            image=PRIME_TOOL_RUNTIME_IMAGE,
             workdir="/app",
             # Bootstrap and the authenticated rollout-state channel need egress.
             # The model has no code-execution path inside this trusted sandbox.
@@ -87,11 +99,120 @@ class MazeBenchToolsetConfig(vf.ToolsetConfig):
 class MazeBenchPrimeRuntime(PrimeRuntime):
     """Prime runtime exposing MCP over a native TCP endpoint."""
 
+    _python_export_paths: tuple[str, str, str] | None = None
+
+    def configure_python_export(
+        self, workspace_path: str, activity_path: str, state_path: str
+    ) -> None:
+        if workspace_path and activity_path and state_path:
+            self._python_export_paths = (workspace_path, activity_path, state_path)
+
     async def expose(self, port: int) -> str:
         exposed = await self._client.expose(self.info.id, port, protocol="TCP")
         if not exposed.external_endpoint:
             raise RuntimeError("Prime did not return a TCP endpoint for MazeBench.")
         return f"http://{exposed.external_endpoint}"
+
+    async def _export_python_workspace(self) -> None:
+        if not self._python_export_paths or self._client is None:
+            return
+        workspace_path, activity_path, _state_path = self._python_export_paths
+        report: dict[str, Any] = {
+            "sandbox_id": self.info.id,
+            "workspace_path": workspace_path,
+            "exported_files": [],
+            "omitted_files": [],
+            "ok": True,
+        }
+        try:
+            listing = await self.run(
+                [
+                    "python3",
+                    "-c",
+                    (
+                        "import json, os, sys; root=sys.argv[1]; "
+                        "print(json.dumps([[os.path.relpath(os.path.join(base, name), root), "
+                        "os.path.getsize(os.path.join(base, name))] "
+                        "for base, dirs, files in os.walk(root, followlinks=False) "
+                        "for name in files if not os.path.islink(os.path.join(base, name))]))"
+                    ),
+                    workspace_path,
+                ],
+                {},
+            )
+            entries = json.loads(listing.stdout or "[]") if listing.exit_code == 0 else []
+            destination_root = Path(workspace_path).resolve()
+            total_bytes = 0
+            for candidate in entries[:1_024]:
+                if not isinstance(candidate, list) or len(candidate) != 2:
+                    continue
+                relative, size = str(candidate[0]), max(0, int(candidate[1]))
+                remote_relative = PurePosixPath(relative)
+                if remote_relative.is_absolute() or ".." in remote_relative.parts:
+                    report["omitted_files"].append(relative)
+                    continue
+                if size > 16 * 1024 * 1024 or total_bytes + size > 64 * 1024 * 1024:
+                    report["omitted_files"].append(relative)
+                    continue
+                target = (destination_root / Path(*remote_relative.parts)).resolve()
+                if not target.is_relative_to(destination_root):
+                    report["omitted_files"].append(relative)
+                    continue
+                data = await self.read(
+                    str(PurePosixPath(workspace_path) / remote_relative)
+                )
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(data)
+                total_bytes += len(data)
+                report["exported_files"].append(relative)
+
+            metadata_paths = (
+                (activity_path, False),
+                (
+                    str(
+                        Path(activity_path).with_name(
+                            "python-sandbox-preflight.json"
+                        )
+                    ),
+                    True,
+                ),
+            )
+            report["metadata_files"] = []
+            for remote_path, required in metadata_paths:
+                try:
+                    data = await self.read(remote_path)
+                except Exception as download_error:
+                    fallback = await self.run(["cat", remote_path], {})
+                    if fallback.exit_code != 0:
+                        if required:
+                            report["ok"] = False
+                        report.setdefault("metadata_errors", []).append(
+                            {
+                                "path": Path(remote_path).name,
+                                "error": str(download_error)[:300],
+                            }
+                        )
+                        continue
+                    data = fallback.stdout.encode()
+                if data:
+                    target = Path(remote_path)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(data)
+                    report["metadata_files"].append(target.name)
+        except Exception as error:  # best-effort export must not leak the paid sandbox
+            report["ok"] = False
+            report["error"] = str(error)[:500]
+        finally:
+            _atomic_json(
+                str(Path(activity_path).with_name("python-sandbox-export.json")),
+                report,
+            )
+
+    async def teardown(self) -> None:
+        try:
+            await self._export_python_workspace()
+        finally:
+            await super().teardown()
 
 
 _verifiers_make_runtime = mcp_launch.make_runtime
@@ -103,6 +224,14 @@ def _make_mazebench_runtime(
     if not isinstance(config, vf.PrimeConfig):
         return _verifiers_make_runtime(config, name)
     runtime = MazeBenchPrimeRuntime(config, name)
+    binding = _current_rollout_tool_config.get()
+    if binding is not None:
+        tool_config = binding[2]
+        runtime.configure_python_export(
+            tool_config.python_workspace_path,
+            tool_config.python_activity_path,
+            tool_config.python_state_path,
+        )
     register(runtime)
     return runtime
 
@@ -117,7 +246,7 @@ _current_rollout_tool_config: ContextVar[
 
 class MazeBenchToolConfig(MazeBenchConfig):
     id: str = "mazebench-tools"
-    python_tools: Literal[False] = False
+    python_tools: bool = False
     tools: MazeBenchToolsetConfig = Field(default_factory=MazeBenchToolsetConfig)
 
 
@@ -205,11 +334,12 @@ that object directly rather than transcribing it into a different format."""
 TOOLS mode. In addition to the game controls, you have exactly one general-purpose
 computation tool: `python_exec`. It runs Python in a fresh persistent scratch workspace.
 Each call starts a fresh Python process, while relative-path files persist for this run.
-Before your first game action, use `python_exec` to create and execute at least one reusable
-Python program that helps parse observations, track state, model mechanics, or plan moves.
-Create, revise, and execute files through `python_exec`; there is no shell, editor, browser,
-or host filesystem tool. Repository files, host files, run artifacts, subprocesses, and
-network access are blocked.
+Call `python_exec` directly. Do not use `functions.exec`, search `ALL_TOOLS`, or try to
+discover it through another tool; MazeBench controls are deliberately direct-only.
+Use it when isolated computation would help parse observations, track state, model mechanics,
+or plan moves. You may create, revise, and execute reusable files through `python_exec`; there
+is no shell, editor, browser, or host filesystem tool. Repository files, host files, run
+artifacts, subprocesses, and network access are blocked.
 
 In JSON mode, every delivered sanitized observation is also written atomically to
 `observations/current.json` in that scratch workspace and appended to
@@ -249,6 +379,16 @@ The game implementation, session, checkpoints, and scoring are evaluator-only. D
 locate or access them. Do not claim moves or scores that were not returned by the game controls."""
 
 
+def _tool_system_prompt(*, python_tools: bool = False) -> str:
+    python_policy = " Python tools are available for isolated computation." if python_tools else ""
+    return (
+        "Use only the supplied game controls for game interaction. "
+        "Use python_exec only for isolated computation when it is enabled. "
+        "Treat game-control results as authoritative."
+        f"{python_policy}"
+    )
+
+
 def _tool_prompt_with_resume(
     task: MazeBenchTaskData, *, python_tools: bool = False
 ) -> str:
@@ -280,7 +420,10 @@ still be called exactly once by this new harness process.
 class MazeBenchToolset(vf.Toolset[MazeBenchToolsetConfig, MazeBenchToolTraceState]):
     """Named model controls backed by a game in this tool-server sandbox."""
 
-    TOOL_PREFIX = None
+    # Codex and Prime Agent require a non-empty MCP server name. The raw MCP
+    # methods remain the singular game controls below; generic function-calling
+    # harnesses namespace them as `mazebench_<tool>` when combining servers.
+    TOOL_PREFIX = "mazebench"
 
     async def setup_task(self, task: MazeBenchTaskData) -> None:
         if not self.config.artifact_nonce:
@@ -930,6 +1073,30 @@ async def _install_mazebench_in_sandbox(server: ServerBase, runtime: vf.Runtime)
     venv = "/tmp/vf-venv"
     extras = ",".join(type(server).EXTRAS)
     package = f"{root}/{source.name}" + (f"[{extras}]" if extras else "")
+    prebuilt_probe = await runtime.run(
+        [
+            "sh",
+            "-c",
+            (
+                f"test -f {shlex.quote(PREBUILT_TOOL_MARKER)} && "
+                f"test -x {shlex.quote(venv)}/bin/python && "
+                f"test -x {shlex.quote(venv)}/bin/node"
+            ),
+        ],
+        {},
+    )
+    prebuilt = prebuilt_probe.exit_code == 0
+    codex_setup = ""
+    if server.config.python_workspace_path:
+        install = (
+            CODEX_INSTALL.replace("{version}", PYTHON_SANDBOX_CODEX_VERSION)
+            .replace("{dir}", PYTHON_SANDBOX_CODEX_DIR)
+            .replace("{bin}", PYTHON_SANDBOX_CODEX_BIN)
+        )
+        codex_setup = (
+            f" && ([ -x {shlex.quote(PYTHON_SANDBOX_CODEX_BIN)} ] || "
+            f"( {install} ))"
+        )
     vision_setup = ""
     if server.config.vision:
         runtime_root = f"{venv}/lib/python3.13/site-packages/mazebench/runtime"
@@ -939,19 +1106,39 @@ async def _install_mazebench_in_sandbox(server: ServerBase, runtime: vf.Runtime)
             f"{venv}/bin/npm install --prefix {runtime_root} --no-save "
             "--no-package-lock playwright-core@1.60.0 >/dev/null"
         )
+    if prebuilt:
+        install_package = (
+            f"uv pip install --python {venv} --no-deps --reinstall "
+            f"--no-build-isolation {shlex.quote(package)}"
+        )
+        logger.info("mazebench: reusing preinstalled tool runtime dependencies")
+    else:
+        install_package = (
+            f"uv venv {venv} && "
+            f"uv pip install --python {venv} {shlex.quote(package)}"
+        )
+        logger.warning(
+            "mazebench: prebuilt tool runtime marker missing; using cold dependency install"
+        )
     setup = (
         f"{mcp_launch._ENSURE_UV}; set -e; "
-        "command -v git >/dev/null 2>&1 || "
-        "(apt-get update -qq && apt-get install -y -qq git ca-certificates); "
+        "(command -v git >/dev/null 2>&1 && command -v curl >/dev/null 2>&1) || "
+        "(apt-get update -qq && apt-get install -y -qq git curl ca-certificates); "
         f"tar -xzf {root}/{shlex.quote(source.name)}.tar.gz -C {root} && "
-        f"uv venv {venv} && "
-        f"uv pip install --python {venv} {shlex.quote(package)}"
+        f"{install_package}"
+        f"{codex_setup}"
         f"{vision_setup}"
     )
+    started_at = time.monotonic()
     result = await runtime.run(["sh", "-c", setup], {})
     if result.exit_code != 0:
         detail = (result.stderr or result.stdout).strip()[-2_000:]
         raise RuntimeError(f"MazeBench tool server install failed: {detail}")
+    logger.info(
+        "mazebench: tool runtime ready in %.1fs (prebuilt=%s)",
+        time.monotonic() - started_at,
+        prebuilt,
+    )
     return f"{venv}/bin/python"
 
 
@@ -1045,6 +1232,8 @@ class MazeBenchToolsetWithPython(MazeBenchToolset):
             "scratch_dir": str(workspace),
             "state_dir": str(state),
             "denied_paths": [str(root), str(activity.parent), str(Path.home())],
+            "codex_bin": PYTHON_SANDBOX_CODEX_BIN,
+            "python_bin": sys.executable,
         }
         completed = subprocess.run(
             [self.task.node_bin, str(script)],
@@ -1210,10 +1399,9 @@ class MazeBenchToolTask(
     async def finalize(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
         write_live_actions(list(trace.state.maze_actions))
         if not trace.state.maze_scorecard:
-            trace.state = MazeBenchToolTraceState(
-                game_lost=True,
-                maze_status_error="trusted game state unavailable",
-            )
+            trace.state.game_lost = True
+            if not trace.state.maze_status_error:
+                trace.state.maze_status_error = "trusted game state unavailable"
         await MazeBenchTaskBehavior.finalize(self, trace, runtime)
 
 
@@ -1294,10 +1482,8 @@ class MazeBenchToolTaskset(vf.Taskset[MazeBenchToolTask, MazeBenchToolConfig]):
                             "prompt": _tool_prompt_with_resume(
                                 data, python_tools=self.config.python_tools
                             ),
-                            "system_prompt": (
-                                "Use only the supplied game controls for game interaction. "
-                                "When available, use python_exec only for isolated computation. "
-                                "Treat game-control results as authoritative."
+                            "system_prompt": _tool_system_prompt(
+                                python_tools=self.config.python_tools
                             ),
                         }
                     ),

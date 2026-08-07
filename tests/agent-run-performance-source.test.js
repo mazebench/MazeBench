@@ -23,7 +23,7 @@ assert.match(runService, /actions: tokenUsage\.actions\.filter/);
 assert.match(runService, /api_cost_timeline: cursor === 0 \? tokenUsage\.api_cost_timeline : undefined/);
 assert.match(runService, /reasoning\.filter\(\(entry\)/);
 assert.match(runService, /apiPricingForRun\(summary, listProviderModels\("prime"\)\.models\)/);
-assert.match(runScript, /const FEED_RENDER_BATCH = 200/);
+assert.match(runScript, /const FEED_RENDER_BATCH = 50/);
 assert.match(runScript, /const MAX_RETAINED_LOG_CHARACTERS = 512 \* 1024/);
 assert.match(runScript, /function appendRunnerLog\(chunk, resetToTail = false\)/);
 assert.match(runScript, /if \(!active\) return/);

@@ -45,6 +45,9 @@ EXPECTED_GAME_TOOLS = {
     "quit",
     "action_sequence",
 }
+EXPECTED_FRAMEWORK_GAME_TOOLS = {
+    f"mazebench_{name}" for name in EXPECTED_GAME_TOOLS
+}
 
 
 class GameRuntimeIsolationTests(unittest.TestCase):
@@ -67,7 +70,10 @@ class GameRuntimeIsolationTests(unittest.TestCase):
         self.assertFalse(config.colocated)
         self.assertIsNone(config.url)
         self.assertIsInstance(config.runtime, PrimeConfig)
-        self.assertEqual(config.runtime.image, "python:3.13-slim")
+        self.assertEqual(
+            config.runtime.image,
+            "prime/mazebench/mazebench-tool-runtime:py313-codex-0.144.5-vf-b3b8f51-v3",
+        )
         self.assertEqual(config.runtime.workdir, "/app")
         self.assertEqual(config.runtime.region, "us")
         self.assertEqual(config.runtime.cpu, 1)
@@ -165,9 +171,10 @@ class GameRuntimeIsolationTests(unittest.TestCase):
         class Runtime:
             type = "prime"
 
-            def __init__(self) -> None:
+            def __init__(self, *, prebuilt: bool) -> None:
                 self.writes: dict[str, bytes] = {}
                 self.command = ""
+                self.prebuilt = prebuilt
 
             async def write(self, path: str, value: bytes) -> None:
                 self.writes[path] = value
@@ -175,16 +182,31 @@ class GameRuntimeIsolationTests(unittest.TestCase):
             async def run(self, argv: list[str], env: dict[str, str]):
                 del env
                 self.command = " ".join(argv)
+                if "test -f /opt/mazebench-image/tool-runtime" in self.command:
+                    return SimpleNamespace(
+                        exit_code=0 if self.prebuilt else 1,
+                        stdout="",
+                        stderr="",
+                    )
                 return SimpleNamespace(exit_code=0, stdout="", stderr="")
 
-        runtime = Runtime()
-        python = await mazebench_tools._install_mazebench_in_sandbox(toolset, runtime)
+        runtime = Runtime(prebuilt=False)
+        python = await mazebench_tools._install_mazebench_in_sandbox(
+            toolset, runtime
+        )
 
         self.assertEqual(python, "/tmp/vf-venv/bin/python")
         self.assertEqual(list(runtime.writes), ["/tmp/vf-src/mazebench.tar.gz"])
         self.assertIn("uv pip install", runtime.command)
+        self.assertIn("uv venv /tmp/vf-venv", runtime.command)
         self.assertIn("/tmp/vf-src/mazebench", runtime.command)
         self.assertNotIn("chromium", runtime.command)
+        prebuilt_runtime = Runtime(prebuilt=True)
+        await mazebench_tools._install_mazebench_in_sandbox(
+            toolset, prebuilt_runtime
+        )
+        self.assertIn("--no-deps --reinstall", prebuilt_runtime.command)
+        self.assertNotIn("uv venv /tmp/vf-venv", prebuilt_runtime.command)
         self.assertIs(
             mcp_launch._install_in_sandbox,
             mazebench_tools._install_mazebench_in_sandbox,
@@ -297,7 +319,7 @@ class GameRuntimeIsolationTests(unittest.TestCase):
                                 "id": "game-call",
                                 "type": "function",
                                 "function": {
-                                    "name": "start",
+                                    "name": "mazebench_start",
                                     "arguments": "{}",
                                 },
                             }
@@ -405,7 +427,10 @@ class GameRuntimeIsolationTests(unittest.TestCase):
             traces = episode.traces
             self.assertEqual(len(traces), 1)
             self.assertFalse(traces[0].errors)
-            self.assertTrue(traces[0].state.maze_scorecard)
+            self.assertTrue(
+                traces[0].state.maze_scorecard,
+                traces[0].state.model_dump_json(indent=2),
+            )
             self.assertEqual(len(requests), 3)
             for request in requests:
                 tools = {
@@ -413,8 +438,8 @@ class GameRuntimeIsolationTests(unittest.TestCase):
                     for tool in request.get("tools") or []
                 }
                 names = set(tools)
-                self.assertEqual(names, EXPECTED_GAME_TOOLS)
-                coordinates = tools["go_to_level"]["parameters"]["properties"]
+                self.assertEqual(names, EXPECTED_FRAMEWORK_GAME_TOOLS)
+                coordinates = tools["mazebench_go_to_level"]["parameters"]["properties"]
                 self.assertEqual(coordinates["x"]["pattern"], "^[A-Za-z]$")
                 self.assertEqual(coordinates["y"]["pattern"], "^[A-Za-z]$")
                 self.assertEqual(request["max_tokens"], 512)

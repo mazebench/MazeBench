@@ -726,7 +726,8 @@ function createPageRenderer({
     return renderSitePage({
       title: "Train — Maze Bench",
       bodyClass: "train-page",
-      extraHeadHtml: `<link rel="preload" as="image" href="/logos/prime.png" type="image/png" fetchpriority="high">`,
+      extraHeadHtml: `<link rel="preload" as="image" href="/logos/codex.png" type="image/png" fetchpriority="high">
+    <link rel="preload" as="image" href="/logos/prime.png" type="image/png" fetchpriority="high">`,
       main: `<div class="page-head train-page-head">
           <h1>Train</h1>
           <p id="train-status" class="author-status" role="status" aria-live="polite"></p>
@@ -877,8 +878,23 @@ function createPageRenderer({
               <div class="custom-harness-panel__status">
                 <strong id="custom-harness-status">Loading harnesses…</strong>
                 <p id="custom-harness-note" class="muted"></p>
-                <p class="custom-harness-panel__security">The framework harness receives only named game controls through standard MCP wiring. The authoritative game server runs in a separate sandbox; source, state, checkpoints, and scoring remain with the evaluator.</p>
+                <p class="custom-harness-panel__security">The official Prime Agent CLI runs inside a disposable agent sandbox. The framework harness receives only named game controls through standard MCP wiring; the authoritative game server runs in a separate sandbox with source, state, checkpoints, and scoring kept evaluator-only.</p>
               </div>
+            </div>
+            <div id="harness-execution" class="harness-execution" hidden>
+              <span class="harness-execution__label">Run through</span>
+              <div id="execution-picker" class="execution-picker" role="radiogroup" aria-label="Execution provider">
+                <button type="button" class="execution-option is-selected" data-execution="prime" aria-pressed="true">
+                  <span class="execution-option__logo"><img src="/logos/prime.png" alt="" width="128" height="128"></span>
+                  <span class="execution-option__copy"><strong>Prime inference</strong><small>Prime models · isolated agent</small></span>
+                </button>
+                <button type="button" class="execution-option" data-execution="local" aria-pressed="false">
+                  <span class="execution-option__logo execution-option__logo--local" aria-hidden="true">LOCAL</span>
+                  <span class="execution-option__copy"><strong>Local isolated</strong><small>Docker · game + optional Python</small></span>
+                  <span id="local-run-status" class="execution-option__status is-idle" hidden></span>
+                </button>
+              </div>
+              <p class="custom-harness-panel__security">Each available route keeps MazeBench source, hidden state, scoring, shell, files, web, apps, and workers away from the evaluated model. Local runs fail closed unless the disposable boundary passes its launch-time isolation check.</p>
             </div>
           </section>
 
@@ -967,11 +983,11 @@ function createPageRenderer({
                   <button type="button" class="segmented__option" data-tool-use="read-only" aria-pressed="false"><span class="segmented__icon">NO</span><span>No Tools</span></button>
                   <button type="button" class="segmented__option" data-tool-use="offline" aria-pressed="false" title="Isolated Python scratchpad; no host files or network"><span class="segmented__icon">PY</span><span>Tools</span></button>
                 </div>
-                <div id="auto-run-tools-option" class="tool-use-options" hidden>
-                  <label class="switch auto-run-tools-toggle"><input id="run-auto-run-tools" type="checkbox"><span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span><span class="switch__label">Auto-run tools</span></label>
-                  <p>Lets solvers submit full action sequences, the agent observe the final frame, and can inspect intermediate frames.</p>
-                  <div id="auto-run-all-frames-option" class="tool-use-suboption" hidden>
-                    <label class="switch"><input id="run-auto-run-all-frames" type="checkbox"><span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span><span class="switch__label">Include every frame</span></label>
+                <div id="auto-run-tools-option" class="tool-use-options" data-auto-run-tools-option hidden>
+                  <label class="switch auto-run-tools-toggle"><input id="run-auto-run-tools" data-auto-run-tools type="checkbox"><span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span><span class="switch__label">Auto-run tools</span></label>
+                  <p>Lets solvers submit full action sequences, observe the final frame, and inspect intermediate frames.</p>
+                  <div id="auto-run-all-frames-option" class="tool-use-suboption" data-auto-run-all-frames-option hidden>
+                    <label class="switch"><input id="run-auto-run-all-frames" data-auto-run-all-frames type="checkbox"><span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span><span class="switch__label">Include every frame</span></label>
                     <p>Sends every intermediate frame from each action sequence to the agent, not only the final frame.</p>
                   </div>
                 </div>
@@ -1036,6 +1052,14 @@ function createPageRenderer({
                   <span class="segmented__glider" aria-hidden="true"></span>
                   <button type="button" class="segmented__option" data-tool-use="read-only" aria-pressed="false"><span class="segmented__icon">NO</span><span>No Tools</span></button>
                   <button type="button" class="segmented__option" data-tool-use="offline" aria-pressed="false" title="Isolated Python scratchpad; no host files, subprocesses, or network"><span class="segmented__icon">PY</span><span>Tools</span></button>
+                </div>
+                <div id="prime-auto-run-tools-option" class="tool-use-options" data-auto-run-tools-option hidden>
+                  <label class="switch auto-run-tools-toggle"><input id="run-prime-auto-run-tools" data-auto-run-tools type="checkbox"><span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span><span class="switch__label">Auto-run tools</span></label>
+                  <p>Lets solvers submit full action sequences, observe the final frame, and inspect intermediate frames.</p>
+                  <div id="prime-auto-run-all-frames-option" class="tool-use-suboption" data-auto-run-all-frames-option hidden>
+                    <label class="switch"><input id="run-prime-auto-run-all-frames" data-auto-run-all-frames type="checkbox"><span class="switch__track" aria-hidden="true"><span class="switch__thumb"></span></span><span class="switch__label">Include every frame</span></label>
+                    <p>Sends every intermediate frame from each action sequence to the agent, not only the final frame.</p>
+                  </div>
                 </div>
                 <p class="muted">Available for Prime-hosted Codex and Claude Code. Python files persist only in this run's empty scratch workspace.</p>
               </article>
@@ -1135,7 +1159,7 @@ function createPageRenderer({
           </div>
         </div>
         <script>window.__AGENT_DATA__ = ${serializeForScript(agentData)};</script>
-        <script src="/agent.js?v=20260719-run-defaults-1" defer></script>`
+        <script src="/agent.js?v=20260806-prime-auto-run-1" defer></script>`
     });
   }
 
@@ -1372,7 +1396,7 @@ function createPageRenderer({
             <div>
               <span class="run-tools__eyebrow">Isolated scratch space</span>
               <h2 id="run-tools-heading">Tools workspace</h2>
-              <p>Agent-created files and every Python execution. Inline commands run as <code>&lt;mazebench-python&gt;</code>; they are not hidden script files.</p>
+              <p>Agent-created files and every Python execution. Each call is saved to a visible <code>.py</code> file before that file runs, so the agent can revise and reuse it.</p>
             </div>
             <span id="run-tools-live" class="run-tools__live" data-state="idle"><i aria-hidden="true"></i><span>Waiting for Python</span></span>
           </div>
@@ -1413,13 +1437,31 @@ function createPageRenderer({
     // inference, so its board and move artifacts arrive after every turn.
     // Explicit hosted runs still sync whatever samples Prime publishes.
     const mazeSections = isPrime
-      ? `<section class="panel" id="run-see-section">
+      ? `<section class="panel run-live" id="run-see-section">
           <h2>What the agent sees</h2>
-          ${boardWrap}
-          ${jsonWrap}
+          <div id="run-live-grid" class="run-live__grid${run.mode === "json" ? " is-json-mode" : ""}">
+            <div class="run-live__viewer">
+              <figure class="run-live__frame">
+                <img id="run-live-image" alt="Live maze view" hidden>
+                <canvas id="run-live-bitmap" class="run-live__bitmap" width="64" height="64" aria-label="Live colored grid view" hidden></canvas>
+                <div id="run-live-placeholder" class="run-live__placeholder">
+                  <span id="run-history-progress-title">Loading run history…</span>
+                  <div id="run-history-progress" class="run-history-progress" role="progressbar" aria-label="Run history loading progress" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0">
+                    <span id="run-history-progress-fill" class="run-history-progress__fill"></span>
+                  </div>
+                  <small id="run-history-progress-label" class="run-history-progress__label">0 moves loaded</small>
+                </div>
+                <figcaption id="run-live-caption" class="run-live__caption" hidden></figcaption>
+              </figure>
+            </div>
+            ${boardWrap}
+            ${jsonWrap}
+          </div>
           <div class="replay-controls replay-controls--main" id="run-main-replay-controls"></div>
           <p id="run-see-empty" class="muted">Waiting for the model's first observation…</p>
         </section>
+
+        ${toolsSection}
 
         ${tokenSection}
 

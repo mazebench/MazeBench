@@ -242,19 +242,24 @@ try {
   assert.equal(service.getToolExecution(legacyId, "legacy-python").stdout, "42\n");
 
   const pages = fs.readFileSync(path.join(projectRoot, "server", "pages.js"), "utf8");
+  const agentRunsSource = fs.readFileSync(path.join(projectRoot, "server", "agent-runs.js"), "utf8");
   const client = fs.readFileSync(path.join(projectRoot, "public", "agent-run.js"), "utf8");
   const theme = fs.readFileSync(path.join(projectRoot, "public", "local-site.css"), "utf8");
   const router = fs.readFileSync(path.join(projectRoot, "server", "router.js"), "utf8");
   assert.match(pages, /id="run-tools-section"/);
+  const primeSections = pages.match(/const mazeSections = isPrime\s+\? `([\s\S]*?)`\s+: `/)?.[1];
+  assert(primeSections, "Prime run page branch is present");
+  assert.match(primeSections, /\$\{toolsSection\}/);
   assert.match(pages, /id="run-tools-duration"/);
   assert.match(pages, /id="run-tools-file-size">0 B<\/strong><small>Total file size/);
   assert.doesNotMatch(pages, /Total CPU time/);
-  assert.match(pages, /Inline commands run as <code>&lt;mazebench-python&gt;<\/code>/);
+  assert.match(pages, /Each call is saved to a visible <code>\.py<\/code> file before that file runs/);
   assert.match(client, /function renderToolsWorkspace\(data\)/);
   assert.match(client, /function liveToolsWallTime\(data, now = Date\.now\(\)\)/);
   assert.match(client, /toolsFileSize\.textContent = formatBytes\(totalBytes\)/);
   assert.match(client, /window\.setInterval\(\(\) => refreshLiveToolsTiming\(\), 250\)/);
   assert.match(client, /data-tool-status-label/);
+  assert.match(client, /saved as \$\{escapeText\(execution\.script_path\)\}/);
   assert.doesNotMatch(client, /Total CPU time/);
   const liveTimingSource = client.match(/function liveToolsWallTime[\s\S]*?\n  }\n\n  function refreshLiveToolsTiming/)?.[0]
     .replace(/\n\n  function refreshLiveToolsTiming$/, "");
@@ -270,6 +275,16 @@ try {
   assert.match(client, /execution\.status === "cancelled"/);
   assert.match(client, /data-tool-execution/);
   assert.match(client, /data-workspace-file/);
+  assert.match(client, /data-workspace-directory/);
+  assert.match(client, /directoryPath === "observations"/);
+  assert.match(client, /aria-expanded="\$\{collapsed \? "false" : "true"\}"/);
+  assert.match(client, /toolsCollapsedDirectories: new Map\(\)/);
+  assert.match(client, /const childrenByParent = new Map\(\)/);
+  assert.match(client, /const renderEntry = \(entry\) =>/);
+  assert.match(client, /childrenByParent\.get\(String\(entry\.path \|\| ""\)\)/);
+  assert.match(client, /childrenByParent\.get\(""\)/);
+  assert.match(agentRunsSource, /const pending = \[\{ directory: descriptor\.directory, prefix: "" \}\]/);
+  assert.match(agentRunsSource, /prefix === "observations"/);
   assert.match(theme, /\.run-tools__grid \{/);
   assert.match(theme, /\.run-tools__execution\.is-cancelled/);
   assert.match(router, /segments\[5\] === "execution"/);

@@ -263,6 +263,17 @@ const solverExports = createSolverExportService({
 // local container-mode runs.
 let agentEnvironmentCache = null;
 let agentEnvironmentPromise = null;
+const LOCAL_AGENT_IMAGE = "docker.io/library/mazebench-agent:latest";
+const LOCAL_AGENT_VERSIONS = Object.freeze({
+  codex: "0.146.0",
+  claude: "2.1.220",
+  kimi: "0.29.1"
+});
+const LOCAL_AGENT_IMAGE_LABELS = Object.freeze({
+  codex: "org.mazebench.local-codex.version",
+  claude: "org.mazebench.local-claude.version",
+  kimi: "org.mazebench.local-kimi.version"
+});
 
 // A container run needs BOTH the docker binary AND a reachable daemon. Report
 // them separately so the UI can say "install Docker" vs "start Docker".
@@ -271,7 +282,7 @@ function dockerState() {
     spawnSync("sh", ["-c", "command -v docker"], { encoding: "utf8", env: enrichedPathEnv() }).status === 0;
 
   if (!installed) {
-    return { installed: false, running: false };
+    return { installed: false, running: false, image: false, imageVersions: {} };
   }
 
   // `docker info` fails fast when the daemon is down; the format keeps it tiny.
@@ -283,7 +294,74 @@ function dockerState() {
   const version = String(info.stdout || "").trim();
   const running = info.status === 0 && version.length > 0 && version !== "<no value>";
 
-  return { installed: true, running };
+  if (!running) return { installed: true, running: false, image: false, imageVersions: {} };
+  const image = spawnSync(
+    "docker",
+    ["image", "inspect", LOCAL_AGENT_IMAGE, "--format", "{{json .Config.Labels}}"],
+    { encoding: "utf8", env: enrichedPathEnv(), timeout: 8000 }
+  );
+  let labels = {};
+  try {
+    labels = JSON.parse(String(image.stdout || "{}"));
+  } catch (_error) {
+    /* an invalid/missing label set is an unreviewed image */
+  }
+  const imageVersions = Object.fromEntries(
+    Object.entries(LOCAL_AGENT_IMAGE_LABELS).map(([provider, label]) => [provider, String(labels[label] || "")])
+  );
+  return {
+    installed: true,
+    running: true,
+    image: image.status === 0 && Object.entries(LOCAL_AGENT_VERSIONS)
+      .every(([provider, version]) => imageVersions[provider] === version),
+    imageVersions
+  };
+}
+
+function codexSubscriptionStatus(result) {
+  const output = String(result?.stdout || result?.stderr || "").trim();
+  const authenticated = result?.status === 0;
+  return {
+    authenticated,
+    subscription: authenticated && /logged in using chatgpt/i.test(output),
+    method: /chatgpt/i.test(output) ? "chatgpt" : /api key/i.test(output) ? "api-key" : authenticated ? "other" : ""
+  };
+}
+
+function claudeSubscriptionStatus(result) {
+  let payload = {};
+  try {
+    payload = JSON.parse(String(result?.stdout || "{}"));
+  } catch (_error) {
+    /* a non-JSON result is not a confirmed subscription session */
+  }
+  const authenticated = result?.status === 0 && payload.loggedIn === true;
+  const subscriptionType = String(payload.subscriptionType || "").trim();
+  return {
+    authenticated,
+    subscription: authenticated && payload.authMethod === "claude.ai" && Boolean(subscriptionType),
+    method: String(payload.authMethod || ""),
+    subscriptionType
+  };
+}
+
+function kimiAccountStatus(result) {
+  let payload = {};
+  try {
+    payload = JSON.parse(String(result?.stdout || "{}"));
+  } catch (_error) {
+    /* a non-JSON result is not a confirmed configured account */
+  }
+  const providers = Object.values(payload.providers || {});
+  const models = Object.keys(payload.models || {});
+  const apiKey = providers.some((provider) => Boolean(String(provider?.apiKey || provider?.api_key || "")));
+  const oauth = providers.some((provider) => Boolean(provider?.oauth));
+  const authenticated = result?.status === 0 && models.length > 0 && (apiKey || oauth);
+  return {
+    authenticated,
+    subscription: authenticated,
+    method: oauth ? "kimi-oauth" : apiKey ? "api-key" : ""
+  };
 }
 
 function agentEnvironment(options = {}) {
@@ -309,7 +387,19 @@ function agentEnvironment(options = {}) {
       timeout,
       maxBuffer: 2 * 1024 * 1024
     });
+  const codexInstalled = probe("codex");
+  const claudeInstalled = probe("claude");
+  const kimiInstalled = probe("kimi");
   const primeInstalled = probe("prime");
+  const codexAuth = codexSubscriptionStatus(
+    codexInstalled ? probeCommand("codex", ["login", "status"]) : null
+  );
+  const claudeAuth = claudeSubscriptionStatus(
+    claudeInstalled ? probeCommand("claude", ["auth", "status", "--json"]) : null
+  );
+  const kimiAuth = kimiAccountStatus(
+    kimiInstalled ? probeCommand("kimi", ["provider", "list", "--json"]) : null
+  );
   // An API key can remain in the environment after it expires. Ask Prime to
   // validate the current credentials instead of treating presence as proof.
   const primeAuthenticated =
@@ -317,10 +407,33 @@ function agentEnvironment(options = {}) {
   const docker = dockerState();
   const value = {
     checking: false,
+    codex: codexInstalled && codexAuth.subscription && docker.running && docker.image,
+    codex_installed: codexInstalled,
+    codex_authenticated: codexAuth.authenticated,
+    codex_subscription: codexAuth.subscription,
+    codex_auth_method: codexAuth.method,
+    claude: claudeInstalled && claudeAuth.subscription && docker.running && docker.image,
+    claude_installed: claudeInstalled,
+    claude_authenticated: claudeAuth.authenticated,
+    claude_subscription: claudeAuth.subscription,
+    claude_auth_method: claudeAuth.method,
+    claude_subscription_type: claudeAuth.subscriptionType,
+    kimi: kimiInstalled && kimiAuth.subscription && docker.running && docker.image,
+    kimi_installed: kimiInstalled,
+    kimi_authenticated: kimiAuth.authenticated,
+    kimi_subscription: kimiAuth.subscription,
+    kimi_auth_method: kimiAuth.method,
     // `docker` means "ready for a container run" — installed AND daemon up.
     docker: docker.running,
     docker_installed: docker.installed,
     docker_running: docker.running,
+    local_agent_image: docker.image,
+    local_agent_image_versions: docker.imageVersions,
+    local_agent_required_versions: LOCAL_AGENT_VERSIONS,
+    // Compatibility keys retained for older Agent pages.
+    local_codex_image: docker.image,
+    local_codex_image_version: docker.imageVersions.codex || "",
+    local_codex_required_version: LOCAL_AGENT_VERSIONS.codex,
     // Prime v1 evals run via `uv run eval`; the `prime` CLI is only needed for
     // the model catalog / login, so `uv` is what gates launching a Prime run.
     prime: primeInstalled && primeAuthenticated,
@@ -365,22 +478,71 @@ async function agentEnvironmentAsync(options = {}) {
   };
 
   agentEnvironmentPromise = (async () => {
-    const [primeInstalled, uvInstalled, dockerInstalled] = await Promise.all([
+    const [codexInstalled, claudeInstalled, kimiInstalled, primeInstalled, uvInstalled, dockerInstalled] = await Promise.all([
+      commandExists("codex"),
+      commandExists("claude"),
+      commandExists("kimi"),
       commandExists("prime"),
       commandExists("uv"),
       commandExists("docker")
     ]);
-    const [primeResult, dockerResult] = await Promise.all([
+    const [codexResult, claudeResult, kimiResult, primeResult, dockerResult] = await Promise.all([
+      codexInstalled ? runCommand("codex", ["login", "status"]) : null,
+      claudeInstalled ? runCommand("claude", ["auth", "status", "--json"]) : null,
+      kimiInstalled ? runCommand("kimi", ["provider", "list", "--json"]) : null,
       primeInstalled ? runCommand("prime", ["whoami"], 8000) : null,
       dockerInstalled ? runCommand("docker", ["info", "--format", "{{.ServerVersion}}"], 8000) : null
     ]);
+    const codexAuth = codexSubscriptionStatus(codexResult ? { ...codexResult, status: 0 } : null);
+    const claudeAuth = claudeSubscriptionStatus(claudeResult ? { ...claudeResult, status: 0 } : null);
+    const kimiAuth = kimiAccountStatus(kimiResult ? { ...kimiResult, status: 0 } : null);
     const primeAuthenticated = Boolean(primeResult);
     const dockerRunning = Boolean(dockerResult && String(dockerResult.stdout || "").trim());
+    const imageResult = dockerRunning
+      ? await runCommand(
+          "docker",
+          ["image", "inspect", LOCAL_AGENT_IMAGE, "--format", "{{json .Config.Labels}}"],
+          8000
+        )
+      : null;
+    let imageLabels = {};
+    try {
+      imageLabels = JSON.parse(String(imageResult?.stdout || "{}"));
+    } catch (_error) {
+      /* an invalid/missing label set is an unreviewed image */
+    }
+    const imageVersions = Object.fromEntries(
+      Object.entries(LOCAL_AGENT_IMAGE_LABELS).map(([provider, label]) => [provider, String(imageLabels[label] || "")])
+    );
+    const localAgentImage = Boolean(imageResult && Object.entries(LOCAL_AGENT_VERSIONS)
+      .every(([provider, version]) => imageVersions[provider] === version));
     const value = {
       checking: false,
+      codex: codexInstalled && codexAuth.subscription && dockerRunning && localAgentImage,
+      codex_installed: codexInstalled,
+      codex_authenticated: codexAuth.authenticated,
+      codex_subscription: codexAuth.subscription,
+      codex_auth_method: codexAuth.method,
+      claude: claudeInstalled && claudeAuth.subscription && dockerRunning && localAgentImage,
+      claude_installed: claudeInstalled,
+      claude_authenticated: claudeAuth.authenticated,
+      claude_subscription: claudeAuth.subscription,
+      claude_auth_method: claudeAuth.method,
+      claude_subscription_type: claudeAuth.subscriptionType,
+      kimi: kimiInstalled && kimiAuth.subscription && dockerRunning && localAgentImage,
+      kimi_installed: kimiInstalled,
+      kimi_authenticated: kimiAuth.authenticated,
+      kimi_subscription: kimiAuth.subscription,
+      kimi_auth_method: kimiAuth.method,
       docker: Boolean(dockerRunning),
       docker_installed: dockerInstalled,
       docker_running: Boolean(dockerRunning),
+      local_agent_image: localAgentImage,
+      local_agent_image_versions: imageVersions,
+      local_agent_required_versions: LOCAL_AGENT_VERSIONS,
+      local_codex_image: localAgentImage,
+      local_codex_image_version: imageVersions.codex || "",
+      local_codex_required_version: LOCAL_AGENT_VERSIONS.codex,
       prime: primeInstalled && primeAuthenticated,
       prime_installed: primeInstalled,
       prime_authenticated: primeAuthenticated,

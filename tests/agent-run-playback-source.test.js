@@ -27,8 +27,16 @@ assert.match(runScript, /function drawAsciiBitmap\(board, turn = null\)/);
 assert.match(runScript, /function drawJsonGrid\(observation, displayPalette = null, turn = null\)/);
 assert.match(runScript, /after move \$\{turn\} · live JSON grid/);
 assert.match(runScript, /if \(!liveBitmap \|\| isVision\) return false/);
-assert.match(pages, /id="run-live-bitmap" class="run-live__bitmap"/);
-assert.match(pages, /aria-label="Live colored grid view"/);
+assert.equal(
+  (pages.match(/id="run-live-bitmap" class="run-live__bitmap"/g) || []).length,
+  2,
+  "Prime and local ASCII layouts must both expose the colored grid"
+);
+assert.equal(
+  (pages.match(/aria-label="Live colored grid view"/g) || []).length,
+  2,
+  "Prime and local run pages must both label the colored grid"
+);
 assert.match(pages, /ascii_palette: asciiGlyphPalette/);
 assert.match(siteTheme, /\.run-live__bitmap \{[\s\S]*?image-rendering: pixelated/);
 const terrainColorSource = threeRenderer.match(/function terrainColor\(type\) \{([\s\S]*?)\n    \}/)?.[1] || "";
@@ -115,6 +123,9 @@ assert.equal(
   2,
   "Prime and local run layouts must both expose ASCII playback controls"
 );
+assert.match(runScript, /if \(!url \|\| !liveImage\) return;/);
+assert.match(runScript, /if \(liveImage\) liveImage\.hidden = !hasRenderedImage;/);
+assert.match(runScript, /if \(livePlaceholder\) \{\s*livePlaceholder\.hidden = hasRenderedImage;/);
 assert.match(runScript, /function showMetricTooltip\(canvas, target, event\)/);
 assert.match(runScript, /tooltip\.textContent = `Frame \$\{target\.action\.toLocaleString\(\)\} · \$\{noun\}`/);
 assert.match(siteTheme, /\.run-metric-chart__canvas\.has-jump-target/);
