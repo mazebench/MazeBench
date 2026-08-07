@@ -16,7 +16,7 @@
     "maze:build-local-codex": "npm run maze:build-local-agents"
   },
   "dependencies": {
-    "three": "0.184.0"
+    "three": "0.185.1"
   },
   "devDependencies": {
     "playwright-core": "^1.60.0"
