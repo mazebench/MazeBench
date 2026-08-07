@@ -7,6 +7,8 @@ const {
   agenticHarnessArgs,
   agenticConversationTurns,
   parseArgs,
+  primeSandboxProvisioningTimeout,
+  retryablePrimeInfrastructureError,
   retryablePrimeProviderError,
   writeMoveArtifacts
 } = require("../scripts/maze-prime-run");
@@ -34,7 +36,7 @@ function argumentValue(argv, name) {
 try {
   const agentSource = fs.readFileSync(path.join(root, "public", "agent.js"), "utf8");
   const runSource = fs.readFileSync(path.join(root, "scripts", "maze-prime-run.js"), "utf8");
-  const retiredLocalAgentSource = fs.readFileSync(
+  const localAgentSource = fs.readFileSync(
     path.join(root, "scripts", "maze-agent-local.js"),
     "utf8"
   );
@@ -54,6 +56,10 @@ try {
     path.join(environmentDir, "mazebench", "mazebench.py"),
     "utf8"
   );
+  const primeAgentHarnessSource = fs.readFileSync(
+    path.join(environmentDir, "mazebench_prime_agent", "harness.py"),
+    "utf8"
+  );
   const project = fs.readFileSync(path.join(environmentDir, "pyproject.toml"), "utf8");
   const appSource = fs.readFileSync(path.join(root, "server", "app.js"), "utf8");
   const runsSource = fs.readFileSync(path.join(root, "server", "agent-runs.js"), "utf8");
@@ -62,37 +68,44 @@ try {
     fs.readFileSync(path.join(environmentDir, "prime-harness-catalog.json"), "utf8")
   );
 
-  assert.doesNotMatch(agentSource, /kind: "local",\s*subscription: true/);
-  assert.doesNotMatch(
-    appSource,
-    /probeCommand\("(?:codex|claude|kimi)"|runCommand\("(?:codex|claude|kimi)"/
-  );
+  assert.match(agentSource, /kind: "local",\s*subscription: true,\s*model: localProviderId\(\)/);
+  for (const provider of ["codex", "claude", "kimi"]) {
+    assert.match(appSource, new RegExp(`probeCommand\\("${provider}"|runCommand\\("${provider}"`));
+  }
   assert.match(agentSource, /state\.execution = "prime"/);
   assert.match(agentSource, /async function loadCustomHarnesses\(\)/);
   assert.match(agentSource, /api\(data\.harnessesApiUrl \|\| "\/api\/agent\/harnesses"\)/);
   assert.match(agentSource, /entry\.launchable \? "" : " disabled"/);
-  assert.doesNotMatch(
-    pagesSource,
-    /id="harness-execution"|data-execution="local"|<strong>Local Run<\/strong>/
-  );
+  assert.match(pagesSource, /id="harness-execution"[\s\S]*data-execution="local"/);
   assert.match(runsSource, /throw new Error\(RETIRED_LOCAL_AGENT_MESSAGE\)/);
   assert.match(
-    retiredLocalAgentSource,
-    /async function main\(\) \{\s*throw new Error\(RETIRED_LOCAL_AGENT_MESSAGE\)/
+    localAgentSource,
+    /async function main\(\) \{\s*return localCodexMain\(\)/
   );
+  assert.match(localAgentSource, /localAgentIsolationPreflight\(config\)/);
   assert.match(runsSource, /prime-harness-catalog\.json/);
   assert.match(runsSource, /catalog_fingerprint/);
+  assert.match(runsSource, /PRIME_PYTHON_HARNESSES = new Set\(\["codex", "claude_code"\]\)/);
+  assert.match(runsSource, /const toolUse = requestedToolUse === "offline" \? "offline" : "read-only"/);
+  assert.match(runsSource, /if \(harness === "codex"\)/);
+  assert.match(runsSource, /inference: "prime"/);
+  assert.match(runsSource, /codex-prime-inference-local-isolation/);
+  assert.match(runsSource, /prime-inference\/disposable-container\/game-tools/);
+  assert.match(runsSource, /Prime model inference inside MazeBench's fresh disposable local Docker isolation/);
+  assert.doesNotMatch(runsSource, /Agent computation tools are unavailable in the game-tools-only boundary/);
 
   assert.match(
     runSource,
-    /\["null", \{\s*adapter: "native",\s*runtimeHarnessId: "null"/
+    /\["mazebench_prime_agent", \{\s*adapter: "prime_agent_cli",\s*runtimeHarnessId: "mazebench_prime_agent"[\s\S]*defaultConfig: \{ version: "0\.7\.0" \}[\s\S]*vm: true[\s\S]*allow: \[\][\s\S]*block: \["\*"\]/
   );
   assert.match(
     runSource,
     /\["codex", \{\s*adapter: "native",\s*runtimeHarnessId: "codex"[\s\S]*disabled_tools: \["shell_tool"\]/
   );
-  assert.match(runSource, /'type = "prime"'/);
-  assert.doesNotMatch(runSource, /"--env\.taskset\.(?:tools\.colocated|python-tools)"/);
+  assert.match(runSource, /runtimeConfig \|\| \{ type: "prime" \}/);
+  assert.match(runsSource, /"verifiers-native-harness"/);
+  assert.doesNotMatch(runSource, /"--env\.taskset\.tools\.colocated"/);
+  assert.match(runSource, /"--env\.taskset\.python-tools"/);
   assert.doesNotMatch(runSource, /"--env\.agent\.runtime\.type",\s*"subprocess"/);
   assert.match(runSource, /const taskset = "mazebench-tools"/);
   assert.doesNotMatch(runSource, /const taskset = .*"mazebench"/);
@@ -108,6 +121,16 @@ try {
   assert.match(liveSource, /"timestamp": action\.get\("timestamp"\) or _utc_timestamp\(\)/);
   assert.match(mazeTasksetSource, /"timestamp": timestamp or _utc_timestamp\(\)/);
   assert.match(mazeTasksetSource, /"timestamp": action\.get\("timestamp"\)/);
+  assert.match(primeAgentHarnessSource, /class MazeBenchPrimeAgentHarness/);
+  assert.match(primeAgentHarnessSource, /version: str = "0\.7\.0"/);
+  assert.match(primeAgentHarnessSource, /https:\/\/app\.primeintellect\.ai\/prime-agent\/install\.sh/);
+  assert.match(primeAgentHarnessSource, /PRIME_AGENT_BOOTSTRAP_KERNEL_ON_INSTALL=1/);
+  assert.match(primeAgentHarnessSource, /"--tools",\s*"ipython"/);
+  assert.match(primeAgentHarnessSource, /"--no-extensions"/);
+  assert.match(primeAgentHarnessSource, /"--no-skills"/);
+  assert.match(primeAgentHarnessSource, /"--no-context-files"/);
+  assert.match(primeAgentHarnessSource, /class MazeBench\(McpIntegration\)/);
+  assert.doesNotMatch(primeAgentHarnessSource, /subprocess|host filesystem|repo_root/);
 
   assert.match(
     project,
@@ -140,14 +163,19 @@ try {
   );
   assert.match(toolsTasksetSource, /class MazeBenchToolTraceState\(MazeBenchState\)/);
   assert.match(toolsTasksetSource, /colocated: Literal\[False\] = False/);
-  assert.match(toolsTasksetSource, /runtime: vf\.PrimeConfig/);
-  assert.match(toolsTasksetSource, /region="us"/);
+  assert.match(toolsTasksetSource, /runtime: vf\.RuntimeConfig/);
   assert.match(toolsTasksetSource, /class MazeBenchPrimeRuntime\(PrimeRuntime\)/);
   assert.match(toolsTasksetSource, /protocol="TCP"/);
+  assert.match(toolsTasksetSource, /async def _export_python_workspace\(self\)/);
+  assert.match(toolsTasksetSource, /python-sandbox-export\.json/);
   assert.match(toolsTasksetSource, /mcp_launch\._install_in_sandbox = _install_mazebench_in_sandbox/);
   assert.doesNotMatch(toolsTasksetSource, /DockerRuntime|game_runtime:/);
   assert.match(toolsTasksetSource, /url: None = None/);
-  assert.match(toolsTasksetSource, /python_tools: Literal\[False\] = False/);
+  assert.match(toolsTasksetSource, /python_tools: bool = False/);
+  assert.match(toolsTasksetSource, /PYTHON_SANDBOX_CODEX_BIN/);
+  assert.match(toolsTasksetSource, /"codex_bin": PYTHON_SANDBOX_CODEX_BIN/);
+  assert.match(toolsTasksetSource, /TOOL_PREFIX = "mazebench"/);
+  assert.match(toolsTasksetSource, /MazeBench controls are deliberately direct-only/);
   assert.match(toolsTasksetSource, /class MazeBenchToolTask\(/);
   assert.match(toolsTasksetSource, /class MazeBenchToolTaskset\(/);
   assert.match(toolsTasksetSource, /NEEDS_CONTAINER = True/);
@@ -168,7 +196,7 @@ try {
   );
   assert.deepEqual(
     launchableCatalogEntries.map((entry) => entry.id),
-    ["codex", "null"]
+    ["codex", "mazebench_prime_agent"]
   );
   const codexHarness = launchableCatalogEntries.find((entry) => entry.id === "codex");
   assert.deepEqual(codexHarness.default_config, {
@@ -180,8 +208,16 @@ try {
   assert.equal(codexHarness.runtime_harness_id, "codex");
   assert.equal(codexHarness.boundary, "game-tools-only");
   assert.deepEqual(codexHarness.configurable, []);
+  const primeAgentHarness = launchableCatalogEntries.find(
+    (entry) => entry.id === "mazebench_prime_agent"
+  );
+  assert.deepEqual(primeAgentHarness.default_config, { version: "0.7.0" });
+  assert.equal(primeAgentHarness.adapter, "prime_agent_cli");
+  assert.equal(primeAgentHarness.runtime_harness_id, "mazebench_prime_agent");
+  assert.equal(primeAgentHarness.supports_mcp, true);
+  assert.deepEqual(primeAgentHarness.observation_modes, ["text", "json", "vision"]);
 
-  assert.equal(primeHarnessModelCompatible("openai/gpt-5.4", "null"), true);
+  assert.equal(primeHarnessModelCompatible("openai/gpt-5.4", "mazebench_prime_agent"), true);
   assert.equal(primeHarnessModelCompatible("anthropic/claude-sonnet-5", "default"), true);
   assert.equal(
     retryablePrimeProviderError(
@@ -196,33 +232,37 @@ try {
     false
   );
   assert.equal(retryablePrimeProviderError("ordinary harness error"), false);
+  assert.equal(
+    retryablePrimeInfrastructureError(
+      "SandboxError: prime sandbox provisioning failed: Sandbox abc is not running (status=Timeout during sandbox creation)"
+    ),
+    true
+  );
+  assert.equal(
+    primeSandboxProvisioningTimeout(
+      "SandboxError: prime sandbox provisioning failed: Sandbox abc is not running (status=Timeout during sandbox creation)"
+    ),
+    true
+  );
+  assert.equal(primeSandboxProvisioningTimeout("ProviderError: upstream 503"), false);
+  assert.equal(
+    retryablePrimeInfrastructureError(
+      "SandboxError: prime sandbox provisioning failed: Request failed: ConnectError: nodename nor servname provided"
+    ),
+    true
+  );
+  assert.equal(retryablePrimeInfrastructureError("ordinary harness error"), false);
 
   const publicHarnesses = publicPrimeHarnesses();
-  assert.deepEqual(
-    publicHarnesses.filter((harness) => harness.launchable).map((harness) => harness.id),
-    ["codex", "null"]
-  );
-  const gameAgent = publicHarnesses.find((harness) => harness.id === "null");
-  assert.equal(gameAgent.label, "Game agent");
-  assert.equal(gameAgent.adapter, "native");
-  assert.equal(gameAgent.runtime_harness_id, "null");
+  assert.deepEqual(publicHarnesses.map((harness) => harness.id), ["mazebench_prime_agent"]);
+  const gameAgent = publicHarnesses.find((harness) => harness.id === "mazebench_prime_agent");
+  assert.equal(gameAgent.label, "Prime Agent");
+  assert.equal(gameAgent.adapter, "prime_agent_cli");
+  assert.equal(gameAgent.runtime_harness_id, "mazebench_prime_agent");
   assert.equal(gameAgent.boundary, "game-tools-only");
   assert.deepEqual(gameAgent.configurable, []);
   assert.deepEqual(gameAgent.observation_modes, ["text", "json", "vision"]);
-  assert.deepEqual(
-    publicHarnesses.filter((harness) => !harness.launchable).map((harness) => harness.id),
-    [
-      "bash",
-      "browser_use",
-      "claude_code",
-      "kimi_code",
-      "mini_swe_agent",
-      "pi",
-      "pool",
-      "rlm",
-      "terminus_2"
-    ]
-  );
+  assert.equal(publicHarnesses.every((harness) => harness.launchable), true);
   assert.equal(
     publicHarnesses.every(
       (harness) =>
@@ -236,15 +276,15 @@ try {
     ),
     true
   );
-  assert.deepEqual(normalizePrimeHarnessConfig({}, "default"), {});
+  assert.deepEqual(normalizePrimeHarnessConfig({}, "default"), { version: "0.7.0" });
   assert.deepEqual(normalizePrimeHarnessConfig({}, "codex"), {
     disabled_tools: ["shell_tool"],
     version: "0.144.5",
     multi_agent: false
   });
   assert.throws(
-    () => normalizePrimeHarnessConfig({ version: "untrusted" }, "null"),
-    /Unsupported Game agent configuration/
+    () => normalizePrimeHarnessConfig({ version: "untrusted" }, "mazebench_prime_agent"),
+    /Unsupported Prime Agent configuration/
   );
   assert.deepEqual(
     primeSandboxIdsFromText(
@@ -284,17 +324,20 @@ try {
   }
 
   const primeOnlyService = createAgentRunService({
-    agentEnvironment: () => ({}),
+    agentEnvironment: () => ({ docker: false, docker_installed: true }),
     ensureDirectory: (directory) => fs.mkdirSync(directory, { recursive: true }),
-    getGame: () => null,
+    getGame: () => ({ id: "maze", name: "Maze", worldMap: { levels: [] } }),
     buildWorlds: { countWorldGems: () => 0 },
     loadJson: () => null,
     rootDir: runDir,
-    worldMaps: {}
+    worldMaps: {
+      defaultLevelIdForGame: () => "level_HxI",
+      isMazeWorldLevelId: () => true
+    }
   });
   assert.throws(
-    () => primeOnlyService.launchRuns({ kind: "local", model: "codex" }),
-    /Local coding-agent launches are retired/
+    () => primeOnlyService.launchRuns({ kind: "local", model: "codex", container: true, tool_use: "read-only" }),
+    /Docker daemon running/
   );
 
   const parsedGameAgent = parseArgs([
@@ -307,20 +350,24 @@ try {
     "--model",
     "google/gemini-3.5-flash"
   ]);
-  assert.equal(parsedGameAgent.harness, "null");
-  assert.deepEqual(parsedGameAgent.harnessConfig, {});
+  assert.equal(parsedGameAgent.harness, "mazebench_prime_agent");
+  assert.deepEqual(parsedGameAgent.harnessConfig, { version: "0.7.0" });
   assert.equal(
     parseArgs(["--env-dir", environmentDir, "--out", runDir, "--harness", "none"]).harness,
-    "null"
+    "mazebench_prime_agent"
   );
   const relayArgs = agenticHarnessArgs(parsedGameAgent);
   assert.equal(relayArgs[0], "@");
   assert.equal(relayArgs[1], path.join(runDir, "prime-harness.toml"));
   const gameAgentConfig = fs.readFileSync(relayArgs[1], "utf8");
-  assert.match(gameAgentConfig, /\[env\.agent\.harness\]\nid = "null"/);
+  assert.match(gameAgentConfig, /\[env\.agent\.harness\]\nid = "mazebench_prime_agent"\nversion = "0\.7\.0"/);
   assert.match(gameAgentConfig, /\[env\.agent\.runtime\]\ntype = "prime"/);
+  assert.match(gameAgentConfig, /image = "node:24-bookworm-slim"/);
+  assert.match(gameAgentConfig, /workdir = "\/app\/mazebench-agent"/);
+  assert.match(gameAgentConfig, /vm = true/);
+  assert.match(gameAgentConfig, /allow = \[\]/);
+  assert.match(gameAgentConfig, /block = \["\*"\]/);
   assert.equal(argumentValue(relayArgs, "--env.taskset.tools.colocated"), undefined);
-  assert.equal(argumentValue(relayArgs, "--env.taskset.python-tools"), undefined);
   assert.equal(argumentValue(relayArgs, "--push"), "False");
 
   const parsedCodexAgent = parseArgs([
@@ -351,10 +398,10 @@ try {
     "--out",
     runDir,
     "--harness",
-    "null",
+    "mazebench_prime_agent",
     "--vision"
   ]);
-  assert.equal(parsedVisionAgent.harness, "null");
+  assert.equal(parsedVisionAgent.harness, "mazebench_prime_agent");
   assert.equal(parsedVisionAgent.observationMode, "vision");
   assert.equal(parsedVisionAgent.vision, true);
 
@@ -369,6 +416,17 @@ try {
       ]),
     /Hosted agent evaluations do not run the V1 harness and Toolset route/
   );
+  const parsedToolsAgent = parseArgs([
+    "--env-dir",
+    environmentDir,
+    "--out",
+    runDir,
+    "--harness",
+    "codex",
+    "--tool-use",
+    "offline"
+  ]);
+  assert.equal(parsedToolsAgent.toolUse, "offline");
   assert.throws(
     () =>
       parseArgs([
@@ -377,14 +435,15 @@ try {
         "--out",
         runDir,
         "--harness",
-        "null",
+        "mazebench_prime_agent",
         "--tool-use",
         "offline"
       ]),
-    /Agent computation tools are unavailable/
+    /supported only by the Codex and Claude Code harnesses/
   );
   for (const harness of [
     "bash",
+    "null",
     "claude-code",
     "kimi-code",
     "mini-swe-agent",
@@ -418,7 +477,7 @@ try {
     /Unknown Prime harness/
   );
   assert.throws(
-    () => parseArgs(["--env-dir", root, "--out", runDir, "--harness", "null"]),
+    () => parseArgs(["--env-dir", root, "--out", runDir, "--harness", "mazebench_prime_agent"]),
     /require the isolated MazeBench environment/
   );
   assert.throws(
@@ -429,11 +488,11 @@ try {
         "--out",
         runDir,
         "--harness",
-        "null",
+        "mazebench_prime_agent",
         "--harness-config-json",
         JSON.stringify({ version: "untrusted" })
       ]),
-    /Unsupported null harness configuration/
+    /Unsupported mazebench_prime_agent harness variant/
   );
   assert.throws(
     () =>

@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "source": "pinned-prime-verifiers",
+  "source": "pinned-prime-verifiers-and-mazebench-adapters",
   "verifiers_version": "0.2.2.dev56",
   "verifiers_revision": "b3b8f51ed470e3c46c12bb858ad18d257dc50c5e",
-  "policy": "MazeBench uses unmodified Verifiers harnesses in isolated Prime runtimes. Each approved route pins its standard harness configuration so the model can reach the named MazeBench game controls without receiving shell, host filesystem, or repository access.",
+  "policy": "MazeBench uses pinned Verifiers harnesses plus a pinned Prime Agent adapter in isolated Prime runtimes. Each approved route pins its standard harness configuration so the model can reach the named MazeBench game controls without receiving shell, host filesystem, or repository access.",
   "harnesses": [
     {
       "id": "bash",
@@ -183,6 +183,30 @@
       "runtime_harness_id": ""
     },
     {
+      "id": "mazebench_prime_agent",
+      "label": "Prime Agent",
+      "description": "Prime Agent v0.7 with persistent IPython and isolated MazeBench MCP controls.",
+      "launchable": true,
+      "status": "compatible",
+      "reason": "",
+      "boundary": "game-tools-only",
+      "observation_modes": [
+        "text",
+        "json",
+        "vision"
+      ],
+      "supports_mcp": true,
+      "configurable": [],
+      "default_config": {
+        "version": "0.7.0"
+      },
+      "config_schema": {
+        "properties": {}
+      },
+      "adapter": "prime_agent_cli",
+      "runtime_harness_id": "mazebench_prime_agent"
+    },
+    {
       "id": "mini_swe_agent",
       "label": "mini-swe-agent",
       "description": "Prime-provided mini swe agent harness.",
@@ -215,16 +239,15 @@
     },
     {
       "id": "null",
-      "label": "Game agent",
+      "label": "Null",
       "description": "Prime-provided null harness.",
-      "launchable": true,
-      "status": "compatible",
-      "reason": "",
-      "boundary": "game-tools-only",
+      "launchable": false,
+      "status": "unsafe_agent_tools",
+      "reason": "This harness can expose shell, filesystem, subprocess, or network capabilities beyond MazeBench game tools.",
+      "boundary": "unrestricted-agent-tools",
       "observation_modes": [
         "text",
-        "json",
-        "vision"
+        "json"
       ],
       "supports_mcp": true,
       "configurable": [],
@@ -232,8 +255,8 @@
       "config_schema": {
         "properties": {}
       },
-      "adapter": "native",
-      "runtime_harness_id": "null"
+      "adapter": "unsupported",
+      "runtime_harness_id": ""
     },
     {
       "id": "pi",
@@ -408,5 +431,5 @@
       "runtime_harness_id": ""
     }
   ],
-  "catalog_fingerprint": "5a97375ae77140e84c207c7f3d5b65e4cc63ba0aff4b6ae56a79a46314adab83"
+  "catalog_fingerprint": "474904b7e3e2dd0dd0e473d572667b77918b4215472877279169f61d97a482eb"
 }

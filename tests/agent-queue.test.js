@@ -2,10 +2,33 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
-const { createAgentRunService, replayMessageForCommandText } = require("../server/agent-runs");
+const { spawnSync } = require("node:child_process");
+const {
+  createAgentRunService,
+  replayMessageForCommandText,
+  resolveAgentRunsDir
+} = require("../server/agent-runs");
 const { BOARD_STATE_HASH_VERSION } = require("../shared/board-state");
 
 const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "mazebench-agent-queue-"));
+assert.equal(
+  resolveAgentRunsDir(rootDir, { MAZEBENCH_RUNS_DIR: path.join(rootDir, "shared-runs") }),
+  path.join(rootDir, "shared-runs")
+);
+assert.equal(
+  resolveAgentRunsDir(rootDir, {}),
+  path.join(rootDir, "outputs", "maze-local", "site")
+);
+const repositoryRoot = path.resolve(__dirname, "..");
+const commonGitDir = spawnSync(
+  "git",
+  ["-C", repositoryRoot, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+  { encoding: "utf8" }
+).stdout.trim();
+assert.equal(
+  resolveAgentRunsDir(repositoryRoot, {}),
+  path.join(path.dirname(commonGitDir), "outputs", "maze-local", "site")
+);
 const scriptsDir = path.join(rootDir, "scripts");
 fs.mkdirSync(scriptsDir, { recursive: true });
 fs.writeFileSync(
@@ -83,13 +106,31 @@ const game = {
   worldMap: { levels: [{ id: "level_HxI" }] }
 };
 let agentEnvironmentState = {
+  codex: true,
+  codex_installed: true,
+  codex_authenticated: true,
+  codex_subscription: true,
+  claude: true,
+  claude_installed: true,
+  claude_authenticated: true,
+  claude_subscription: true,
+  kimi: true,
+  kimi_installed: true,
+  kimi_authenticated: true,
+  kimi_subscription: true,
   prime: true,
   prime_installed: true,
   prime_authenticated: true,
   uv: true,
   docker: true,
   docker_installed: true,
-  docker_running: true
+  docker_running: true,
+  local_agent_image: true,
+  local_agent_versions: { codex: "0.146.0", claude: "2.1.220", kimi: "0.29.1" },
+  local_agent_image_versions: { codex: "0.146.0", claude: "2.1.220", kimi: "0.29.1" },
+  local_codex_image: true,
+  local_codex_image_version: "0.146.0",
+  local_codex_required_version: "0.146.0"
 };
 const service = createAgentRunService({
   agentEnvironment: () => agentEnvironmentState,
@@ -136,15 +177,11 @@ try {
   assert.equal(replayMessageForCommandText("not a command"), null);
 
   const harnessRegistry = service.listPrimeHarnesses();
-  assert.deepEqual(
-    harnessRegistry.harnesses.filter((harness) => harness.launchable).map((harness) => harness.id),
-    ["codex", "null"]
-  );
-  assert.equal(harnessRegistry.harnesses.find((harness) => harness.id === "null").adapter, "native");
-  assert.equal(harnessRegistry.harnesses.find((harness) => harness.id === "codex").launchable, true);
+  assert.deepEqual(harnessRegistry.harnesses.map((harness) => harness.id), ["mazebench_prime_agent"]);
+  assert.equal(harnessRegistry.harnesses.find((harness) => harness.id === "mazebench_prime_agent").adapter, "prime_agent_cli");
   const [customPrime] = service.launchRuns({
     kind: "prime",
-    harness: "null",
+    harness: "mazebench_prime_agent",
     harness_config: {},
     model_name: "openai/gpt-5.6-luna",
     max_turns: 2,
@@ -154,19 +191,19 @@ try {
   const customPrimeMeta = loadJson(
     path.join(rootDir, "outputs", "maze-local", "site", customPrime.id, "run.json")
   );
-  assert.equal(customPrimeMeta.harness, "null");
-  assert.equal(customPrimeMeta.harness_label, "Game agent");
-  assert.equal(customPrimeMeta.harness_version, null);
-  assert.equal(customPrimeMeta.harness_source, "pinned-prime-verifiers");
-  assert.deepEqual(customPrimeMeta.harness_config, {});
+  assert.equal(customPrimeMeta.harness, "mazebench_prime_agent");
+  assert.equal(customPrimeMeta.harness_label, "Prime Agent");
+  assert.equal(customPrimeMeta.harness_version, "0.7.0");
+  assert.equal(customPrimeMeta.harness_source, "prime-agent-v0.7.0-adapter");
+  assert.deepEqual(customPrimeMeta.harness_config, { version: "0.7.0" });
   assert.equal(customPrimeMeta.harness_boundary, "game-tools-only");
-  assert.equal(customPrimeMeta.harness_adapter, "native");
+  assert.equal(customPrimeMeta.harness_adapter, "prime_agent_cli");
   assert.equal(customPrimeMeta.harness_taskset, "mazebench-tools");
   assert.equal(customPrimeMeta.verifiers_revision, "b3b8f51ed470e3c46c12bb858ad18d257dc50c5e");
   assert.match(customPrimeMeta.harness_catalog_fingerprint, /^[0-9a-f]{64}$/);
-  assert.deepEqual(customPrimeMeta.launch_params.harness_config, {});
-  assert.match(customPrimeMeta.command, /--harness null/);
-  assert.doesNotMatch(customPrimeMeta.command, /--harness-config/);
+  assert.deepEqual(customPrimeMeta.launch_params.harness_config, { version: "0.7.0" });
+  assert.match(customPrimeMeta.command, /--harness mazebench_prime_agent/);
+  assert.match(customPrimeMeta.command, /--harness-config \{"version":"0\.7\.0"\}/);
   const customPrimeDir = path.join(rootDir, "outputs", "maze-local", "site", customPrime.id);
   fs.writeFileSync(
     path.join(customPrimeDir, "initial-status.json"),
@@ -196,11 +233,129 @@ try {
   assert.equal(service.stopRun(customPrime.id).status, "stopped");
   const continuedCustomPrime = service.continueRun(customPrime.id, 1);
   launchedIds.push(continuedCustomPrime.id);
-  assert.deepEqual(continuedCustomPrime.harness_config, {});
+  assert.deepEqual(continuedCustomPrime.harness_config, { version: "0.7.0" });
   assert.equal(continuedCustomPrime.harness_boundary, "game-tools-only");
   assert.equal(service.stopRun(continuedCustomPrime.id).status, "stopped");
   service.deleteRun(continuedCustomPrime.id);
   service.deleteRun(customPrime.id);
+
+  const [isolatedPrimeCodex] = service.launchRuns({
+    kind: "prime",
+    harness: "codex",
+    model_name: "openai/gpt-5.6-luna",
+    max_turns: 3,
+    tools: true,
+    tool_use: "offline",
+    video: false
+  });
+  launchedIds.push(isolatedPrimeCodex.id);
+  const isolatedPrimeCodexDir = path.join(
+    rootDir,
+    "outputs",
+    "maze-local",
+    "site",
+    isolatedPrimeCodex.id
+  );
+  const isolatedPrimeCodexMeta = loadJson(path.join(isolatedPrimeCodexDir, "run.json"));
+  assert.equal(isolatedPrimeCodexMeta.prime_execution, "local-isolated");
+  assert.equal(isolatedPrimeCodexMeta.inference_provider, "prime");
+  assert.equal(
+    isolatedPrimeCodexMeta.harness_boundary,
+    "prime-inference/disposable-container/game-tools+isolated-python"
+  );
+  assert.match(isolatedPrimeCodexMeta.command, /model=codex inference=prime/);
+  assert.equal(isolatedPrimeCodexMeta.launch_params.model, "codex");
+  assert.equal(isolatedPrimeCodexMeta.launch_params.inference, "prime");
+
+  service.stopRun(isolatedPrimeCodex.id);
+  const isolatedPrimeThreadId = "019fda33-2630-7ab0-89fd-51d2984b0602";
+  fs.writeFileSync(
+    path.join(isolatedPrimeCodexDir, "agent-events.jsonl"),
+    `${JSON.stringify({ type: "thread.started", thread_id: isolatedPrimeThreadId })}\n`
+  );
+  fs.writeFileSync(
+    path.join(isolatedPrimeCodexDir, "actions.jsonl"),
+    `${JSON.stringify({ turn: 1, command_text: "up", valid: true, status: {} })}\n`
+  );
+  const isolatedPrimeSessionDir = path.join(
+    isolatedPrimeCodexDir,
+    "agent-state",
+    "codex",
+    "sessions",
+    "2026",
+    "08",
+    "07"
+  );
+  fs.mkdirSync(isolatedPrimeSessionDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(isolatedPrimeSessionDir, `rollout-test-${isolatedPrimeThreadId}.jsonl`),
+    `${JSON.stringify({ type: "session_meta", payload: { id: isolatedPrimeThreadId } })}\n`
+  );
+  fs.writeFileSync(
+    path.join(isolatedPrimeCodexDir, "run.json"),
+    `${JSON.stringify({
+      ...loadJson(path.join(isolatedPrimeCodexDir, "run.json")),
+      status: "paused",
+      pid: null,
+      moves: 3,
+      pause_reason: "provider_backoff",
+      pause_mode: "cold",
+      retry_at: new Date(Date.now() - 1000).toISOString()
+    }, null, 2)}\n`
+  );
+  const isolatedPrimeRelaunchLock = path.join(isolatedPrimeCodexDir, ".agent-relaunch.lock");
+  fs.writeFileSync(isolatedPrimeRelaunchLock, "another-server-is-relaunching\n");
+  assert.equal(service.resumeRun(isolatedPrimeCodex.id).status, "paused");
+  fs.rmSync(isolatedPrimeRelaunchLock, { force: true });
+  const resumedIsolatedPrimeCodex = service.resumeRun(isolatedPrimeCodex.id);
+  assert.equal(resumedIsolatedPrimeCodex.id, isolatedPrimeCodex.id);
+  assert.equal(resumedIsolatedPrimeCodex.status, "running");
+  assert.equal(resumedIsolatedPrimeCodex.moves, 3);
+  assert.match(resumedIsolatedPrimeCodex.command, /inference=prime/);
+  assert.match(resumedIsolatedPrimeCodex.command, new RegExp(`resume=${isolatedPrimeThreadId}`));
+  const coldStartRecoveryMeta = loadJson(path.join(isolatedPrimeCodexDir, "run.json"));
+  assert.equal(coldStartRecoveryMeta.provider_resume_mode, "resume-thread");
+  assert.equal(coldStartRecoveryMeta.resume_game_session, false);
+  assert.equal(coldStartRecoveryMeta.resume_mode, "cold-start-recovery");
+  service.stopRun(isolatedPrimeCodex.id);
+  service.deleteRun(isolatedPrimeCodex.id);
+
+  const [threadlessPrimeCodex] = service.launchRuns({
+    kind: "prime",
+    harness: "codex",
+    model_name: "openai/gpt-5.6-luna",
+    max_turns: 2,
+    tools: false,
+    tool_use: "read-only",
+    video: false
+  });
+  launchedIds.push(threadlessPrimeCodex.id);
+  const threadlessPrimeCodexDir = path.join(
+    rootDir,
+    "outputs",
+    "maze-local",
+    "site",
+    threadlessPrimeCodex.id
+  );
+  service.stopRun(threadlessPrimeCodex.id);
+  fs.writeFileSync(
+    path.join(threadlessPrimeCodexDir, "run.json"),
+    `${JSON.stringify({
+      ...loadJson(path.join(threadlessPrimeCodexDir, "run.json")),
+      status: "failed",
+      pid: null,
+      exit_code: 75
+    }, null, 2)}\n`
+  );
+  const recoveredWithoutThread = service.resumeRun(threadlessPrimeCodex.id);
+  assert.equal(recoveredWithoutThread.status, "running");
+  assert.doesNotMatch(recoveredWithoutThread.command, /resume=/);
+  const freshThreadRecoveryMeta = loadJson(path.join(threadlessPrimeCodexDir, "run.json"));
+  assert.equal(freshThreadRecoveryMeta.provider_resume_mode, "fresh-thread");
+  assert.equal(freshThreadRecoveryMeta.resume_game_session, false);
+  assert.equal(freshThreadRecoveryMeta.resume_mode, "cold-start-recovery");
+  service.stopRun(threadlessPrimeCodex.id);
+  service.deleteRun(threadlessPrimeCodex.id);
 
   const [livePrime] = service.launchRuns({
     kind: "prime",
@@ -223,7 +378,7 @@ try {
   assert.match(livePrimeMeta.command, /--reasoning low/);
   assert.equal(livePrimeMeta.reasoning, "low");
   assert.match(livePrimeMeta.command, /--max-turns 750/);
-  assert.equal(livePrimeMeta.harness, "null");
+  assert.equal(livePrimeMeta.harness, "mazebench_prime_agent");
   assert.equal(livePrimeMeta.harness_taskset, "mazebench-tools");
   assert.match(livePrimeMeta.note, /named game controls/);
   const livePrimeRunDir = path.join(rootDir, "outputs", "maze-local", "site", livePrime.id);
@@ -575,10 +730,79 @@ try {
   service.stopRun(jsonPrime.id);
   service.deleteRun(jsonPrime.id);
 
+  for (const unsafeLocal of [
+    { kind: "local", model: "other", container: true, tool_use: "read-only" },
+    { kind: "local", model: "codex", container: false, tool_use: "read-only" },
+    { kind: "local", model: "claude", container: true, tools: true, tool_use: "read-only" },
+    { kind: "local", model: "kimi", container: true, tool_use: "read-only", swarm: true }
+  ]) {
+    assert.throws(
+      () => service.launchRuns(unsafeLocal),
+      /Certified local coding-agent routes require/
+    );
+  }
+  agentEnvironmentState = { ...agentEnvironmentState, local_agent_image: false, local_codex_image: false };
   assert.throws(
-    () => service.launchRuns({ kind: "local", model: "codex" }),
-    /Local coding-agent launches are retired/
+    () => service.launchRuns({ kind: "local", model: "codex", container: true, tool_use: "read-only" }),
+    /certified local-agent image is missing or stale/
   );
+  agentEnvironmentState = { ...agentEnvironmentState, local_agent_image: true, local_codex_image: true };
+
+  for (const [model, harness, version] of [
+    ["codex", "codex", "0.146.0"],
+    ["claude", "claude_code", "2.1.220"],
+    ["kimi", "kimi_code", "0.29.1"]
+  ]) {
+    const [isolatedLocal] = service.launchRuns({
+      kind: "local",
+      subscription: true,
+      model,
+      container: true,
+      tools: false,
+      tool_use: "read-only",
+      swarm: false,
+      moves: 1,
+      video: false
+    });
+    launchedIds.push(isolatedLocal.id);
+    assert.equal(isolatedLocal.harness, harness);
+    assert.equal(isolatedLocal.harness_version, version);
+    assert.equal(isolatedLocal.harness_boundary, "disposable-container/game-tools-only");
+    assert.equal(isolatedLocal.container, true);
+    assert.equal(isolatedLocal.tools, false);
+    assert.equal(isolatedLocal.tool_use, "read-only");
+    assert.match(isolatedLocal.command, new RegExp(`model=${model}`));
+    assert.match(isolatedLocal.command, /container=true/);
+    assert.match(isolatedLocal.note, /game controls only/);
+    service.stopRun(isolatedLocal.id);
+    service.deleteRun(isolatedLocal.id);
+
+    const [isolatedLocalTools] = service.launchRuns({
+      kind: "local",
+      subscription: true,
+      model,
+      container: true,
+      tools: true,
+      tool_use: "offline",
+      auto_run_tools: false,
+      auto_run_all_frames: false,
+      swarm: false,
+      moves: 1,
+      video: false
+    });
+    launchedIds.push(isolatedLocalTools.id);
+    assert.equal(isolatedLocalTools.harness, harness);
+    assert.equal(isolatedLocalTools.harness_boundary, "disposable-container/game-tools+isolated-python");
+    assert.equal(isolatedLocalTools.tools, true);
+    assert.equal(isolatedLocalTools.tool_use, "offline");
+    assert.equal(isolatedLocalTools.launch_params.tools, true);
+    assert.equal(isolatedLocalTools.launch_params.tool_use, "offline");
+    assert.match(isolatedLocalTools.command, /tools=true/);
+    assert.match(isolatedLocalTools.command, /tool_use=offline/);
+    assert.match(isolatedLocalTools.note, /run-scoped Python scratchpad/);
+    service.stopRun(isolatedLocalTools.id);
+    service.deleteRun(isolatedLocalTools.id);
+  }
 
   const retiredLocalId = "retired-local-run";
   const retiredLocalDir = path.join(rootDir, "outputs", "maze-local", "site", retiredLocalId);
@@ -610,7 +834,7 @@ try {
     () => service.branchRun(retiredLocalId, 0),
     () => service.setRunMoveTarget(retiredLocalId, 2)
   ]) {
-    assert.throws(operation, /Local coding-agent launches are retired/);
+    assert.throws(operation, /Certified local coding-agent routes require/);
   }
   service.deleteRun(retiredLocalId);
 

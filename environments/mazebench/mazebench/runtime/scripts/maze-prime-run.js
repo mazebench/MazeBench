@@ -30,6 +30,10 @@ const HARNESS_CATALOG_FILE = path.join(ROOT_DIR, "environments", "mazebench", "p
 const HARNESS_CATALOG = JSON.parse(fs.readFileSync(HARNESS_CATALOG_FILE, "utf8"));
 const PRIME_HARNESSES = new Map(HARNESS_CATALOG.harnesses.map((entry) => [entry.id, entry]));
 const MAZEBENCH_ENV_DIR = path.join(ROOT_DIR, "environments", "mazebench");
+const PRIME_CODEX_AGENT_IMAGE = String(
+  process.env.MAZEBENCH_PRIME_CODEX_AGENT_IMAGE ||
+  "prime/mazebench/mazebench-codex-agent:0.144.5-v3"
+).trim();
 const ISOLATED_AGENT_ROUTES = new Map([
   ["codex", {
     adapter: "native",
@@ -38,17 +42,35 @@ const ISOLATED_AGENT_ROUTES = new Map([
       disabled_tools: ["shell_tool"],
       version: "0.144.5",
       multi_agent: false
+    },
+    runtimeConfig: {
+      type: "prime",
+      image: PRIME_CODEX_AGENT_IMAGE,
+      workdir: "/app",
+      region: "us"
     }
   }],
-  ["null", {
-    adapter: "native",
-    runtimeHarnessId: "null",
-    defaultConfig: {}
+  ["mazebench_prime_agent", {
+    adapter: "prime_agent_cli",
+    runtimeHarnessId: "mazebench_prime_agent",
+    defaultConfig: { version: "0.7.0" },
+    runtimeConfig: {
+      type: "prime",
+      image: "node:24-bookworm-slim",
+      workdir: "/app/mazebench-agent",
+      vm: true,
+      allow: [],
+      block: ["*"]
+    }
   }]
 ]);
 const PRIME_REASONING_LEVELS = new Set(["low", "medium", "high"]);
+const PRIME_PYTHON_HARNESSES = new Set(["codex", "claude_code"]);
 const PRIME_PROVIDER_RETRY_ATTEMPTS = 3;
-const PRIME_PROVIDER_RETRY_BASE_MS = 30_000;
+// Sandbox creation failures already consume roughly two minutes in the Prime
+// SDK. A second minute of idle backoff makes a doomed cold start feel hung;
+// retry promptly while still yielding briefly to transient scheduler churn.
+const PRIME_PROVIDER_RETRY_BASE_MS = 5_000;
 const GAME_WON_GEM_COUNT = 100;
 
 function harnessDefinition(harnessId) {
@@ -85,7 +107,7 @@ function parseArgs(argv) {
     envDir: "",
     environment: "mazebench/mazebench",
     gameWonGemCount: GAME_WON_GEM_COUNT,
-    harness: "null",
+    harness: "mazebench_prime_agent",
     harnessConfig: {},
     hosted: false,
     levelId: "level_HxI",
@@ -116,14 +138,14 @@ function parseArgs(argv) {
 
     if (arg === "--env-dir") opts.envDir = path.resolve(next());
     else if (arg === "--harness") {
-      const harness = String(next() || "null").trim().toLowerCase();
+      const harness = String(next() || "mazebench_prime_agent").trim().toLowerCase();
       const aliases = {
         claude: "claude_code",
         "claude-code": "claude_code",
-        default: "null",
+        default: "mazebench_prime_agent",
         "kimi-code": "kimi_code",
         "mini-swe-agent": "mini_swe_agent",
-        none: "null",
+        none: "mazebench_prime_agent",
         "terminus-2": "terminus_2"
       };
       opts.harness = aliases[harness] || harness;
@@ -200,8 +222,8 @@ function parseArgs(argv) {
   if (opts.hosted) {
     throw new Error("Hosted agent evaluations do not run the V1 harness and Toolset route.");
   }
-  if (opts.toolUse === "offline") {
-    throw new Error("Agent computation tools are unavailable in the game-tools-only boundary.");
+  if (opts.toolUse === "offline" && !PRIME_PYTHON_HARNESSES.has(opts.harness)) {
+    throw new Error("Prime isolated Python tools are supported only by the Codex and Claude Code harnesses.");
   }
   const allowedHarnessConfig = new Set([
     ...(definition?.configurable || []),
@@ -566,6 +588,20 @@ function retryablePrimeProviderError(message) {
   return [404, 408, 409, 425, 429].includes(status) || status >= 500;
 }
 
+function retryablePrimeInfrastructureError(message) {
+  const text = String(message || "");
+  return retryablePrimeProviderError(text) ||
+    /SandboxError: prime sandbox provisioning failed:.*Timeout during sandbox creation/is.test(text) ||
+    /SandboxNotRunningError:.*Timeout during sandbox creation/is.test(text) ||
+    /SandboxError: prime sandbox provisioning failed:.*(?:ConnectError|nodename nor servname|Name or service not known|Temporary failure in name resolution)/is.test(text);
+}
+
+function primeSandboxProvisioningTimeout(message) {
+  return /(?:SandboxError: prime sandbox provisioning failed:|SandboxNotRunningError:).*Timeout during sandbox creation/is.test(
+    String(message || "")
+  );
+}
+
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -579,7 +615,12 @@ async function runEvalWithProviderRetry(opts) {
     const rolloutError = localRolloutError(findResults(evalOutDir));
     const actionPath = path.join(opts.outDir, "actions.jsonl");
     const hasActions = fs.existsSync(actionPath) && fs.statSync(actionPath).size > 0;
-    const retryable = !hasActions && retryablePrimeProviderError(rolloutError);
+    // A warm image should allocate in seconds. Re-running the entire evaluation
+    // immediately after an allocation timeout only recreates both sandboxes and
+    // turns one capacity incident into a 5-10 minute wait.
+    const retryable = !hasActions &&
+      retryablePrimeInfrastructureError(rolloutError) &&
+      !primeSandboxProvisioningTimeout(rolloutError);
 
     if (!retryable || attempt === PRIME_PROVIDER_RETRY_ATTEMPTS) return code;
 
@@ -587,7 +628,7 @@ async function runEvalWithProviderRetry(opts) {
     const archive = path.join(opts.outDir, `eval-output-provider-failure-${attempt}-${Date.now()}`);
     if (fs.existsSync(evalOutDir)) fs.renameSync(evalOutDir, archive);
     console.error(
-      `[mazebench] transient Prime provider routing failure before action 1; ` +
+      `[mazebench] transient Prime infrastructure failure before action 1; ` +
       `retrying evaluation ${attempt + 1}/${PRIME_PROVIDER_RETRY_ATTEMPTS} in ${Math.round(retryDelay / 1000)}s: ${rolloutError}`
     );
     await delay(retryDelay);
@@ -707,6 +748,7 @@ function runHostedEval(opts) {
 
 function agenticHarnessArgs(opts) {
   const definition = requireIsolatedAgentRoute(opts.harness, harnessDefinition(opts.harness));
+  const route = ISOLATED_AGENT_ROUTES.get(opts.harness);
   const harnessConfigPath = path.join(opts.outDir, "prime-harness.toml");
   const harnessConfig = {
     id: definition.runtime_harness_id,
@@ -724,7 +766,8 @@ function agenticHarnessArgs(opts) {
       ...Object.entries(harnessConfig).map(([key, value]) => `${key} = ${tomlValue(value)}`),
       "",
       "[env.agent.runtime]",
-      'type = "prime"',
+      ...Object.entries(route.runtimeConfig || { type: "prime" })
+        .map(([key, value]) => `${key} = ${tomlValue(value)}`),
       ""
     ].join("\n")
   );
@@ -778,6 +821,11 @@ function runEval(opts) {
     "False",
     "-o",
     evalOutDir
+  );
+
+  argv.push(
+    "--env.taskset.python-tools",
+    opts.toolUse === "offline" ? "True" : "False"
   );
 
   if (opts.resumeCheckpoint) {
@@ -1239,7 +1287,9 @@ module.exports = {
   parseArgs,
   providerReasoningText,
   replayExportArgs,
+  retryablePrimeInfrastructureError,
   retryablePrimeProviderError,
+  primeSandboxProvisioningTimeout,
   verifierTurnBudgetArgs,
   writeMoveArtifacts,
   writeHostedLiveArtifacts,

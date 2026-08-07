@@ -315,12 +315,17 @@ Kimi runners are retired because their subprocess, host, and repository-aware
 paths cannot satisfy the benchmark isolation boundary. Use the Agent page or
 `scripts/maze-prime-run.js` with the `mazebench-tools` taskset.
 
-The local `/agent` page permits catalog-approved stock Verifiers harnesses. The
-native `null` harness advertises only the named game controls. The native Codex
-harness uses its standard `disabled_tools = ["shell_tool"]` configuration; its
-other built-in bookkeeping tools remain available, but it has no shell or host
-filesystem path. Both run in a fresh Prime sandbox. The task sent to the model
-contains no repository or checkpoint path.
+The local `/agent` page exposes the official Prime Agent CLI pinned to v0.7.0
+through a MazeBench adapter. Prime Agent runs in a fresh disposable sandbox with its
+native persistent IPython tool enabled. Built-in extensions, ambient skills,
+context files, prompt templates, themes, and external network access are
+disabled; the only evaluator integration is the isolated MazeBench MCP skill.
+The task sent to the model contains no repository or checkpoint path.
+
+The separate Codex harness uses its pinned
+`disabled_tools = ["shell_tool"]` configuration. Its remaining bookkeeping
+tools have no shell or host-filesystem path and it also runs in a fresh Prime
+sandbox.
 Only the isolated tool server can update trusted game state through Verifiers'
 per-rollout state channel.
 
@@ -343,7 +348,7 @@ The approved path can be exercised from a full checkout with:
 node scripts/maze-prime-run.js \
   --env-dir environments/mazebench \
   --out /tmp/mazebench-agent-run \
-  --harness null \
+  --harness mazebench_prime_agent \
   --model openai/gpt-5 \
   --max-turns 40 \
   --tool-use read-only

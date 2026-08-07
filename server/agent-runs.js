@@ -6,6 +6,7 @@ const { isDeepStrictEqual } = require("node:util");
 const { spawn, spawnSync } = require("child_process");
 const {
   RETIRED_LOCAL_AGENT_MESSAGE,
+  SUPPORTED_LOCAL_AGENT_VERSIONS,
   distillClaudeEvents,
   distillCodexEvents,
   distillKimiEvents,
@@ -116,6 +117,7 @@ const UNSAFE_PRIME_AGENT_HARNESS_MESSAGE =
 
 const STANDARD_REASONING_LEVELS = ["low", "medium", "high"];
 const PRIME_REASONING_LEVELS = ["low", "medium", "high"];
+const PRIME_PYTHON_HARNESSES = new Set(["codex", "claude_code"]);
 
 function claudeReasoningLevels(modelId) {
   const id = String(modelId || "").toLowerCase().replace(/\./g, "-");
@@ -146,9 +148,24 @@ function primeHarnessModelCompatible(modelId, harnessId) {
   const harness = normalizePrimeHarness(harnessId);
   const id = String(modelId || "").trim();
   if (!id) return false;
-  // The native null harness uses Prime's OpenAI-compatible interception endpoint, so
-  // it is provider-neutral and does not infer compatibility from model names.
+  // Approved harnesses use Verifiers' provider-neutral interception endpoint.
   return true;
+}
+
+function resolveAgentRunsDir(rootDir, env = process.env) {
+  const configured = String(env.MAZEBENCH_RUNS_DIR || "").trim();
+  if (configured) return path.resolve(configured);
+
+  const commonDir = spawnSync(
+    "git",
+    ["-C", rootDir, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+    { encoding: "utf8", timeout: 5000, maxBuffer: 128 * 1024 }
+  );
+  const commonGitDir = String(commonDir.stdout || "").trim();
+  const sharedRoot = commonDir.status === 0 && path.isAbsolute(commonGitDir)
+    ? path.dirname(commonGitDir)
+    : rootDir;
+  return path.join(sharedRoot, "outputs", "maze-local", "site");
 }
 
 function primeSandboxIdsFromText(value) {
@@ -196,7 +213,10 @@ function filterPrimeCatalogForHarness(catalog, harnessId) {
 
 function publicPrimeHarnesses() {
   return [...PRIME_HARNESSES.values()]
-    .filter((definition) => definition.custom)
+    // The Prime Agent card is intentionally a single, opinionated Prime Agent
+    // route. Keep the rest of the pinned Verifiers catalog private for
+    // validation and the dedicated first-class harness cards.
+    .filter((definition) => definition.custom && definition.id === "mazebench_prime_agent")
     .map((definition) => ({
       id: definition.id,
       label: definition.label,
@@ -274,14 +294,16 @@ function normalizePrimeHarnessConfig(value, harnessId) {
 }
 
 function normalizePrimeHarness(value) {
-  const requested = String(value || "null").trim().toLowerCase();
+  const requested = String(value || "mazebench_prime_agent").trim().toLowerCase();
   const aliases = {
     claude: "claude_code",
     "claude-code": "claude_code",
-    default: "null",
+    default: "mazebench_prime_agent",
+    "prime-agent": "mazebench_prime_agent",
+    prime_agent: "mazebench_prime_agent",
     "kimi-code": "kimi_code",
     "mini-swe-agent": "mini_swe_agent",
-    none: "null",
+    none: "mazebench_prime_agent",
     "terminus-2": "terminus_2"
   };
   const normalized = aliases[requested] || requested;
@@ -333,6 +355,8 @@ const RUNNER_STARTUP_GRACE_MS = 15_000;
 const RUNNER_ACTIVITY_GRACE_MS = 120_000;
 const PROVIDER_RETRY_SCAN_MS = 10_000;
 const PROVIDER_RETRY_MAX_MS = 15 * 60_000;
+const RUN_RELAUNCH_LOCK_FILE = ".agent-relaunch.lock";
+const RUN_RELAUNCH_LOCK_STALE_MS = 2 * 60_000;
 const PAUSE_REQUEST_FILE = "pause-request.json";
 const PAUSE_BOUNDARY_FILE = "pause-boundary.json";
 const PAUSE_CAPABILITY_FILE = "cold-pause-capability.json";
@@ -474,7 +498,10 @@ function createAgentRunService({
   rootDir,
   worldMaps
 }) {
-  const runsDir = path.join(rootDir, "outputs", "maze-local", "site");
+  // Linked Git worktrees share one benchmark history in the primary worktree.
+  // This keeps runs visible while testing a feature branch instead of making
+  // them appear to vanish whenever the server starts from another checkout.
+  const runsDir = resolveAgentRunsDir(rootDir);
   const runnerScript = path.join(rootDir, "scripts", "maze-agent-local.js");
   const primeRunnerScript = path.join(rootDir, "scripts", "maze-prime-run.js");
   const replayScript = path.join(rootDir, "scripts", "maze-export-replay.js");
@@ -488,8 +515,54 @@ function createAgentRunService({
   const codexSessionPaths = new Map();
   const autoQuitMonitors = new Map();
 
+  function requireIsolatedLocalAgentLaunch(params) {
+    const model = String(params?.model || "").trim().toLowerCase();
+    const container = !(params?.container === false || params?.container === "false");
+    const toolUse = String(params?.tool_use || "read-only").trim().toLowerCase();
+    const tools = params?.tools === true || params?.tools === "true";
+    const swarm = params?.swarm === true || params?.swarm === "true";
+    const toolsMatchMode = tools === (toolUse === "offline");
+    if (!SUPPORTED_LOCAL_AGENT_VERSIONS[model] || !container ||
+        !["read-only", "offline"].includes(toolUse) || !toolsMatchMode || swarm) {
+      throw new Error(RETIRED_LOCAL_AGENT_MESSAGE);
+    }
+  }
+
   function requireLegacyLocalLaunch() {
     throw new Error(RETIRED_LOCAL_AGENT_MESSAGE);
+  }
+
+  function isPrimeLocalIsolatedRun(meta) {
+    return meta?.kind === "prime" &&
+      meta?.prime_execution === "local-isolated" &&
+      meta?.model === "codex" &&
+      meta?.inference_provider === "prime";
+  }
+
+  function requireIsolatedLocalAgentMeta(meta) {
+    const provider = String(meta?.model || "").trim().toLowerCase();
+    const toolUse = String(meta?.tool_use || meta?.launch_params?.tool_use || "read-only").trim().toLowerCase();
+    const boundaryPrefix = isPrimeLocalIsolatedRun(meta)
+      ? "prime-inference/disposable-container/"
+      : "disposable-container/";
+    const validBoundary = meta?.harness_boundary === `${boundaryPrefix}game-tools-only` ||
+      (toolUse === "offline" && meta?.harness_boundary === `${boundaryPrefix}game-tools+isolated-python`);
+    if (
+      meta?.harness !== ({ codex: "codex", claude: "claude_code", kimi: "kimi_code" })[provider] ||
+      meta?.harness_version !== SUPPORTED_LOCAL_AGENT_VERSIONS[provider] ||
+      !validBoundary ||
+      meta?.container_image !== "mazebench-agent"
+    ) {
+      throw new Error(RETIRED_LOCAL_AGENT_MESSAGE);
+    }
+    requireIsolatedLocalAgentLaunch({
+      ...(meta?.launch_params || {}),
+      model: meta?.model || meta?.launch_params?.model,
+      container: meta?.container,
+      tools: meta?.tools,
+      tool_use: meta?.tool_use,
+      swarm: meta?.swarm
+    });
   }
 
   function requireLocalSubscription(params) {
@@ -568,6 +641,28 @@ function createAgentRunService({
     return spawnSync("sh", ["-c", "command -v docker"], { encoding: "utf8", env: enrichedPathEnv() }).status === 0;
   }
 
+  function localAgentImageAvailable() {
+    if (!dockerAvailable()) return false;
+    if (typeof agentEnvironment === "function") {
+      const environment = agentEnvironment();
+      return Boolean(environment.local_agent_image ?? environment.local_codex_image);
+    }
+    const result = spawnSync(
+      "docker",
+      ["image", "inspect", "docker.io/library/mazebench-agent:latest", "--format", "{{json .Config.Labels}}"],
+      { encoding: "utf8", env: enrichedPathEnv(), timeout: 8000, maxBuffer: 128 * 1024 }
+    );
+    if (result.status !== 0) return false;
+    try {
+      const labels = JSON.parse(String(result.stdout || "{}"));
+      return labels["org.mazebench.local-codex.version"] === SUPPORTED_LOCAL_AGENT_VERSIONS.codex &&
+        labels["org.mazebench.local-claude.version"] === SUPPORTED_LOCAL_AGENT_VERSIONS.claude &&
+        labels["org.mazebench.local-kimi.version"] === SUPPORTED_LOCAL_AGENT_VERSIONS.kimi;
+    } catch (_error) {
+      return false;
+    }
+  }
+
   function getEnvironment(options = {}) {
     return typeof agentEnvironment === "function" ? agentEnvironment(options) : {};
   }
@@ -643,6 +738,42 @@ function createAgentRunService({
     }
 
     return path.join(runsDir, runId);
+  }
+
+  function acquireRunRelaunchLock(runId) {
+    const lockPath = path.join(runDirFor(runId), RUN_RELAUNCH_LOCK_FILE);
+    const token = `${process.pid}:${Date.now()}:${crypto.randomBytes(6).toString("hex")}`;
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const fd = fs.openSync(lockPath, "wx");
+        try {
+          fs.writeFileSync(fd, `${token}\n`, "utf8");
+        } finally {
+          fs.closeSync(fd);
+        }
+        return () => {
+          try {
+            if (fs.readFileSync(lockPath, "utf8").trim() === token) fs.rmSync(lockPath, { force: true });
+          } catch (_error) {
+            /* another process already released or replaced a stale lock */
+          }
+        };
+      } catch (error) {
+        if (error?.code !== "EEXIST") throw error;
+        try {
+          const ageMs = Date.now() - fs.statSync(lockPath).mtimeMs;
+          if (ageMs > RUN_RELAUNCH_LOCK_STALE_MS) {
+            fs.rmSync(lockPath, { force: true });
+            continue;
+          }
+        } catch (_error) {
+          continue;
+        }
+        return null;
+      }
+    }
+    return null;
   }
 
   function agentWorkspaceRootFor(runId) {
@@ -2170,24 +2301,19 @@ function createAgentRunService({
   }
 
   function retryProviderBackoff(runId, meta) {
-    requireLegacyLocalLaunch();
     if (meta?.status !== "paused" || meta.pause_reason !== "provider_backoff") return null;
     if (Date.parse(meta.retry_at || "") > Date.now()) return null;
+    requireIsolatedLocalAgentMeta(meta);
 
-    const conversationId = readConversationId(runId);
-    if (!conversationId) {
-      writeRunMeta(runId, {
-        ...meta,
-        pause_message: `${meta.pause_message || "Provider unavailable."} Automatic retry is waiting for a saved provider thread.`,
-        retry_at: new Date(Date.now() + PROVIDER_RETRY_MAX_MS).toISOString()
-      });
-      return null;
-    }
+    const savedConversationId = readConversationId(runId);
+    const conversationId = savedConversationId && hasPersistedContainerConversation(runId, meta, savedConversationId)
+      ? savedConversationId
+      : "";
 
     const turns = readActions(runId).length;
     const add = meta.unlimited ? null : Math.max(1, (Number(meta.moves) || turns + 1) - turns);
     try {
-      return continueLocalInPlace(runId, meta, add, conversationId);
+      return continueLocalInPlace(runId, meta, add, conversationId, { preserveMoveTarget: true });
     } catch (error) {
       writeRunMeta(runId, {
         ...meta,
@@ -2199,7 +2325,18 @@ function createAgentRunService({
   }
 
   function retryDueProviderBackoffs() {
-    return;
+    runMetaEntries().forEach(({ id, meta }) => {
+      if (meta.status !== "paused" || meta.pause_reason !== "provider_backoff") return;
+      try {
+        retryProviderBackoff(id, meta);
+      } catch (error) {
+        writeRunMeta(id, {
+          ...meta,
+          pause_message: `Automatic retry failed: ${error instanceof Error ? error.message : String(error)}`,
+          retry_at: new Date(Date.now() + PROVIDER_RETRY_MAX_MS).toISOString()
+        });
+      }
+    });
   }
 
   function resolveClaudeCatalogModelId(modelName) {
@@ -2414,7 +2551,7 @@ function createAgentRunService({
       provider: meta.kind === "prime" ? "prime" : meta.model,
       pausable:
         ["running", "pausing"].includes(meta.status) &&
-        meta.kind !== "prime" &&
+        (meta.kind !== "prime" || isPrimeLocalIsolatedRun(meta)) &&
         (meta.container === false || Boolean(runContainerId(runId))),
       resumable:
         (meta.status === "paused" && (meta.kind !== "prime" || meta.prime_execution !== "hosted")) ||
@@ -2889,6 +3026,7 @@ function createAgentRunService({
         actor: entry.clone_id ? `instance · ${entry.clone_id}` : entry.actor || "lead",
         code: typeof entry.python_code === "string" ? entry.python_code : "",
         code_hash: String(entry.python_code_hash || ""),
+        script_path: String(entry.python_script_path || ""),
         timeout_seconds: Number(entry.timeout_seconds) || 10,
         started_at: normalizeEventTimestamp(entry.started_at),
         completed_at: normalizeEventTimestamp(entry.completed_at),
@@ -3000,21 +3138,31 @@ function createAgentRunService({
     let totalBytes = 0;
     let fileCount = 0;
     let truncated = false;
-    function visit(directory, prefix = "") {
+    const pending = [{ directory: descriptor.directory, prefix: "" }];
+    while (pending.length) {
+      const { directory, prefix } = pending.shift();
       let children;
       try {
         children = fs.readdirSync(directory, { withFileTypes: true });
       } catch (_error) {
-        return;
+        continue;
       }
       children.sort((left, right) => {
         if (left.isDirectory() !== right.isDirectory()) return left.isDirectory() ? -1 : 1;
+        if (prefix === "observations") {
+          const priority = (name) => name === "current.json" ? 0 : name === "history.jsonl" ? 1 : 2;
+          const priorityDifference = priority(left.name) - priority(right.name);
+          if (priorityDifference) return priorityDifference;
+          if (/^\d+\.json$/.test(left.name) && /^\d+\.json$/.test(right.name)) {
+            return right.name.localeCompare(left.name);
+          }
+        }
         return left.name.localeCompare(right.name);
       });
       for (const child of children) {
         if (entries.length >= TOOL_WORKSPACE_MAX_ENTRIES) {
           truncated = true;
-          return;
+          break;
         }
         const relative = prefix ? `${prefix}/${child.name}` : child.name;
         const absolute = path.join(directory, child.name);
@@ -3036,12 +3184,11 @@ function createAgentRunService({
           fileCount += 1;
           totalBytes += stat.size;
         } else if (type === "directory") {
-          visit(absolute, relative);
-          if (truncated) return;
+          pending.push({ directory: absolute, prefix: relative });
         }
       }
+      if (truncated) break;
     }
-    visit(descriptor.directory);
     return {
       id: descriptor.id,
       label: descriptor.label,
@@ -3068,6 +3215,7 @@ function createAgentRunService({
       duration_ms: execution.duration_ms,
       timeout_seconds: execution.timeout_seconds,
       code_hash: execution.code_hash,
+      script_path: execution.script_path,
       code_bytes: Buffer.byteLength(String(execution.code || ""), "utf8"),
       code_preview: firstLine.trim().slice(0, 180),
       output_preview: String(output).replace(/\s+/g, " ").trim().slice(0, 180),
@@ -3427,7 +3575,9 @@ function createAgentRunService({
         }
       }
     } else if (summary.provider === "kimi") {
-      kimiWirePath = findKimiWireFile(path.join(agentWorkspaceRootFor(runId), "kimi-home"));
+      kimiWirePath =
+        findKimiWireFile(path.join(runDir, "agent-state", "kimi")) ||
+        findKimiWireFile(path.join(agentWorkspaceRootFor(runId), "kimi-home"));
     } else if (summary.provider === "prime") {
       primeResultsPath = primeResultsPaths.get(runId) || "";
       if (!primeResultsPath) {
@@ -4623,7 +4773,7 @@ function createAgentRunService({
         checked_at: modelCatalogCheckedAt(),
         default_model_id: defaultId || rows[0]?.id || "",
         note: rows.length
-          ? "Models loaded from the installed Kimi Code CLI; MazeBench launches them with only isolated game and Python MCP tools."
+          ? "Models loaded from the installed Kimi Code CLI; MazeBench launches them with only three isolated game controls."
           : "Kimi Code is configured but has no models. Run `kimi login` or add a provider."
       };
     } catch (_error) {
@@ -4813,9 +4963,13 @@ function createAgentRunService({
 
   function buildLocalRunArgs(runId, params, game) {
     const model = String(params.model || "").toLowerCase();
+    const inference = String(params.inference || "subscription").trim().toLowerCase();
 
-    if (!["codex", "claude", "kimi"].includes(model)) {
-      throw new Error('model must be "codex", "claude", or "kimi".');
+    if (!SUPPORTED_LOCAL_AGENT_VERSIONS[model]) {
+      throw new Error("Choose a certified local Codex, Claude Code, or Kimi Code runner.");
+    }
+    if (!["subscription", "prime"].includes(inference) || (inference === "prime" && model !== "codex")) {
+      throw new Error("Prime inference is supported only by the isolated Codex runner.");
     }
 
     const levelId = String(params.level_id || worldMaps.defaultLevelIdForGame(game));
@@ -4831,16 +4985,16 @@ function createAgentRunService({
     const wantContainer = !(params.container === false || params.container === "false");
     const wantTools = params.tools === true || params.tools === "true";
     const requestedToolUse = String(params.tool_use || "").trim().toLowerCase();
-    const toolUse = ["read-only", "offline"].includes(requestedToolUse)
-      ? requestedToolUse
-      : wantTools
-        ? "offline"
-        : "read-only";
+    const requestedSwarm = params.swarm === true || params.swarm === "true";
+    const toolUse = requestedToolUse || (wantTools ? "offline" : "read-only");
+    if (!wantContainer || !["read-only", "offline"].includes(toolUse) ||
+        wantTools !== (toolUse === "offline") || requestedSwarm) {
+      throw new Error(RETIRED_LOCAL_AGENT_MESSAGE);
+    }
     const autoRunTools = toolUse === "offline" &&
       !(params.auto_run_tools === false || params.auto_run_tools === "false");
-    const autoRunAllFrames = autoRunTools &&
-      !(params.auto_run_all_frames === false || params.auto_run_all_frames === "false");
-    const swarm = model !== "kimi" && toolUse === "offline" && (params.swarm === true || params.swarm === "true");
+    const autoRunAllFrames = autoRunTools && (params.auto_run_all_frames === true || params.auto_run_all_frames === "true");
+    const swarm = false;
     const allowQuit = !(params.allow_quit === false || params.allow_quit === "false");
     const autoQuit = normalizeAutoQuitConfig(params);
     const mode = normalizeObservationMode(params.mode);
@@ -4848,20 +5002,25 @@ function createAgentRunService({
     const hideNames = mode !== "vision" && (params.hide_names === true || params.hide_names === "true");
     const hideNamesSeed = resolvedHideNamesSeed(hideNames, params.hide_names_seed);
 
-    // Safety net for the UI toggle: container mode needs Docker installed AND
-    // its daemon running.
-    if (model === "kimi" && wantContainer) {
-      throw new Error("Kimi Code local runs require container=false so MazeBench can apply the CLI's verified permission boundary.");
-    }
-    if (wantContainer && !dockerAvailable()) {
+    // Safety net for direct API calls: a local run cannot silently fall back to
+    // the host when Docker or the reviewed image is unavailable.
+    if (!dockerAvailable()) {
       throw new Error(
         dockerInstalled()
-          ? "Container mode needs the Docker daemon running. Start Docker, or switch to Host access."
-          : "Container mode needs Docker, which is not installed. Switch to Host access, or install Docker."
+          ? "Isolated local agents need the Docker daemon running."
+          : "Isolated local agents need Docker, which is not installed."
+      );
+    }
+    if (!localAgentImageAvailable()) {
+      throw new Error(
+        "The certified local-agent image is missing or stale. Run `npm run maze:build-local-agents` " +
+        `(required Codex ${SUPPORTED_LOCAL_AGENT_VERSIONS.codex}, Claude Code ${SUPPORTED_LOCAL_AGENT_VERSIONS.claude}, ` +
+        `Kimi Code ${SUPPORTED_LOCAL_AGENT_VERSIONS.kimi}).`
       );
     }
     const args = [
       `model=${model}`,
+      `inference=${inference}`,
       `game=${game.id}`,
       `level=${levelId}`,
       `moves=${unlimited ? "unlimited" : moves}`,
@@ -4878,7 +5037,7 @@ function createAgentRunService({
       `auto_run_tools=${autoRunTools ? "true" : "false"}`,
       `auto_run_all_frames=${autoRunAllFrames ? "true" : "false"}`,
       `swarm=${swarm ? "true" : "false"}`,
-      `container=${params.container === false || params.container === "false" ? "false" : "true"}`,
+      "container=true",
       `video=${params.video === false || params.video === "false" ? "off" : "on"}`,
       `out=${runDirFor(runId)}`
     ];
@@ -4945,8 +5104,8 @@ function createAgentRunService({
 
     // Continue: resume the maze from a prior run's exact state. Both the runner
     // and the bridge rebuild state by replaying the action list, so copying the
-    // prior session (and its per-move log) is enough — maze-agent-local.js sees
-    // seed=true, skips the fresh `start`, and plays `moves` more from there.
+    // prior session (and its per-move log) is enough for maze-agent-local.js to
+    // verify the game exists, skip a fresh `start`, and play more from there.
     if (params.seed_run) {
       const priorDir = runDirFor(String(params.seed_run));
       const priorSession = path.join(priorDir, "session.json");
@@ -4963,8 +5122,9 @@ function createAgentRunService({
       }
     }
 
-    // In-place continue: the session.json already lives in this run's dir, so
-    // just resume the conversation (which also implies skipping the fresh start).
+    // In-place continue: resume the provider conversation. The launcher checks
+    // session.json separately and starts a game if the provider thread was
+    // saved before the first attempt ever created one.
     if (params.resume_id) {
       args.push(`resume=${String(params.resume_id)}`);
     }
@@ -4975,11 +5135,11 @@ function createAgentRunService({
       args.push(`session_id=${String(params.session_id)}`);
     }
 
-    return { args, model, levelId, moves, gems, view, toolUse, autoRunTools, autoRunAllFrames, swarm, unlimited, allowQuit, autoQuit, mode, omniscient, hideNames, hideNamesSeed };
+    return { args, model, inference, levelId, moves, gems, view, toolUse, autoRunTools, autoRunAllFrames, swarm, unlimited, allowQuit, autoQuit, mode, omniscient, hideNames, hideNamesSeed };
   }
 
-  // Verifiers provisions the native harness and game Toolset in separate Prime
-  // Sandboxes for each rollout.
+  // Verifiers provisions the native harness and the evaluator-owned game/Python
+  // Toolset in separate Prime containers.
   function buildPrimeCommand(params, runDir, runId, game) {
     const harness = normalizePrimeHarness(params.harness);
     const definition = PRIME_HARNESSES.get(harness);
@@ -5009,10 +5169,14 @@ function createAgentRunService({
     }
     const hosted = false;
     const requestedToolUse = String(params.tool_use || "").trim().toLowerCase();
-    if (requestedToolUse === "offline") {
-      throw new Error("Agent computation tools are unavailable in the game-tools-only boundary.");
+    if (requestedToolUse === "offline" && !PRIME_PYTHON_HARNESSES.has(harness)) {
+      throw new Error("Isolated Python tools are supported only by the Codex and Claude Code harnesses.");
     }
-    const toolUse = "read-only";
+    const toolUse = requestedToolUse === "offline" ? "offline" : "read-only";
+    const autoRunTools = toolUse === "offline" &&
+      !(params.auto_run_tools === false || params.auto_run_tools === "false");
+    const autoRunAllFrames = autoRunTools &&
+      (params.auto_run_all_frames === true || params.auto_run_all_frames === "true");
     const wantVideo = !(params.video === false || params.video === "false");
     const allowQuit = !(params.allow_quit === false || params.allow_quit === "false");
     const autoQuit = normalizeAutoQuitConfig(params);
@@ -5025,6 +5189,81 @@ function createAgentRunService({
     const envDir = path.join(rootDir, "environments", "mazebench");
     const levelId = String(params.level_id || "level_HxI");
     const gemTotal = buildWorlds.countWorldGems(game);
+
+    // Prime's public sandbox allocator can remain PENDING even for a tiny
+    // stock Ubuntu image. Codex does not need that allocator to use Prime's
+    // inference service: run the pinned Codex CLI in MazeBench's already
+    // verified disposable Docker+bubblewrap boundary and point its reviewed
+    // Responses provider at Prime. This preserves Prime model inference while
+    // avoiding an unrelated 5-10 minute provisioning failure.
+    if (harness === "codex") {
+      if (params.resume_checkpoint) {
+        throw new Error("Start a fresh Codex/Prime run; legacy Prime-sandbox checkpoints cannot cross into local disposable isolation.");
+      }
+      const local = buildLocalRunArgs(runId, {
+        ...params,
+        model: "codex",
+        model_name: model,
+        inference: "prime",
+        game_id: game.id,
+        level_id: levelId,
+        moves: maxTurns,
+        unlimited,
+        allow_quit: allowQuit,
+        mode,
+        omniscient,
+        hide_names: hideNames,
+        hide_names_seed: hideNamesSeed,
+        tools: toolUse === "offline",
+        tool_use: toolUse,
+        container: true,
+        video: wantVideo,
+        reasoning
+      }, game);
+      const display = ["node", "scripts/maze-agent-local.js", ...local.args]
+        .map((value) => value.startsWith("out=") ? "out=<run>" : value)
+        .join(" ");
+      return {
+        bin: process.execPath,
+        argv: [runnerScript, ...local.args],
+        display,
+        harness,
+        harnessConfig,
+        harnessVersion: SUPPORTED_LOCAL_AGENT_VERSIONS.codex,
+        harnessLabel: definition.label,
+        harnessBoundary: toolUse === "offline"
+          ? "prime-inference/disposable-container/game-tools+isolated-python"
+          : "prime-inference/disposable-container/game-tools-only",
+        harnessAdapter: "codex-prime-inference-local-isolation",
+        runtimeHarnessId: definition.runtime_harness_id || definition.id,
+        upstreamHarnessId: definition.upstream_id || null,
+        harnessCatalogFingerprint: PRIME_HARNESS_CATALOG.catalog_fingerprint,
+        verifiersVersion: PRIME_HARNESS_CATALOG.verifiers_version,
+        runtimeImage: "mazebench-agent",
+        taskset: definition.taskset,
+        model,
+        runnerModel: "codex",
+        inference: "prime",
+        maxTurns,
+        unlimited,
+        mode,
+        vision,
+        omniscient,
+        hideNames,
+        hideNamesSeed,
+        toolUse,
+        autoRunTools: local.autoRunTools,
+        autoRunAllFrames: local.autoRunAllFrames,
+        hosted,
+        localIsolation: true,
+        levelId,
+        gemTotal,
+        reasoning,
+        allowQuit,
+        autoQuit,
+        video: wantVideo
+      };
+    }
 
     const argv = [
       primeRunnerScript,
@@ -5040,6 +5279,8 @@ function createAgentRunService({
       JSON.stringify(harnessConfig),
       "--tool-use",
       toolUse,
+      autoRunTools,
+      autoRunAllFrames,
       "--level",
       levelId,
       "--game-won-gem-count",
@@ -5142,6 +5383,8 @@ function createAgentRunService({
       hideNames,
       hideNamesSeed,
       toolUse,
+      autoRunTools,
+      autoRunAllFrames,
       hosted,
       levelId,
       gemTotal,
@@ -5154,8 +5397,8 @@ function createAgentRunService({
 
   function launchRun(params = {}) {
     const kind = String(params.kind || "local");
-    if (kind !== "prime") requireLegacyLocalLaunch();
-    requirePrimeLaunchEnvironment();
+    if (kind === "prime") requirePrimeLaunchEnvironment();
+    else requireIsolatedLocalAgentLaunch(params);
     const runId = generateRunId();
     const runDir = runDirFor(runId);
 
@@ -5206,12 +5449,14 @@ function createAgentRunService({
           status: "running",
           pid: child.pid,
           command: command.display,
-          model: "prime",
+          model: command.runnerModel || "prime",
           model_name: command.model || "(prime default)",
           harness: command.harness,
           harness_label: command.harnessLabel,
-          harness_version: command.harnessConfig.version || null,
-          harness_source: "pinned-prime-verifiers",
+          harness_version: command.harnessVersion || command.harnessConfig.version || null,
+          harness_source: command.harness === "mazebench_prime_agent"
+            ? "prime-agent-v0.7.0-adapter"
+            : "verifiers-native-harness",
           harness_config: command.harnessConfig,
           harness_boundary: command.harnessBoundary,
           harness_adapter: command.harnessAdapter,
@@ -5236,16 +5481,21 @@ function createAgentRunService({
           hide_names_seed: command.hideNamesSeed,
           tools: command.toolUse === "offline",
           tool_use: command.toolUse,
+          auto_run_tools: command.autoRunTools,
+          auto_run_all_frames: command.autoRunAllFrames,
           reasoning: command.reasoning,
           allow_quit: command.allowQuit,
           ...autoQuitLaunchParams(command.autoQuit),
           video: command.video,
+          container: Boolean(command.localIsolation),
+          container_image: command.localIsolation ? "mazebench-agent" : null,
+          inference_provider: command.inference || "prime",
           launch_params: {
             ...launchParamsOf(effectiveParams),
             ...autoQuitLaunchParams(command.autoQuit),
             unlimited: command.unlimited,
             harness: command.harness,
-            harness_version: command.harnessConfig.version || null,
+            harness_version: command.harnessVersion || command.harnessConfig.version || null,
             harness_config: command.harnessConfig,
             harness_adapter: command.harnessAdapter,
             harness_runtime_id: command.runtimeHarnessId,
@@ -5253,6 +5503,16 @@ function createAgentRunService({
             verifiers_revision: VERIFIED_VERIFIERS_REVISION,
             tools: command.toolUse === "offline",
             tool_use: command.toolUse,
+            auto_run_tools: command.autoRunTools,
+            auto_run_all_frames: command.autoRunAllFrames,
+            ...(command.localIsolation ? {
+              model: command.runnerModel,
+              inference: command.inference,
+              game_id: "maze",
+              level_id: command.levelId,
+              moves: command.maxTurns,
+              container: true
+            } : {}),
             ...(command.hideNames ? { hide_names_seed: command.hideNamesSeed } : {})
           },
           continue_of: params.continue_of || null,
@@ -5261,8 +5521,11 @@ function createAgentRunService({
           resume_action_count: params.resume_checkpoint
             ? Math.max(0, Number(loadJson(path.join(runDir, PRIME_RESUME_CHECKPOINT_FILE), {})?.action_count) || 0)
             : 0,
-          prime_execution: "local",
-          note: `${command.harnessLabel} is an unmodified Verifiers harness in its own Prime Sandbox and receives only MazeBench's named game controls from a separate Prime Sandbox.`
+          prime_execution: command.localIsolation ? "local-isolated" : "local",
+          conversation_persistence: command.localIsolation ? "run-dir" : null,
+          note: command.localIsolation
+            ? `${command.harnessLabel} uses Prime model inference inside MazeBench's fresh disposable local Docker isolation. The evaluated Codex process receives only named game controls${command.toolUse === "offline" ? " plus preflighted run-scoped Python" : ""}; repository, host files, run artifacts, shell, web, apps, and workers stay blocked.`
+            : `${command.harnessLabel} v${command.harnessConfig.version} runs in its own Prime container and receives only MazeBench's named game controls from a separate Prime tool sandbox.`
         };
       } else {
         let effectiveParams = params;
@@ -5310,6 +5573,12 @@ function createAgentRunService({
           model,
           model_name: exactModelName,
           model_alias: exactModelName !== requestedModelName ? requestedModelName : "",
+          harness: ({ codex: "codex", claude: "claude_code", kimi: "kimi_code" })[model],
+          harness_label: ({ codex: "Codex", claude: "Claude Code", kimi: "Kimi Code" })[model],
+          harness_version: SUPPORTED_LOCAL_AGENT_VERSIONS[model],
+          harness_boundary: toolUse === "offline"
+            ? "disposable-container/game-tools+isolated-python"
+            : "disposable-container/game-tools-only",
           reasoning: effectiveParams.reasoning || "",
           game_id: game.id,
           game_title: game.name,
@@ -5333,11 +5602,18 @@ function createAgentRunService({
           auto_run_tools: autoRunTools,
           auto_run_all_frames: autoRunAllFrames,
           swarm,
-          container: !(effectiveParams.container === false || effectiveParams.container === "false"),
+          container: true,
+          container_image: "mazebench-agent",
           video: !(effectiveParams.video === false || effectiveParams.video === "false"),
           launch_params: {
             ...launchParamsOf(effectiveParams),
             ...autoQuitLaunchParams(autoQuit),
+            container: true,
+            tools: toolUse === "offline",
+            tool_use: toolUse,
+            auto_run_tools: autoRunTools,
+            auto_run_all_frames: autoRunAllFrames,
+            swarm: false,
             ...(hideNames ? { hide_names_seed: hideNamesSeed } : {})
           },
           continue_of: effectiveParams.continue_of || null,
@@ -5345,9 +5621,8 @@ function createAgentRunService({
           branch_turn: effectiveParams.branch_of ? segmentStartTurns : null,
           branch_provider_id: branchPreparation?.newConversationId || null,
           seeded: Boolean(effectiveParams.seed_run || effectiveParams.branch_of),
-          conversation_persistence: !(effectiveParams.container === false || effectiveParams.container === "false")
-            ? "run-dir"
-            : "cli"
+          conversation_persistence: "run-dir",
+          note: `Local ${{ codex: "Codex", claude: "Claude Code", kimi: "Kimi Code" }[model]} runs in a fresh disposable container. The evaluated process receives MazeBench game controls${toolUse === "offline" ? " plus a preflighted run-scoped Python scratchpad" : " only"}; repository, host files, run artifacts, shell, web, apps, and workers are blocked by launch-time isolation preflights.`
         };
       }
     } catch (error) {
@@ -5503,7 +5778,7 @@ function createAgentRunService({
 
     if (!["running", "pausing"].includes(meta.status)) return summarizeRun(runId);
 
-    if (meta.kind === "prime") {
+    if (meta.kind === "prime" && !isPrimeLocalIsolatedRun(meta)) {
       throw new Error("Prime Intellect runs cannot be paused. Cancel the run instead.");
     }
 
@@ -5558,9 +5833,10 @@ function createAgentRunService({
     if (!meta) {
       throw new Error(`Unknown run "${runId}".`);
     }
-    if (meta.kind !== "prime") requireLegacyLocalLaunch();
+    const localIsolatedPrime = isPrimeLocalIsolatedRun(meta);
+    if (meta.kind !== "prime" || localIsolatedPrime) requireIsolatedLocalAgentMeta(meta);
 
-    if (meta.kind === "prime" && ["paused", "failed"].includes(meta.status)) {
+    if (meta.kind === "prime" && !localIsolatedPrime && ["paused", "failed"].includes(meta.status)) {
       const base = {
         ...(meta.launch_params || reconstructParams(meta)),
         kind: "prime",
@@ -5581,6 +5857,16 @@ function createAgentRunService({
         );
       }
       return launchRun(base);
+    }
+
+    if (localIsolatedPrime && meta.status === "failed") {
+      meta = {
+        ...meta,
+        status: "paused",
+        pause_mode: "cold",
+        pause_reason: meta.pause_reason || "provider_backoff"
+      };
+      writeRunMeta(runId, meta);
     }
 
     if (meta.status !== "paused") {
@@ -5629,7 +5915,7 @@ function createAgentRunService({
     // move budget remains.
     const summary = summarizeRun(runId);
     const remaining = Math.max(1, (Number(meta.moves) || 20) - (summary.turns || 0));
-    return continueRun(runId, remaining);
+    return continueRun(runId, remaining, { preserveMoveTarget: true });
   }
 
   // Rebuild launch params from a run's own metadata — the fallback for runs
@@ -5714,6 +6000,18 @@ function createAgentRunService({
     }
 
     return "";
+  }
+
+  function hasResumableRunSession(runId) {
+    const session = loadJson(path.join(runDirFor(runId), "session.json"), null);
+    return Boolean(
+      session &&
+      typeof session === "object" &&
+      !Array.isArray(session) &&
+      session.initial &&
+      typeof session.initial === "object" &&
+      Array.isArray(session.actions)
+    );
   }
 
   function providerConversationFile(runId, meta, conversationId) {
@@ -5906,25 +6204,88 @@ function createAgentRunService({
     return false;
   }
 
-  // A true continue: re-spawn the agent into the SAME run dir with the CLI
-  // conversation resumed, so the model keeps its full memory and the maze keeps
-  // its state (both live here). The run itself is extended in place.
-  function continueLocalInPlace(runId, meta, add, conversationId) {
-    requireLegacyLocalLaunch();
+  // Re-spawn the agent into the SAME run dir with the CLI conversation resumed.
+  // Game state is independent: a provider thread can exist even when the first
+  // request stalled before maze_start. The inner launcher inspects session.json
+  // and cold-starts the game when it is absent instead of assuming that a
+  // resumed provider conversation necessarily has a resumable game.
+  function continueLocalInPlace(runId, meta, add, conversationId, options = {}) {
+    const releaseRelaunchLock = acquireRunRelaunchLock(runId);
+    if (!releaseRelaunchLock) return summarizeRun(runId);
+
+    try {
+    const current = readRunMeta(runId);
+    if (!current) throw new Error(`Unknown run "${runId}".`);
+    if (["pausing", "stopping"].includes(current.status) ||
+        (current.status === "running" && pidAlive(current.pid))) {
+      return summarizeRun(runId);
+    }
+    meta = current;
+    requireIsolatedLocalAgentMeta(meta);
     const runDir = runDirFor(runId);
+    const resumeGameSession = hasResumableRunSession(runId);
     clearColdPauseMarkers(runId);
     clearColdPauseCapability(runId);
     const segmentStartTurns = readActions(runId).length;
-    const params = meta.launch_params || reconstructParams(meta);
+    const storedParams = meta.launch_params || reconstructParams(meta);
+    const params = {
+      ...storedParams,
+      model: meta.model || storedParams.model,
+      model_name: meta.model_name || storedParams.model_name,
+      inference: isPrimeLocalIsolatedRun(meta)
+        ? "prime"
+        : storedParams.inference || meta.inference_provider || "subscription",
+      game_id: meta.game_id || storedParams.game_id,
+      level_id: meta.level_id || storedParams.level_id,
+      container: true,
+      tools: Boolean(meta.tools),
+      tool_use: meta.tool_use || storedParams.tool_use,
+      auto_run_tools: Boolean(meta.auto_run_tools),
+      auto_run_all_frames: Boolean(meta.auto_run_all_frames),
+      swarm: false,
+      allow_quit: meta.allow_quit !== false,
+      mode: meta.mode || storedParams.mode,
+      omniscient: Boolean(meta.omniscient),
+      hide_names: Boolean(meta.hide_names),
+      hide_names_seed: meta.hide_names_seed || storedParams.hide_names_seed,
+      reasoning: meta.reasoning || storedParams.reasoning,
+      video: meta.video !== false
+    };
     const game = normalizedGameForRun(params.game_id);
-    const { args } = buildLocalRunArgs(runId, { ...params, moves: add, resume_id: conversationId }, game);
+    let args;
+    try {
+      ({ args } = buildLocalRunArgs(runId, { ...params, moves: add, resume_id: conversationId }, game));
+    } catch (error) {
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)} ` +
+        `(resume model=${params.model || "missing"}, inference=${params.inference || "missing"})`
+      );
+    }
     const nextMeta = {
       ...meta,
-      moves: meta.unlimited ? null : (Number(meta.moves) || 0) + Number(add || 0),
+      moves: meta.unlimited
+        ? null
+        : options.preserveMoveTarget
+          ? Number(meta.moves) || segmentStartTurns + Number(add || 0)
+          : (Number(meta.moves) || 0) + Number(add || 0),
       continued: (meta.continued || 0) + 1,
+      provider_resume_mode: conversationId ? "resume-thread" : "fresh-thread",
+      resume_game_session: resumeGameSession,
+      resume_mode: resumeGameSession ? "continue-game" : "cold-start-recovery",
       segment_start_turns: segmentStartTurns,
       segment_move_budget: meta.unlimited ? null : add,
-      command: ["node", "scripts/maze-agent-local.js", ...args].join(" ")
+      command: ["node", "scripts/maze-agent-local.js", ...args].join(" "),
+      launch_params: {
+        ...storedParams,
+        model: params.model,
+        model_name: params.model_name,
+        inference: params.inference,
+        game_id: params.game_id,
+        level_id: params.level_id,
+        container: true,
+        tools: params.tools,
+        tool_use: params.tool_use
+      }
     };
 
     const logFd = fs.openSync(path.join(runDir, "launcher.log"), "a");
@@ -5959,13 +6320,16 @@ function createAgentRunService({
     });
     attachRunChild(runId, child);
     return summarizeRun(runId);
+    } finally {
+      releaseRelaunchLock();
+    }
   }
 
   function setRunMoveTarget(runId, requestedTarget) {
     const meta = readRunMeta(runId);
     if (!meta) throw new Error(`Unknown run "${runId}".`);
     if (meta.kind === "prime") throw new Error("Prime eval budgets cannot be changed while running.");
-    requireLegacyLocalLaunch();
+    requireIsolatedLocalAgentMeta(meta);
 
     const turns = readActions(runId).length;
     const requested = Math.floor(Number(requestedTarget));
@@ -5991,7 +6355,7 @@ function createAgentRunService({
     return summarizeRun(runId);
   }
 
-  function continueRun(runId, additionalMoves) {
+  function continueRun(runId, additionalMoves, options = {}) {
     const meta = readRunMeta(runId);
 
     if (!meta) {
@@ -6002,11 +6366,12 @@ function createAgentRunService({
     }
 
     const requestedAdd = positiveTurnBudget(additionalMoves);
-    const add = meta.kind === "prime"
+    const hostedPrime = meta.kind === "prime" && !isPrimeLocalIsolatedRun(meta);
+    const add = hostedPrime
       ? requestedAdd
       : Math.min(MAX_LOCAL_MOVE_BUDGET, requestedAdd);
 
-    if (meta.kind === "prime") {
+    if (hostedPrime) {
       const checkpoint = ensurePrimeResumeCheckpoint(runId);
       const currentTurns = summarizeRun(runId)?.turns || 0;
       const base = {
@@ -6020,7 +6385,7 @@ function createAgentRunService({
       };
       return launchRun(base);
     }
-    requireLegacyLocalLaunch();
+    requireIsolatedLocalAgentMeta(meta);
 
     // Resume the same CLI conversation in the same run directory. Host agents
     // use their normal CLI session store; new Docker runs keep a private,
@@ -6032,7 +6397,26 @@ function createAgentRunService({
       Boolean(conversationId) &&
       (meta.container === false || hasPersistedContainerConversation(runId, meta, conversationId));
     if (canResumeConversation) {
-      return continueLocalInPlace(runId, discardRunVideo(runId, meta), add, conversationId);
+      return continueLocalInPlace(
+        runId,
+        discardRunVideo(runId, meta),
+        add,
+        conversationId,
+        { preserveMoveTarget: Boolean(options.preserveMoveTarget) }
+      );
+    }
+
+    if (isPrimeLocalIsolatedRun(meta)) {
+      // A provider can fail before it emits or persists a resumable thread.
+      // Keep the same run and independently recover whatever game state exists;
+      // the launcher will observe a valid session or cold-start a missing one.
+      return continueLocalInPlace(
+        runId,
+        discardRunVideo(runId, meta),
+        add,
+        "",
+        { preserveMoveTarget: Boolean(options.preserveMoveTarget) }
+      );
     }
 
     const base = {
@@ -6051,7 +6435,7 @@ function createAgentRunService({
     if (meta.kind === "prime") {
       throw new Error("Prime evaluations do not expose a resumable provider transcript.");
     }
-    requireLegacyLocalLaunch();
+    requireIsolatedLocalAgentMeta(meta);
     if (!["codex", "claude"].includes(meta.model)) {
       throw new Error("Only Codex and Claude runs can preserve a provider context prefix.");
     }
@@ -6615,5 +6999,6 @@ module.exports = {
   primeEvaluationReward,
   primeSandboxIdsFromText,
   publicPrimeHarnesses,
+  resolveAgentRunsDir,
   replayMessageForCommandText
 };

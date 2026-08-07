@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
-// Retired local coding-agent launcher. Executing this file always fails closed;
-// current runs go through scripts/maze-prime-run.js and the mazebench-tools
-// environment so the agent and authoritative game occupy separate sandboxes.
-//
-// Historical event parsing and artifact helpers remain exported below for old
-// run pages; none of them is a supported launch interface.
+// Certified local coding-agent launcher. The trusted runner stays in the outer
+// Docker container; the evaluated Codex, Claude Code, or Kimi Code process runs
+// in a second bubblewrap namespace that hides the repository, run output,
+// credential sources, and host files. Only a fresh workspace, run-scoped
+// provider state, and the private MazeBench MCP game controls cross into the
+// evaluated process.
 
 const crypto = require("node:crypto");
 const fs = require("node:fs");
@@ -20,10 +20,18 @@ const {
   preflightPythonSandbox
 } = require("./maze-python-sandbox");
 const DEFAULT_MAX_SWARM_WORKERS = 8;
-const SUPPORTED_KIMI_CODE_VERSIONS = new Set(["0.28.1"]);
+const SUPPORTED_LOCAL_CODEX_VERSION = "0.146.0";
+const SUPPORTED_LOCAL_CLAUDE_VERSION = "2.1.220";
+const SUPPORTED_LOCAL_KIMI_VERSION = "0.29.1";
+const SUPPORTED_LOCAL_AGENT_VERSIONS = Object.freeze({
+  codex: SUPPORTED_LOCAL_CODEX_VERSION,
+  claude: SUPPORTED_LOCAL_CLAUDE_VERSION,
+  kimi: SUPPORTED_LOCAL_KIMI_VERSION
+});
+const SUPPORTED_KIMI_CODE_VERSIONS = new Set([SUPPORTED_LOCAL_KIMI_VERSION]);
 const RETIRED_LOCAL_AGENT_MESSAGE =
-  "Local coding-agent launches are retired because they can expose repository or host capabilities. " +
-  "Use scripts/maze-prime-run.js with the environments/mazebench mazebench-tools route.";
+  "Certified local coding-agent routes require a pinned Codex, Claude Code, or Kimi Code CLI " +
+  "inside a fresh Docker container, reviewed game/Python tools only, and launch-time isolation preflights.";
 
 // Claude Code discovers MCP tools only when its default tool registry is
 // enabled. Keep that registry on, then explicitly remove every non-game tool
@@ -170,8 +178,24 @@ function positiveInt(value, fallback) {
   return Number.isFinite(number) && number > 0 ? Math.floor(number) : fallback;
 }
 
+function hasResumableGameSession(sessionFile) {
+  try {
+    const session = JSON.parse(fs.readFileSync(sessionFile, "utf8"));
+    return Boolean(
+      session &&
+      typeof session === "object" &&
+      !Array.isArray(session) &&
+      session.initial &&
+      typeof session.initial === "object" &&
+      Array.isArray(session.actions)
+    );
+  } catch (_error) {
+    return false;
+  }
+}
+
 function migrateSeedSessionObservation(config) {
-  if (!config.seed || !fs.existsSync(config.sessionFile)) return;
+  if (!config.seed || !hasResumableGameSession(config.sessionFile)) return;
 
   let session;
   try {
@@ -232,25 +256,25 @@ function autoRunToolsInstructions(config) {
   observation. Set include_intermediate_observations=true when you specifically
   need every intermediate ASCII board, JSON observation, or vision frame.`;
   return `AUTO-RUN TOOLS HARNESS IS ENABLED. You additionally have
-maze_action_sequence for quickly applying a route produced by a saved Python
-planner or solver.
+maze_action_sequence for quickly applying an ordered route, either as an
+action list or from a persisted JSON route file.
 
-- Call maze_action_sequence only with an ordered action list that your saved
-  Python program actually generated. Prefer route_file="route.json" so the MCP server reads
-  the saved route directly instead of making you copy a long action list.
-- A saved route may be a JSON action array or an object with actions and the
+- Call maze_action_sequence only with an ordered action list you intend to
+  apply. When a route is already persisted, prefer route_file so the MCP server
+  can read it directly instead of making you copy a long action list.
+- A route file may be a JSON action array or an object with actions and the
   observation_revision it was planned from. Revision-aware routes are rejected
-  if the live game changed, so rerun the planner instead of executing stale moves.
-- If that saved program produces two or more moves, use maze_action_sequence for
-  the entire remaining route instead of replaying those moves one call at a time.
-- A single call may contain the solver's full route. Each action is still validated,
+  if the live game changed, so update it instead of executing stale moves.
+- If you intend to apply two or more moves, use maze_action_sequence for the
+  route instead of replaying those moves one call at a time.
+- A single call may contain the full route. Each action is still validated,
   budgeted, persisted, and logged exactly like an individual maze_action.
 - The sequence stops immediately on a terminal state, death, pause, exhausted
   move budget, rejected action, or other error, and reports how far it got.
 ${observationDelivery}
 - After the call, inspect the final observation and the ordered summaries. If
-  they disagree with the solver's prediction, update and rerun the saved program
-  before submitting another route.
+  they disagree with the expected result, reassess before submitting another
+  route.
 
 Never create a Python helper that calls a live game API or sends game actions.
 Only maze_action and maze_action_sequence may change the live game.`;
@@ -258,6 +282,12 @@ Only maze_action and maze_action_sequence may change the live game.`;
 
 function buildMcpPrompt(config) {
   const restricted = config.toolUse === "read-only";
+  // A provider transcript and a game session are independent artifacts. A
+  // provider retry may have a resumable thread even when the first attempt
+  // stalled before maze_start. Only a valid session.json proves that the game
+  // itself can be observed instead of started.
+  const continuingGame = hasResumableGameSession(config.sessionFile);
+  const recoveringColdStart = Boolean(config.resume) && !continuingGame;
   const maxSwarmWorkers = positiveInt(config.maxSwarmWorkers, DEFAULT_MAX_SWARM_WORKERS);
   const controlPrefix = restricted ? "game" : "maze";
   const controls = {
@@ -302,17 +332,13 @@ relative to the current camera.`;
 blocked. Infer its effect only from the returned observation.`;
   const capability = config.toolUse === "offline"
     ? `TOOLS mode. In addition to the game controls, you have exactly one
-general-purpose computation tool: python_exec. It runs Python in a fresh,
-persistent scratch workspace. Each python_exec call starts a fresh Python
-process, but its current working directory is writable and persists for this
-entire run. Use relative paths to create and reuse .py, .json, and other scratch
-files. Before your first primary game action—or before your next one when
-resuming without a saved program—you MUST use python_exec to create and execute
-at least one reusable Python program that helps parse observations, track state,
-model mechanics, or plan moves. Keep reusable logic in files instead of
-repeatedly sending the same logic inline. For example, Python can call
-Path("planner.py").write_text(...), then runpy.run_path("planner.py"). There is no
-separate editor or shell; create, revise, and execute files through python_exec.
+general-purpose computation tool: python_exec. Every call saves the supplied
+code to a relative .py script_path chosen by you, then executes that file in a
+fresh Python process. The writable working directory persists for this entire
+run. You may create, reuse, modify, and organize as many relative-path .py,
+.json, and scratch files as useful. Python is optional; decide naturally when
+and how to use it. There is no separate editor or shell; create, revise, and
+execute files through python_exec.
 It cannot read MazeBench source, repositories, run artifacts, host files,
 credentials, or prior runs, and it has no network access. Shell, file-browser,
 editor, web, app, and connector tools are disabled.
@@ -323,30 +349,27 @@ files, do not run shell commands, and do not spawn any sub-agents. This is
 TOOLS-OFF mode. Do not access repositories, connectors, resource listings,
 prior-run memory, workers, or private branches. Use only the three game controls
 named below and your current conversation memory.`;
-  const jsonWorkspace = config.toolUse === "offline" && config.mode === "json"
-    ? `JSON SOLVER WORKSPACE BRIDGE. After maze_start, maze_observe, maze_action,
+  const observationWorkspace = config.toolUse === "offline" && config.mode !== "vision"
+    ? `PYTHON WORKSPACE OBSERVATION BRIDGE. After maze_start, maze_observe, maze_action,
 or maze_action_sequence, the trusted MCP server atomically writes the exact
 sanitized observation you just received to observations/current.json inside
 your Python scratch workspace. It also appends delivered observations to
-observations/history.jsonl. Do not copy or retype JSON from the tool result.
-Instead, have saved Python programs load it directly with:
+observations/history.jsonl. Python programs may load the current observation
+directly with:
 
   observation = json.loads(Path("observations/current.json").read_text())
 
-Your first Python call after the initial observation MUST create a real reusable
-planner.py or solver.py file containing that load, then execute the saved file
-with runpy.run_path. Inline-only JSON analysis does not satisfy this requirement.
-Revise and rerun that saved program as the observation changes.
-
-The file includes observation_revision. A solver that produces a route must
-write route.json as {"observation_revision": observation["observation_revision"],
-"actions": [...]}. When auto-run tools are available, submit it with
-maze_action_sequence(route_file="route.json"). The server validates the path,
-action strings, live revision, budget, pause state, and every individual move.`
+The file includes observation_revision. A route file submitted to
+maze_action_sequence must be a JSON action array or an object such as
+{"observation_revision": observation["observation_revision"], "actions": [...]}.
+The server validates the path, action strings, live revision, budget, pause
+state, and every individual move.`
     : "";
   const autoRunTools = autoRunToolsInstructions(config);
-  const firstStep = config.resume || config.seed
+  const firstStep = continuingGame
     ? `Call ${controls.observe} first. This is the same primary game; do not call ${controls.start}.`
+    : recoveringColdStart
+      ? `COLD-START RECOVERY: the provider conversation is being resumed, but no primary game was ever created. Call ${controls.start} exactly once as your first game-control call, even if earlier conversation context said not to start.`
     : `Call ${controls.start} exactly once as your first game-control call.`;
   const workerSpawnRule = config.model === "codex"
     ? "Use the Codex collaboration spawn tool to spawn the custom maze-worker agent without a full-history fork. Its model and reasoning effort are pinned to yours."
@@ -373,7 +396,7 @@ discretion. If you spawn workers, gather their reports before finishing.`
   const budgetInstruction = config.unlimited
     ? `This run has NO MOVE LIMIT. Keep taking primary game actions until the
 game is won or the user stops the run.`
-    : `Then play up to ${config.moves} ${config.resume || config.seed ? "MORE " : ""}primary game actions unless the game reaches a terminal state earlier.`;
+    : `Then play up to ${config.moves} ${continuingGame ? "MORE " : ""}primary game actions unless the game reaches a terminal state earlier.`;
   const quitPolicy = config.allowQuit
     ? ""
     : config.unlimited
@@ -404,7 +427,7 @@ session JSON directly or create, select, or branch game instances yourself.`;
 ${observation}
 ${movementFeedback}
 ${capability}
-${jsonWorkspace}
+${observationWorkspace}
 ${autoRunTools}
 ${swarm}
 ${quitPolicy}
@@ -425,6 +448,8 @@ give a one-line summary of the route and gems collected.`;
 
 function buildPrompt(config) {
   if (config.mcpEnabled) return buildMcpPrompt(config);
+  const continuingGame = hasResumableGameSession(config.sessionFile);
+  const recoveringColdStart = Boolean(config.resume) && !continuingGame;
   const observationFlags = config.mode === "vision"
     ? ` --vision --vision-width ${config.visionWidth} --vision-height ${config.visionHeight}` +
       (config.visionView ? ` --vision-view ${config.visionView}` : "")
@@ -494,7 +519,7 @@ Repo root:    ${ROOT_DIR}
 Helper:       ${HELPER}
 Session file: ${config.sessionFile}
 
-${config.resume
+${continuingGame && config.resume
     ? `You are CONTINUING the SAME grid game you were just controlling — you already
 have the full history in memory and know the helper. The session file is still
 ${config.sessionFile}. Do NOT run "start"; that would erase the progress.
@@ -504,7 +529,7 @@ Your FIRST shell command must re-read the current observation:
   node "${HELPER}" observe --state "${config.sessionFile}"
 
 Then ${config.unlimited ? "keep taking maze actions from where you left off" : `play up to ${config.moves} MORE maze action(s) from where you left off`},`
-    : config.seed
+    : continuingGame
     ? `This maze is ALREADY IN PROGRESS: earlier moves were made and the game state
 is saved in the session file. Do NOT run "start" — that would erase the progress.
 
@@ -514,7 +539,7 @@ stands right now:
   node "${HELPER}" observe --state "${config.sessionFile}"
 
 Then ${config.unlimited ? "keep taking maze actions from that state" : `continue playing up to ${config.moves} MORE maze action(s) from that state`},`
-    : `Your FIRST shell command must start the session (run it exactly once):
+    : `${recoveringColdStart ? "COLD-START RECOVERY: the provider conversation exists, but no game session was created. Ignore any earlier instruction not to start.\n\n" : ""}Your FIRST shell command must start the session (run it exactly once):
 
   node "${HELPER}" start --repo-root "${ROOT_DIR}" --state "${config.sessionFile}" --game "${config.gameId}" --level "${config.levelId}" --view "${config.view}" --yaw "${config.yaw}" --game-won-gem-count "${config.gems}" --max-actions "${config.unlimited ? "unlimited" : config.moves}"${observationFlags}
 
@@ -555,6 +580,8 @@ function mcpEnvironment(config, workerOnly = false) {
     MAZEBENCH_PYTHON_SANDBOX_STATE_DIR: config.pythonSandboxStateDir || path.join(config.outDir, ".python-sandbox"),
     MAZEBENCH_CODEX_BIN: config.codexBin,
     MAZEBENCH_PYTHON_BIN: config.pythonBin || "",
+    MAZEBENCH_PYTHON_RUN_UID: config.inContainer ? String(config.agentUid) : "",
+    MAZEBENCH_PYTHON_RUN_GID: config.inContainer ? String(config.agentGid) : "",
     MAZEBENCH_TOOL_ACTIVITY_FILE: path.join(config.outDir, "tool-activity.jsonl"),
     MAZEBENCH_INSTANCE_EVENTS_FILE: path.join(config.outDir, "maze-instance-events.jsonl"),
     MAZEBENCH_GAME_ID: config.gameId,
@@ -591,6 +618,24 @@ function mcpEnvironment(config, workerOnly = false) {
 
 function tomlString(value) {
   return JSON.stringify(String(value));
+}
+
+function codexPrimeProviderConfigArgs(config) {
+  if (config.inference !== "prime") return [];
+  const runtimeDir = config.agentCodexRuntimeDir || config.codexRuntimeDir || path.join(config.outDir, ".codex-runtime");
+  return [
+    "-c", 'model_provider="prime_intellect"',
+    "-c", 'model_providers.prime_intellect.name="Prime Intellect"',
+    "-c", `model_providers.prime_intellect.base_url=${tomlString(config.primeInferenceUrl)}`,
+    "-c", 'model_providers.prime_intellect.wire_api="responses"',
+    "-c", `model_providers.prime_intellect.auth.command=${tomlString(process.execPath)}`,
+    "-c", `model_providers.prime_intellect.auth.args=[${tomlString(path.posix.join(runtimeDir, "prime-auth.js"))}, ${tomlString("/home/pwuser/.codex/prime-config.json")}]`,
+    "-c", "model_providers.prime_intellect.auth.timeout_ms=5000",
+    "-c", "model_providers.prime_intellect.auth.refresh_interval_ms=300000",
+    "-c", "model_providers.prime_intellect.request_max_retries=2",
+    "-c", "model_providers.prime_intellect.stream_max_retries=1",
+    "-c", "model_providers.prime_intellect.stream_idle_timeout_ms=45000"
+  ];
 }
 
 function codexPermissionConfigArgs(config) {
@@ -664,8 +709,8 @@ function codexWorkerConfig(config, name) {
       "You are a grid-game swarm worker. Use the identical model and reasoning effort inherited from the lead. " +
       "You have exactly one private maze instance. Call maze_start once, then use maze_observe and maze_action without an instance id. " +
       (offline
-        ? "Explore only your private maze, use python_exec for isolated local computation, and report findings to the lead. " +
-          "Each call starts a fresh Python process but relative-path files persist. Before your first maze_action, create and execute a reusable .py program in that workspace. " +
+        ? "Explore only your private maze, use python_exec for isolated local computation when useful, and report findings to the lead. " +
+          "Each call executes a caller-named relative .py file in a fresh Python process, while relative-path files persist. You may organize any number of files as useful. " +
           (config.autoRunTools ? `${autoRunToolsInstructions(config)} ` : "")
         : "Explore only your private maze without writing files or executing general-purpose code, and report findings to the lead. ") +
       "Never act on the primary maze and never change your model or reasoning effort."
@@ -702,8 +747,25 @@ function codexWorkerConfig(config, name) {
 }
 
 function prepareCodexRuntime(config) {
+  const codexDir = config.codexRuntimeDir || path.join(config.outDir, ".codex-runtime");
+  if (config.inference === "prime") {
+    fs.mkdirSync(codexDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(codexDir, "prime-auth.js"),
+      [
+        '"use strict";',
+        'const fs = require("node:fs");',
+        'const file = process.argv[2];',
+        'const config = JSON.parse(fs.readFileSync(file, "utf8"));',
+        'const key = String(config.api_key || "").trim();',
+        'if (!key) process.exit(2);',
+        'process.stdout.write(key);',
+        ''
+      ].join("\n"),
+      { mode: 0o500 }
+    );
+  }
   if (config.toolUse === "read-only") {
-    const codexDir = config.codexRuntimeDir || path.join(config.outDir, ".codex-runtime");
     fs.mkdirSync(codexDir, { recursive: true });
     fs.copyFileSync(CODEX_TOOL_GUARD, path.join(codexDir, "tool-guard.js"));
     fs.writeFileSync(
@@ -781,7 +843,8 @@ function claudeSandboxSettings(config) {
   return JSON.stringify({
     sandbox: {
       enabled: true,
-      autoAllowBashIfSandboxed: offline,
+      // Python is provided by the reviewed MCP sandbox, never Claude's Bash.
+      autoAllowBashIfSandboxed: false,
       allowUnsandboxedCommands: false,
       failIfUnavailable: true,
       enableWeakerNestedSandbox: config.inContainer,
@@ -826,7 +889,7 @@ function claudeAgents(config) {
       "Call maze_start once, then use maze_observe and maze_action without an instance id. Report findings to the lead. " +
       (offline
         ? "You may use python_exec for isolated computation in your private scratch workspace. " +
-          "Each call starts a fresh Python process but relative-path files persist. Before your first maze_action, create and execute a reusable .py program in that workspace. " +
+          "Each call executes a caller-named relative .py file in a fresh Python process, while relative-path files persist. You may organize any number of files as useful. " +
           (config.autoRunTools ? `${autoRunToolsInstructions(config)} ` : "")
         : "Do not write files or execute general-purpose code. ") +
       "Never act on the primary maze and never switch model or reasoning effort.",
@@ -872,15 +935,30 @@ function kimiAllowedTools(config) {
       ];
 }
 
+function kimiAgentProfile(config) {
+  const tools = kimiAllowedTools(config);
+  return [
+    "---",
+    "name: mazebench",
+    "description: MazeBench game-controls-only benchmark agent",
+    "tools:",
+    ...tools.map((tool) => `  - ${tool}`),
+    "disallowedTools:",
+    ...KIMI_RESTRICTED_BUILTIN_TOOLS.map((tool) => `  - ${tool}`),
+    "subagents: []",
+    "---",
+    "Solve the current grid-game task using only the explicitly exposed MazeBench game controls.",
+    "Do not request or attempt shell, filesystem, web, plugin, skill, or sub-agent capabilities.",
+    ""
+  ].join("\n");
+}
+
 function sanitizeKimiConfig(source, config) {
-  const unsafeTopLevel = new Set([
-    "default_permission_mode",
-    "default_plan_mode",
-    "extra_skill_dirs",
-    "merge_all_available_skills",
-    "telemetry"
-  ]);
-  const unsafeSections = /^(?:permission|hooks|services|workspace|background|subagent|loop_control)(?:\.|$)/;
+  // Provider/model data is required for authentication and inference. Drop all
+  // other user configuration (plugins, services, hooks, skills, agents,
+  // workspace settings, tool switches, and prior permissions) rather than
+  // trying to maintain an ever-growing unsafe-field blocklist.
+  const allowedSection = /^(?:providers|models)(?:\.|$)|^thinking$/;
   const preamble = [];
   const blocks = [];
   let block = null;
@@ -892,7 +970,7 @@ function sanitizeKimiConfig(source, config) {
       if (block && keepBlock) blocks.push(block.join("\n"));
       block = [line];
       const section = String(header[1] || "").trim().replace(/^['"]|['"]$/g, "");
-      keepBlock = !unsafeSections.test(section);
+      keepBlock = allowedSection.test(section);
       continue;
     }
     if (block) {
@@ -900,7 +978,7 @@ function sanitizeKimiConfig(source, config) {
       continue;
     }
     const assignment = line.match(/^\s*([A-Za-z_][\w-]*)\s*=/);
-    if (!assignment || !unsafeTopLevel.has(assignment[1])) preamble.push(line);
+    if (!assignment || assignment[1] === "default_model") preamble.push(line);
   }
   if (block && keepBlock) blocks.push(block.join("\n"));
 
@@ -1000,6 +1078,7 @@ function prepareKimiRuntime(config) {
     { mode: 0o600 }
   );
   fs.writeFileSync(path.join(config.kimiRuntimeDir, "mcp.json"), kimiMcpConfig(config), { mode: 0o600 });
+  fs.writeFileSync(path.join(config.kimiRuntimeDir, "mazebench-agent.md"), kimiAgentProfile(config), { mode: 0o600 });
 
   const sourceCredentials = path.join(sourceHome, "credentials");
   const runtimeCredentials = path.join(config.kimiRuntimeDir, "credentials");
@@ -1017,7 +1096,7 @@ function prepareKimiRuntime(config) {
 
 function scrubKimiRuntimeSecrets(config) {
   if (config.model !== "kimi" || !config.kimiRuntimeDir) return;
-  for (const entry of ["config.toml", "mcp.json", "credentials", "device_id"]) {
+  for (const entry of ["config.toml", "mcp.json", "mazebench-agent.md", "credentials", "device_id"]) {
     fs.rmSync(path.join(config.kimiRuntimeDir, entry), { recursive: true, force: true });
   }
 }
@@ -1037,7 +1116,9 @@ function verifyToolIsolation(config) {
     stateDir: config.pythonSandboxStateDir,
     deniedPaths: [ROOT_DIR, config.outDir, config.inContainer ? "/home" : os.homedir()],
     codexBin: config.codexBin,
-    pythonBin: config.pythonBin
+    pythonBin: config.pythonBin,
+    runUid: config.inContainer ? config.agentUid : undefined,
+    runGid: config.inContainer ? config.agentGid : undefined
   });
   fs.writeFileSync(
     path.join(config.outDir, "tool-isolation.json"),
@@ -1106,27 +1187,135 @@ function isolatedDockerAgentCommand(config, command) {
   };
   chownTree(config.workspaceDir);
   chownTree(config.swarmWorkspaceDir);
-  for (const directory of ["/home/pwuser/.codex/sessions", "/home/pwuser/.claude/projects"]) {
-    chownTree(directory);
-  }
-  const credentialOverlays = [];
-  const stageCredential = (directory, fileName) => {
-    const source = path.join(directory, fileName);
-    if (!fs.existsSync(source)) return;
-    const staged = path.join(directory, `.${fileName}.mazebench-${process.pid}`);
-    fs.copyFileSync(source, staged);
-    fs.chmodSync(staged, 0o600);
-    fs.chownSync(staged, config.agentUid, config.agentGid);
-    credentialOverlays.push([staged, source]);
-  };
-  stageCredential("/home/pwuser/.codex", "auth.json");
-  stageCredential("/home/pwuser/.claude", ".credentials.json");
+
   // A bwrap tmpfs root is owned by root. Give the demoted provider a private,
-  // container-ephemeral /tmp so Claude Code can create its per-UID runtime dir
-  // without exposing the trusted runner's /tmp contents.
+  // container-ephemeral home and /tmp so it cannot inspect trusted runner
+  // state. Only the selected provider's credential and this run's transcript
+  // directory are rebound.
   const providerTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "mazebench-provider-"));
   fs.chmodSync(providerTmpDir, 0o700);
   fs.chownSync(providerTmpDir, config.agentUid, config.agentGid);
+  const providerHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "mazebench-provider-home-"));
+  const providerBindArgs = [];
+  const credentialSources = [];
+  const providerSetenv = [];
+
+  if (config.model === "codex") {
+    const providerDir = path.join(providerHomeDir, ".codex");
+    const sessionsDir = path.join(config.outDir, "agent-state", "codex", "sessions");
+    fs.mkdirSync(path.join(providerDir, "sessions"), { recursive: true, mode: 0o700 });
+    fs.mkdirSync(path.join(providerDir, "maze-runtime"), { recursive: true, mode: 0o700 });
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    providerBindArgs.push(
+      ...(fs.existsSync(config.codexRuntimeDir)
+        ? ["--ro-bind", config.codexRuntimeDir, config.agentCodexRuntimeDir]
+        : []),
+      "--bind", sessionsDir, "/home/pwuser/.codex/sessions"
+    );
+    if (config.inference === "prime") {
+      const primeConfigFile = process.env.MAZEBENCH_PRIME_CONFIG_FILE ||
+        "/run/mazebench-credentials/prime-config.json";
+      if (!fs.existsSync(primeConfigFile) || !fs.statSync(primeConfigFile).isFile()) {
+        throw new Error("The isolated Codex/Prime runtime has no mounted Prime credential.");
+      }
+      providerBindArgs.push(
+        "--ro-bind", primeConfigFile, "/home/pwuser/.codex/prime-config.json"
+      );
+      credentialSources.push(primeConfigFile);
+    } else {
+      const authFile = process.env.MAZEBENCH_CODEX_AUTH_FILE ||
+        "/run/mazebench-credentials/codex-auth.json";
+      if (!fs.existsSync(authFile) || !fs.statSync(authFile).isFile()) {
+        throw new Error("The isolated local Codex runtime has no mounted auth file.");
+      }
+      fs.writeFileSync(path.join(providerDir, "auth.json"), "", { mode: 0o600 });
+      providerBindArgs.push(
+        "--ro-bind", authFile, "/home/pwuser/.codex/auth.json"
+      );
+      credentialSources.push(authFile);
+    }
+    providerSetenv.push("--setenv", "CODEX_HOME", "/home/pwuser/.codex");
+    chownTree(sessionsDir);
+  } else if (config.model === "claude") {
+    const authFile = process.env.MAZEBENCH_CLAUDE_AUTH_FILE ||
+      "/run/mazebench-credentials/claude-credentials.json";
+    if (!fs.existsSync(authFile) || !fs.statSync(authFile).isFile()) {
+      throw new Error("The isolated local Claude Code runtime has no mounted subscription credential.");
+    }
+    const providerDir = path.join(providerHomeDir, ".claude");
+    const projectsDir = path.join(config.outDir, "agent-state", "claude", "projects");
+    fs.mkdirSync(path.join(providerDir, "projects"), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(providerDir, ".credentials.json"), "", { mode: 0o600 });
+    fs.mkdirSync(projectsDir, { recursive: true });
+    providerBindArgs.push(
+      "--ro-bind", authFile, "/home/pwuser/.claude/.credentials.json",
+      "--bind", projectsDir, "/home/pwuser/.claude/projects"
+    );
+    credentialSources.push(authFile);
+    providerSetenv.push(
+      "--setenv", "CLAUDE_CONFIG_DIR", "/home/pwuser/.claude",
+      "--setenv", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1",
+      "--setenv", "DISABLE_TELEMETRY", "1",
+      "--setenv", "DISABLE_ERROR_REPORTING", "1",
+      "--setenv", "DISABLE_AUTOUPDATER", "1"
+    );
+    chownTree(projectsDir);
+  } else if (config.model === "kimi") {
+    const configFile = process.env.MAZEBENCH_KIMI_CONFIG_FILE ||
+      "/run/mazebench-credentials/kimi-config.toml";
+    if (!fs.existsSync(configFile) || !fs.statSync(configFile).isFile()) {
+      throw new Error("The isolated local Kimi Code runtime has no mounted account configuration.");
+    }
+    const providerDir = path.join(providerHomeDir, ".kimi-code");
+    const sessionsDir = path.join(config.outDir, "agent-state", "kimi", "sessions");
+    const sessionIndex = path.join(config.outDir, "agent-state", "kimi", "session_index.jsonl");
+    fs.mkdirSync(path.join(providerDir, "empty-skills"), { recursive: true, mode: 0o700 });
+    fs.mkdirSync(path.join(providerDir, "sessions"), { recursive: true, mode: 0o700 });
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    if (!fs.existsSync(sessionIndex)) fs.writeFileSync(sessionIndex, "", { mode: 0o600 });
+    fs.writeFileSync(
+      path.join(providerDir, "config.toml"),
+      sanitizeKimiConfig(fs.readFileSync(configFile, "utf8"), config),
+      { mode: 0o600 }
+    );
+    fs.writeFileSync(path.join(providerDir, "mcp.json"), kimiMcpConfig(config), { mode: 0o600 });
+    fs.writeFileSync(path.join(providerDir, "mazebench-agent.md"), kimiAgentProfile(config), { mode: 0o600 });
+
+    const credentialsDir = process.env.MAZEBENCH_KIMI_CREDENTIALS_DIR || "";
+    if (credentialsDir && fs.existsSync(credentialsDir) && fs.statSync(credentialsDir).isDirectory()) {
+      fs.cpSync(credentialsDir, path.join(providerDir, "credentials"), { recursive: true });
+      credentialSources.push(credentialsDir);
+    }
+    const deviceId = process.env.MAZEBENCH_KIMI_DEVICE_ID_FILE || "";
+    if (deviceId && fs.existsSync(deviceId) && fs.statSync(deviceId).isFile()) {
+      fs.copyFileSync(deviceId, path.join(providerDir, "device_id"));
+      credentialSources.push(deviceId);
+    }
+    providerBindArgs.push(
+      "--bind", sessionsDir, "/home/pwuser/.kimi-code/sessions",
+      "--bind", sessionIndex, "/home/pwuser/.kimi-code/session_index.jsonl"
+    );
+    credentialSources.push(configFile);
+    providerSetenv.push(
+      "--setenv", "KIMI_CODE_HOME", "/home/pwuser/.kimi-code",
+      "--setenv", "KIMI_DISABLE_TELEMETRY", "1",
+      "--setenv", "KIMI_CODE_NO_AUTO_UPDATE", "1",
+      "--setenv", "KIMI_DISABLE_CRON", "1",
+      "--setenv", "KIMI_CODE_BACKGROUND_KEEP_ALIVE_ON_EXIT", "0",
+      "--setenv", "KIMI_CODE_AGENT_SWARM_MAX_CONCURRENCY", "1",
+      "--setenv", "KIMI_CODE_EXPERIMENTAL_FLAG", "1",
+      "--setenv", "KIMI_LOG_LEVEL", "warn"
+    );
+    if (config.reasoning) {
+      providerSetenv.push("--setenv", "KIMI_MODEL_THINKING_EFFORT", config.reasoning);
+    }
+    chownTree(sessionsDir);
+    fs.chownSync(sessionIndex, config.agentUid, config.agentGid);
+  } else {
+    throw new Error(`Unknown local provider: ${config.model}`);
+  }
+  chownTree(providerHomeDir);
+
   const args = [
     "--die-with-parent",
     "--new-session",
@@ -1140,35 +1329,42 @@ function isolatedDockerAgentCommand(config, command) {
     // are rebound below; gameplay stays behind the private HTTP MCP service.
     "--tmpfs", ROOT_DIR,
     "--dir", config.agentWorkspaceDir,
-    "--dir", config.agentSwarmWorkspaceDir,
+    "--bind", providerHomeDir, "/home/pwuser",
     "--bind", providerTmpDir, "/tmp",
     "--dev", "/dev",
     "--proc", "/proc",
     "--bind", config.workspaceDir, config.agentWorkspaceDir,
-    "--bind", config.swarmWorkspaceDir, config.agentSwarmWorkspaceDir,
-    ...(fs.existsSync(config.codexRuntimeDir)
-      ? [
-          "--dir", config.agentCodexRuntimeDir,
-          "--ro-bind", config.codexRuntimeDir, config.agentCodexRuntimeDir
-        ]
-      : []),
+    ...providerBindArgs,
+    // The sources of the narrow rebinds above live in trusted directories.
+    // Mask those source locations after rebinding so the provider cannot reach
+    // any sibling artifact by path.
+    "--tmpfs", config.outDir,
+    ...[...new Set(credentialSources.map((source) => path.dirname(source)))].flatMap((directory) => [
+      "--tmpfs", directory
+    ]),
+    "--tmpfs", path.dirname(config.workspaceDir),
     "--chdir", config.agentWorkspaceDir,
+    "--clearenv",
+    "--setenv", "PATH", process.env.PATH || "/usr/local/bin:/usr/bin:/bin",
     "--setenv", "HOME", "/home/pwuser",
+    "--setenv", "TMPDIR", "/tmp",
+    "--setenv", "LANG", process.env.LANG || "C.UTF-8",
+    "--setenv", "LC_ALL", process.env.LC_ALL || "C.UTF-8",
+    "--setenv", "NO_COLOR", "1",
+    "--setenv", "CI", "1",
     "--setenv", "USER", "pwuser",
-    "--setenv", "LOGNAME", "pwuser"
+    "--setenv", "LOGNAME", "pwuser",
+    ...providerSetenv
   ];
-  for (const directory of ["/home/pwuser/.codex", "/home/pwuser/.claude"]) {
-    if (fs.existsSync(directory)) args.push("--bind", directory, directory);
-  }
-  for (const [source, destination] of credentialOverlays) {
-    args.push("--ro-bind", source, destination);
-  }
   args.push(
     "--",
     "setpriv",
     "--reuid", String(config.agentUid),
     "--regid", String(config.agentGid),
     "--clear-groups",
+    "--bounding-set=-all",
+    "--inh-caps=-all",
+    "--ambient-caps=-all",
     "--no-new-privs",
     command.bin,
     ...command.argv
@@ -1197,6 +1393,7 @@ function agentCommand(config, prompt) {
       "-c", 'approval_policy="never"',
       "-c", 'web_search="disabled"',
       "-c", "tools.web_search=false",
+      "-c", "features.code_mode.enabled=false",
       "-c", "agents.max_depth=1",
       "-c", "project_doc_max_bytes=0",
       "-c", "memories.use_memories=false",
@@ -1210,7 +1407,10 @@ function agentCommand(config, prompt) {
       ...codexPermissionConfigArgs(config),
       ...codexAgentConfigArgs(config),
       ...codexMcpConfigArgs(config),
+      ...codexPrimeProviderConfigArgs(config),
       "--disable", "shell_tool",
+      "--disable", "unified_exec",
+      "--disable", "code_mode",
       "--disable", "memories",
       "--disable", "apps",
       "--disable", "plugins",
@@ -1306,6 +1506,9 @@ function agentCommand(config, prompt) {
         "--strict-mcp-config",
         "--settings", claudeSandboxSettings(config),
         "--permission-mode", "dontAsk",
+        "--no-chrome",
+        "--disable-slash-commands",
+        "--prompt-suggestions", "false",
         "--tools", enabledTools,
         "--allowedTools", [...localTools, ...mcpTools].join(","),
         "--disallowedTools", [
@@ -1350,12 +1553,14 @@ function agentCommand(config, prompt) {
 
   if (config.model === "kimi") {
     const argv = [];
+    const kimiProfile = config.agentKimiProfile || path.join(config.agentKimiRuntimeDir, "mazebench-agent.md");
     if (config.resume) argv.push("--session", config.resume);
     if (config.modelName) argv.push("--model", config.modelName);
     argv.push(
       "--prompt", prompt,
       "--output-format", "stream-json",
-      "--skills-dir", config.agentKimiSkillsDir
+      "--skills-dir", config.agentKimiSkillsDir,
+      "--agent-file", kimiProfile
     );
     return {
       bin: config.kimiBin,
@@ -1366,6 +1571,7 @@ function agentCommand(config, prompt) {
         KIMI_CODE_NO_AUTO_UPDATE: "1",
         KIMI_DISABLE_CRON: "1",
         KIMI_CODE_BACKGROUND_KEEP_ALIVE_ON_EXIT: "0",
+        KIMI_CODE_EXPERIMENTAL_FLAG: "1",
         KIMI_LOG_LEVEL: "warn",
         NO_COLOR: "1",
         CI: "1",
@@ -1376,6 +1582,381 @@ function agentCommand(config, prompt) {
 
   throw new Error(`Unknown model: ${config.model} (expected "codex", "claude", or "kimi")`);
 }
+
+const REQUIRED_LOCAL_CODEX_DISABLED_FEATURES = Object.freeze([
+  "apps",
+  "browser_use",
+  "code_mode",
+  "computer_use",
+  "enable_mcp_apps",
+  "image_generation",
+  "in_app_browser",
+  "memories",
+  "multi_agent",
+  "plugin_sharing",
+  "plugins",
+  "remote_plugin",
+  "shell_tool",
+  "standalone_web_search",
+  "tool_search",
+  "tool_suggest",
+  "unified_exec"
+]);
+
+function assertLocalCodexCommandIsolation(config, command) {
+  if (!config.inContainer || config.model !== "codex") {
+    throw new Error("Local Codex must run inside the certified disposable container boundary.");
+  }
+  const offline = config.toolUse === "offline";
+  if (!["read-only", "offline"].includes(config.toolUse) || Boolean(config.tools) !== offline || config.swarm) {
+    throw new Error("Local Codex supports one agent with game controls and the optional isolated Python tool only.");
+  }
+  if (command.bin !== config.codexBin) {
+    throw new Error("The evaluated process must be the pinned Codex CLI.");
+  }
+
+  const args = command.argv.map(String);
+  const joined = args.join("\n");
+  if (
+    args.includes("--add-dir") ||
+    args.includes("--sandbox") ||
+    args.includes("--search") ||
+    args.includes("--enable") ||
+    args.includes("--dangerously-bypass-approvals-and-sandbox") ||
+    /sandbox_mode|sandbox_workspace_write/.test(joined)
+  ) {
+    throw new Error("Local Codex launch attempted to widen filesystem access.");
+  }
+  for (const feature of REQUIRED_LOCAL_CODEX_DISABLED_FEATURES) {
+    const disabled = args.some((value, index) => value === feature && args[index - 1] === "--disable");
+    if (!disabled) throw new Error(`Local Codex launch did not disable ${feature}.`);
+  }
+  const configValues = args.filter((_value, index) => args[index - 1] === "-c");
+  const mcpPrefix = offline ? "mazebench" : "game";
+  const enabledTools = offline
+    ? ["maze_start", "maze_observe", "maze_action", ...(config.autoRunTools ? ["maze_action_sequence"] : []), "python_exec"]
+    : ["game_start", "game_observe", "game_action"];
+  for (const required of [
+    'approval_policy="never"',
+    'web_search="disabled"',
+    "tools.web_search=false",
+    "permissions.mazebench_agent.network.enabled=false",
+    `mcp_servers.${mcpPrefix}.enabled_tools=${JSON.stringify(enabledTools)}`
+  ]) {
+    if (configValues.filter((value) => value === required).length !== 1) {
+      throw new Error(`Local Codex launch is missing isolation setting: ${required}`);
+    }
+  }
+  const primeProviderValues = config.inference === "prime"
+    ? [
+        'model_provider="prime_intellect"',
+        'model_providers.prime_intellect.name="Prime Intellect"',
+        `model_providers.prime_intellect.base_url=${tomlString(config.primeInferenceUrl)}`,
+        'model_providers.prime_intellect.wire_api="responses"',
+        `model_providers.prime_intellect.auth.command=${tomlString(process.execPath)}`,
+        `model_providers.prime_intellect.auth.args=[${tomlString(path.posix.join(config.agentCodexRuntimeDir, "prime-auth.js"))}, ${tomlString("/home/pwuser/.codex/prime-config.json")}]`,
+        "model_providers.prime_intellect.auth.timeout_ms=5000",
+        "model_providers.prime_intellect.auth.refresh_interval_ms=300000",
+        "model_providers.prime_intellect.request_max_retries=2",
+        "model_providers.prime_intellect.stream_max_retries=1",
+        "model_providers.prime_intellect.stream_idle_timeout_ms=45000"
+      ]
+    : [];
+  if (config.inference === "prime" &&
+      primeProviderValues.some((required) => configValues.filter((value) => value === required).length !== 1)) {
+    throw new Error("Codex/Prime launch is missing its reviewed command-backed inference provider.");
+  }
+  if (config.inference !== "prime" &&
+      configValues.some((value) => /^(?:model_provider|model_providers\.)/.test(value))) {
+    throw new Error("Local subscription Codex cannot inject a custom model provider.");
+  }
+  if (configValues.some((value) => /(?:env_key|experimental_bearer_token|requires_openai_auth)=/.test(value))) {
+    throw new Error("Codex provider credentials must use the reviewed command-backed reader.");
+  }
+  if (configValues.filter((value) => value.startsWith(`mcp_servers.${mcpPrefix}.url=`)).length !== 1) {
+    throw new Error("Local Codex must use exactly one private HTTP MCP endpoint.");
+  }
+  const filesystemProfile = configValues.find((value) => value.startsWith("permissions.mazebench_agent.filesystem="));
+  const workspaceWrite = `"${canonicalPath(config.agentWorkspaceDir)}"="write"`;
+  const swarmWorkspaceWrite = `"${canonicalPath(config.agentSwarmWorkspaceDir)}"="write"`;
+  if (!filesystemProfile || !filesystemProfile.includes('":minimal"="read"') ||
+      (offline
+        ? !filesystemProfile.includes(workspaceWrite) || !filesystemProfile.includes(swarmWorkspaceWrite)
+        : filesystemProfile.includes('"write"'))) {
+    throw new Error("Local Codex filesystem permissions do not match the reviewed run-scoped policy.");
+  }
+  if (
+    new RegExp(`mcp_servers\\.(?!${mcpPrefix}\\.)`).test(joined) ||
+    new RegExp(`mcp_servers\\.${mcpPrefix}\\.(?:command|args|env)=`).test(joined) ||
+    /maze_workers/.test(joined) ||
+    (!offline && /python_exec|mcp_servers\.mazebench/.test(joined)) ||
+    configValues.some((value) => /^(?:approval_policy|web_search|tools\.web_search|permissions\.mazebench_agent\.network\.enabled)=/.test(value) && ![
+      'approval_policy="never"',
+      'web_search="disabled"',
+      "tools.web_search=false",
+      "permissions.mazebench_agent.network.enabled=false"
+    ].includes(value))
+  ) {
+    throw new Error("Local Codex launch exposed a non-game capability.");
+  }
+  return true;
+}
+
+function assertLocalClaudeCommandIsolation(config, command) {
+  if (!config.inContainer || config.model !== "claude") {
+    throw new Error("Local Claude Code must run inside the certified disposable container boundary.");
+  }
+  const offline = config.toolUse === "offline";
+  if (!["read-only", "offline"].includes(config.toolUse) || Boolean(config.tools) !== offline || config.swarm) {
+    throw new Error("Local Claude Code supports one agent with game controls and the optional isolated Python tool only.");
+  }
+  if (command.bin !== config.claudeBin) {
+    throw new Error("The evaluated process must be the pinned Claude Code CLI.");
+  }
+
+  const args = command.argv.map(String);
+  const forbidden = [
+    "--add-dir", "--agent", "--agents", "--allow-dangerously-skip-permissions",
+    "--bare", "--chrome", "--dangerously-skip-permissions", "--plugin-dir",
+    "--plugin-url", "--remote-control", "--safe-mode", "--worktree"
+  ];
+  if (forbidden.some((flag) => args.includes(flag))) {
+    throw new Error("Local Claude Code launch attempted to widen agent capabilities.");
+  }
+  const valueAfter = (flag) => {
+    const indexes = args.flatMap((value, index) => value === flag ? [index] : []);
+    if (indexes.length !== 1 || indexes[0] + 1 >= args.length) {
+      throw new Error(`Local Claude Code launch is missing one exact ${flag} setting.`);
+    }
+    return args[indexes[0] + 1];
+  };
+  if (!args.includes("--strict-mcp-config") || !args.includes("--no-chrome") ||
+      !args.includes("--disable-slash-commands")) {
+    throw new Error("Local Claude Code launch did not disable ambient integrations.");
+  }
+  if (valueAfter("--permission-mode") !== "dontAsk" || valueAfter("--tools") !== "default") {
+    throw new Error("Local Claude Code launch has an unsafe permission mode.");
+  }
+  const expectedAllowed = offline
+    ? [
+        "mcp__mazebench__maze_start",
+        "mcp__mazebench__maze_observe",
+        "mcp__mazebench__maze_action",
+        ...(config.autoRunTools ? ["mcp__mazebench__maze_action_sequence"] : []),
+        "mcp__mazebench__python_exec"
+      ]
+    : [
+        "mcp__game__game_start",
+        "mcp__game__game_observe",
+        "mcp__game__game_action"
+      ];
+  const allowed = new Set(valueAfter("--allowedTools").split(",").filter(Boolean));
+  if (allowed.size !== expectedAllowed.length || !expectedAllowed.every((tool) => allowed.has(tool))) {
+    throw new Error("Local Claude Code launch exposed an unreviewed tool.");
+  }
+  const denied = new Set(valueAfter("--disallowedTools").split(",").filter(Boolean));
+  if (!CLAUDE_RESTRICTED_BUILTIN_TOOLS.every((tool) => denied.has(tool))) {
+    throw new Error("Local Claude Code launch did not deny every reviewed built-in tool.");
+  }
+  const mcp = JSON.parse(valueAfter("--mcp-config"));
+  const servers = Object.entries(mcp?.mcpServers || {});
+  const serverName = offline ? "mazebench" : "game";
+  const server = servers[0]?.[1];
+  if (servers.length !== 1 || servers[0][0] !== serverName || server?.type !== "http" ||
+      server?.url !== config.mcpUrl || Object.keys(server).some((key) => !["type", "url"].includes(key))) {
+    throw new Error("Local Claude Code must use exactly one private HTTP MCP endpoint.");
+  }
+  const settings = JSON.parse(valueAfter("--settings"));
+  if (settings?.sandbox?.network?.allowedDomains?.length ||
+      settings?.sandbox?.filesystem?.allowWrite?.length ||
+      settings?.sandbox?.failIfUnavailable !== true) {
+    throw new Error("Local Claude Code sandbox settings attempted to widen access.");
+  }
+  return true;
+}
+
+function assertLocalKimiCommandIsolation(config, command) {
+  if (!config.inContainer || config.model !== "kimi") {
+    throw new Error("Local Kimi Code must run inside the certified disposable container boundary.");
+  }
+  const offline = config.toolUse === "offline";
+  if (!["read-only", "offline"].includes(config.toolUse) || Boolean(config.tools) !== offline || config.swarm) {
+    throw new Error("Local Kimi Code supports one agent with game controls and the optional isolated Python tool only.");
+  }
+  if (command.bin !== config.kimiBin) {
+    throw new Error("The evaluated process must be the pinned Kimi Code CLI.");
+  }
+  const args = command.argv.map(String);
+  const valueFlags = new Set(["--session", "--model", "--prompt", "--output-format", "--skills-dir", "--agent-file"]);
+  for (let index = 0; index < args.length; index += 2) {
+    const flag = args[index];
+    if (!valueFlags.has(flag) || index + 1 >= args.length) {
+      throw new Error(`Local Kimi Code launch contains an unreviewed option: ${flag}`);
+    }
+  }
+  const valueAfter = (flag) => {
+    const indexes = args.flatMap((value, index) => value === flag ? [index] : []);
+    if (indexes.length !== 1) throw new Error(`Local Kimi Code needs one exact ${flag} setting.`);
+    return args[indexes[0] + 1];
+  };
+  const kimiProfilePath = config.agentKimiProfile || path.join(config.agentKimiRuntimeDir, "mazebench-agent.md");
+  if (valueAfter("--output-format") !== "stream-json" ||
+      valueAfter("--skills-dir") !== config.agentKimiSkillsDir ||
+      valueAfter("--agent-file") !== kimiProfilePath) {
+    throw new Error("Local Kimi Code launch did not use its empty skills directory and reviewed agent profile.");
+  }
+  const profile = kimiAgentProfile(config);
+  const expectedTools = kimiAllowedTools(config);
+  if (!profile.includes("subagents: []") ||
+      !expectedTools.every((tool) => profile.includes(`  - ${tool}`)) ||
+      !KIMI_RESTRICTED_BUILTIN_TOOLS.every((tool) => profile.includes(`  - ${tool}`))) {
+    throw new Error("Local Kimi Code agent profile contains an unreviewed tool.");
+  }
+  return true;
+}
+
+function assertLocalAgentCommandIsolation(config, command) {
+  if (config.model === "codex") return assertLocalCodexCommandIsolation(config, command);
+  if (config.model === "claude") return assertLocalClaudeCommandIsolation(config, command);
+  if (config.model === "kimi") return assertLocalKimiCommandIsolation(config, command);
+  throw new Error(`Unsupported local provider: ${config.model}`);
+}
+
+function isolatedAgentEnvironment(config, commandEnv = {}) {
+  if (!config.inContainer) {
+    return { ...process.env, ...commandEnv };
+  }
+  const providerHome = config.model === "codex"
+    ? { CODEX_HOME: "/home/pwuser/.codex" }
+    : config.model === "claude"
+      ? { CLAUDE_CONFIG_DIR: "/home/pwuser/.claude" }
+      : { KIMI_CODE_HOME: "/home/pwuser/.kimi-code" };
+  return {
+    PATH: process.env.PATH || "/usr/local/bin:/usr/bin:/bin",
+    HOME: "/home/pwuser",
+    TMPDIR: "/tmp",
+    LANG: process.env.LANG || "C.UTF-8",
+    LC_ALL: process.env.LC_ALL || "C.UTF-8",
+    NO_COLOR: "1",
+    CI: "1",
+    ...providerHome,
+    ...commandEnv
+  };
+}
+
+function localAgentIsolationPreflight(config) {
+  const preflightConfig = {
+    ...config,
+    mcpUrl: config.mcpUrl || "http://127.0.0.1:1/isolation-preflight"
+  };
+  const command = agentCommand(preflightConfig, "Isolation preflight only.");
+  assertLocalAgentCommandIsolation(preflightConfig, command);
+
+  const providerBin = { codex: config.codexBin, claude: config.claudeBin, kimi: config.kimiBin }[config.model];
+  const requiredVersion = SUPPORTED_LOCAL_AGENT_VERSIONS[config.model];
+  const versionProbe = spawnSync(providerBin, ["--version"], {
+    encoding: "utf8",
+    env: isolatedAgentEnvironment(config),
+    timeout: 10_000
+  });
+  const installedVersion = String(versionProbe.stdout || versionProbe.stderr || "")
+    .match(/\d+\.\d+\.\d+/)?.[0] || "";
+  if (versionProbe.status !== 0 || installedVersion !== requiredVersion) {
+    throw new Error(
+      `Local ${config.model} ${installedVersion || "unknown"} has not passed MazeBench's isolation review; ` +
+      `rebuild the image with ${config.model} ${requiredVersion}.`
+    );
+  }
+
+  const credentialSource = {
+    codex: config.inference === "prime"
+      ? process.env.MAZEBENCH_PRIME_CONFIG_FILE || "/run/mazebench-credentials/prime-config.json"
+      : process.env.MAZEBENCH_CODEX_AUTH_FILE || "/run/mazebench-credentials/codex-auth.json",
+    claude: process.env.MAZEBENCH_CLAUDE_AUTH_FILE || "/run/mazebench-credentials/claude-credentials.json",
+    kimi: process.env.MAZEBENCH_KIMI_CONFIG_FILE || "/run/mazebench-credentials/kimi-config.toml"
+  }[config.model];
+  const probeSource = `
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const workspace = ${JSON.stringify(config.agentWorkspaceDir)};
+    const output = ${JSON.stringify(config.outDir)};
+    const authSource = ${JSON.stringify(credentialSource)};
+    const resuming = ${JSON.stringify(Boolean(config.resume))};
+    const processStatus = fs.readFileSync("/proc/self/status", "utf8");
+    const workspaceEntries = fs.readdirSync(workspace);
+    const checks = {
+      workspace_is_cwd: path.resolve(process.cwd()) === path.resolve(workspace),
+      workspace_empty: workspaceEntries.length === 0,
+      workspace_state_valid: resuming || workspaceEntries.length === 0,
+      repository_hidden: fs.readdirSync("/app").every((entry) => entry === "workspace") &&
+        !fs.existsSync("/app/scripts/maze-agent-local.js"),
+      run_output_hidden: fs.readdirSync(output).length === 0 && !fs.existsSync(path.join(output, "run.json")),
+      credential_source_hidden: !fs.existsSync(authSource),
+      host_home_hidden: !fs.existsSync("/Users") && !fs.existsSync("/root/.ssh"),
+      capabilities_dropped: ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"].every((name) =>
+        new RegExp("^" + name + ":\\\\s+0+$", "m").test(processStatus)
+      ),
+      no_new_privileges: /^NoNewPrivs:\\s+1$/m.test(processStatus)
+    };
+    process.stdout.write(JSON.stringify(checks));
+    if (Object.entries(checks).some(([name, value]) => name !== "workspace_empty" && value !== true)) {
+      process.exitCode = 2;
+    }
+  `;
+  const namespaceCommand = isolatedDockerAgentCommand(preflightConfig, {
+    bin: process.execPath,
+    argv: ["-e", probeSource]
+  });
+  const namespaceProbe = spawnSync(namespaceCommand.bin, namespaceCommand.argv, {
+    cwd: config.workspaceDir,
+    encoding: "utf8",
+    env: isolatedAgentEnvironment(config),
+    timeout: 20_000,
+    maxBuffer: 1024 * 1024
+  });
+  let checks = {};
+  try {
+    checks = JSON.parse(String(namespaceProbe.stdout || "{}"));
+  } catch (_error) {
+    /* the failure below includes stderr */
+  }
+  if (namespaceProbe.status !== 0 || !Object.keys(checks).length) {
+    const detail = String(namespaceProbe.stderr || namespaceProbe.stdout || "").trim();
+    throw new Error(`Local ${config.model} isolation preflight failed${detail ? `: ${detail}` : "."}`);
+  }
+
+  const report = {
+    schema_version: 1,
+    verified: true,
+    checked_at: new Date().toISOString(),
+    provider: config.model,
+    boundary: config.toolUse === "offline"
+      ? "disposable-container/game-tools+isolated-python"
+      : "disposable-container/game-tools-only",
+    provider_version: installedVersion,
+    [`${config.model}_version`]: installedVersion,
+    command_policy: {
+      approval_escalation: false,
+      shell: false,
+      filesystem_tools: false,
+      web: false,
+      apps: false,
+      subagents: false,
+      mcp_tools: config.toolUse === "offline"
+        ? ["maze_start", "maze_observe", "maze_action", ...(config.autoRunTools ? ["maze_action_sequence"] : []), "python_exec"]
+        : ["game_start", "game_observe", "game_action"]
+    },
+    namespace: checks
+  };
+  for (const name of ["local-agent-isolation.json", `local-${config.model}-isolation.json`]) {
+    fs.writeFileSync(path.join(config.outDir, name), `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
+  }
+  return report;
+}
+
+// Backward-compatible export for callers/tests that still use the former
+// Codex-specific helper name.
+const localCodexIsolationPreflight = localAgentIsolationPreflight;
 
 function ensureAgentAvailable(bin) {
   const probe = spawnSync("sh", ["-c", `command -v ${JSON.stringify(bin)}`], { encoding: "utf8" });
@@ -1872,10 +2453,13 @@ function providerFailureFromEvents(raw, provider) {
       };
     }
     if (provider === "codex" && ["error", "turn.failed"].includes(event.type)) {
+      const message = String(event.message || event.error?.message || event.error || "Codex request failed.")
+        .trim()
+        .slice(0, 500);
       return {
         provider,
-        status: Number(event.status || event.status_code) || null,
-        message: String(event.message || event.error?.message || event.error || "Codex request failed.").trim().slice(0, 500)
+        status: Number(event.status || event.status_code) || Number(message.match(/\b([45]\d\d)\b/)?.[1]) || null,
+        message
       };
     }
     if (provider === "codex" && ["turn.completed", "thread.started"].includes(event.type)) return null;
@@ -1931,7 +2515,11 @@ function recordNoMoveIfIdle(config, actionCountBefore) {
 }
 
 function runAgent(config, prompt) {
-  const { bin, argv, env: commandEnv = {} } = isolatedDockerAgentCommand(config, agentCommand(config, prompt));
+  const agent = agentCommand(config, prompt);
+  if (config.inContainer && config.model === "codex") {
+    assertLocalCodexCommandIsolation(config, agent);
+  }
+  const { bin, argv, env: commandEnv = {} } = isolatedDockerAgentCommand(config, agent);
   ensureAgentAvailable(bin);
 
   console.log(`\n=== Launching local ${config.model} agent (${bin}) ===`);
@@ -1963,15 +2551,7 @@ function runAgent(config, prompt) {
   fs.rmSync(path.join(config.outDir, "provider-failure.json"), { force: true });
 
   return new Promise((resolve) => {
-    const env = config.model === "kimi"
-      ? {
-          PATH: process.env.PATH || "",
-          HOME: process.env.HOME || os.homedir(),
-          TMPDIR: process.env.TMPDIR || os.tmpdir(),
-          LANG: process.env.LANG || "C.UTF-8",
-          ...commandEnv
-        }
-      : { ...process.env, ...commandEnv };
+    const env = isolatedAgentEnvironment(config, commandEnv);
     if (config.model === "claude" && config.mcpEnabled) {
       if (config.swarm && config.modelName) env.CLAUDE_CODE_SUBAGENT_MODEL = config.modelName;
     }
@@ -1979,6 +2559,26 @@ function runAgent(config, prompt) {
     const child = spawn(bin, argv, { cwd, env, stdio: ["ignore", "pipe", "inherit"] });
     let raw = "";
     let eventBuffer = "";
+    let primeInactivityTimer = null;
+    let timeoutFailure = null;
+    const resetPrimeInactivityTimer = () => {
+      if (primeInactivityTimer) clearTimeout(primeInactivityTimer);
+      if (config.inference !== "prime") return;
+      primeInactivityTimer = setTimeout(() => {
+        timeoutFailure = {
+          provider: config.model,
+          status: null,
+          message: "Prime inference produced no Codex events for 90 seconds; the stalled request was terminated."
+        };
+        console.error(timeoutFailure.message);
+        child.kill("SIGTERM");
+        setTimeout(() => {
+          if (child.exitCode == null) child.kill("SIGKILL");
+        }, 2_000).unref();
+      }, 90_000);
+      primeInactivityTimer.unref();
+    };
+    resetPrimeInactivityTimer();
 
     const appendTimedEvents = (text, flush = false) => {
       eventBuffer += text;
@@ -2000,6 +2600,7 @@ function runAgent(config, prompt) {
     };
 
     child.stdout.on("data", (chunk) => {
+      resetPrimeInactivityTimer();
       const text = chunk.toString();
       raw += text;
       try {
@@ -2009,10 +2610,12 @@ function runAgent(config, prompt) {
       }
     });
     child.on("error", (error) => {
+      if (primeInactivityTimer) clearTimeout(primeInactivityTimer);
       console.error(error instanceof Error ? error.message : String(error));
       resolve({ code: null, failure: { provider: config.model, status: null, message: error.message } });
     });
     child.on("close", (code) => {
+      if (primeInactivityTimer) clearTimeout(primeInactivityTimer);
       try {
         appendTimedEvents("", true);
       } catch (_error) {
@@ -2032,7 +2635,7 @@ function runAgent(config, prompt) {
       if (code !== 0) {
         console.warn(`\n(agent exited with status ${code}; continuing to export whatever it played)`);
       }
-      resolve({ code, failure: providerFailureFromEvents(raw, config.model) });
+      resolve({ code, failure: timeoutFailure || providerFailureFromEvents(raw, config.model) });
     });
   });
 }
@@ -2092,6 +2695,23 @@ function exportReplay(config) {
 function expandTilde(value) {
   const text = String(value || "");
   return text.startsWith("~") ? path.join(process.env.HOME || "", text.slice(1)) : text;
+}
+
+function readPrimeCredential(filePath) {
+  let value;
+  try {
+    value = JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch (_error) {
+    throw new Error("Prime credentials are unavailable. Run `prime login`, then retry.");
+  }
+  const apiKey = String(value?.api_key || "").trim();
+  const inferenceUrl = String(value?.inference_url || "https://api.pinference.ai/api/v1")
+    .trim()
+    .replace(/\/+$/, "");
+  if (!apiKey || !/^https:\/\/[A-Za-z0-9.-]+(?::\d+)?(?:\/[^\s]*)?$/.test(inferenceUrl)) {
+    throw new Error("Prime credentials are incomplete. Run `prime login`, then retry.");
+  }
+  return { api_key: apiKey, inference_url: inferenceUrl };
 }
 
 // Claude Code stores a subscription login in the macOS Keychain (service
@@ -2162,9 +2782,14 @@ function containerRuntimeMountArgs(rootDir) {
 // currently installed gameplay, ASCII, and JSON implementation instead of a
 // potentially stale copy baked into the agent image.
 function runInContainer(config, raw) {
-  const hostOutputs = path.join(ROOT_DIR, "outputs", "maze-local");
+  if (!SUPPORTED_LOCAL_AGENT_VERSIONS[config.model] ||
+      !["read-only", "offline"].includes(config.toolUse) ||
+      config.tools !== (config.toolUse === "offline") || config.swarm) {
+    throw new Error(RETIRED_LOCAL_AGENT_MESSAGE);
+  }
+  const hostRunDir = config.outDir;
+  const hostWorkspaceRoot = path.dirname(config.workspaceDir);
   const cidFile = path.join(config.outDir, "container.cid");
-  const agentStateDir = path.join(config.outDir, "agent-state");
 
   // Docker writes the exact container id here as soon as it creates the
   // container. The Agent backend uses it for real docker pause/unpause/stop
@@ -2177,59 +2802,127 @@ function runInContainer(config, raw) {
     if (error && error.code !== "ENOENT") throw error;
   }
 
-  // Forward the meaningful options to the in-container runner. Host-specific
-  // path options (out/session) are intentionally dropped; the inner run writes
-  // under the mounted /app/outputs/maze-local.
+  // Forward the meaningful options to the in-container runner. The exact run
+  // directory and its otherwise empty model workspace are mounted separately;
+  // no repository output root or prior-run directory crosses the boundary.
   const forwardKeys = [
-    "model", "moves", "unlimited", "allow_quit", "mode", "omniscient", "hide_names", "hide_names_seed", "tools", "tool_use", "auto_run_tools", "auto_run_all_frames", "swarm", "max_swarm_workers", "game", "level", "view", "yaw", "gems",
+    "model", "inference", "moves", "unlimited", "allow_quit", "mode", "omniscient", "hide_names", "hide_names_seed", "tools", "tool_use", "auto_run_tools", "auto_run_all_frames", "swarm", "max_swarm_workers", "game", "level", "view", "yaw", "gems",
     "video", "no_video", "fast", "draft", "width", "height", "fps",
     "vision_width", "vision_height", "vision_view", "model_name", "llm",
     "reasoning", "effort", "codex_fast", "resume", "seed", "fork_session", "session_id",
-    "codex_bin", "claude_bin", "claude_allowed_tools"
+    "preflight_only"
   ];
   const inner = ["node", "scripts/maze-agent-local.js", "container=false"];
   for (const key of forwardKeys) {
     if (raw[key] !== undefined) inner.push(`${key}=${raw[key]}`);
   }
-  // An explicit out dir inside the mounted outputs tree survives the re-exec:
-  // rewrite it to the container-side path so callers (e.g. the web UI) can
-  // tail a run directory they chose. Out dirs elsewhere are dropped as before.
-  if (raw.out) {
-    const hostOut = path.resolve(raw.out);
-    const relative = path.relative(hostOutputs, hostOut);
-    if (relative && !relative.startsWith("..") && !path.isAbsolute(relative)) {
-      inner.push(`out=${path.posix.join("/app/outputs/maze-local", relative.split(path.sep).join("/"))}`);
+  inner.push("out=/run/mazebench-output", "workspace_root=/run/mazebench-workspace");
+
+  const credentialMounts = [];
+  const credentialEnvironment = [];
+  let temporaryCredentialDir = "";
+  if (config.model === "codex") {
+    if (config.inference === "prime") {
+      const source = raw.prime_auth
+        ? path.resolve(expandTilde(raw.prime_auth))
+        : path.join(process.env.HOME || "", ".prime", "config.json");
+      const prime = readPrimeCredential(source);
+      temporaryCredentialDir = fs.mkdtempSync(path.join(os.tmpdir(), "mazebench-prime-auth-"));
+      const primeConfigPath = path.join(temporaryCredentialDir, "config.json");
+      fs.writeFileSync(primeConfigPath, `${JSON.stringify(prime)}\n`, { mode: 0o600 });
+      credentialEnvironment.push("-e", "MAZEBENCH_PRIME_CONFIG_FILE=/run/mazebench-credentials/prime-config.json");
+      credentialMounts.push("-v", `${primeConfigPath}:/run/mazebench-credentials/prime-config.json:ro`);
+    } else {
+      const authPath = raw.codex_auth
+        ? (() => {
+            const requested = path.resolve(expandTilde(raw.codex_auth));
+            return fs.existsSync(requested) && fs.statSync(requested).isDirectory()
+              ? path.join(requested, "auth.json")
+              : requested;
+          })()
+        : path.join(process.env.HOME || "", ".codex", "auth.json");
+      if (!fs.existsSync(authPath) || !fs.statSync(authPath).isFile()) {
+        throw new Error("Codex subscription credentials are unavailable. Run `codex login`, then retry.");
+      }
+      credentialEnvironment.push("-e", "MAZEBENCH_CODEX_AUTH_FILE=/run/mazebench-credentials/codex-auth.json");
+      credentialMounts.push("-v", `${authPath}:/run/mazebench-credentials/codex-auth.json:ro`);
+    }
+  } else if (config.model === "claude") {
+    let authPath = "";
+    if (raw.claude_auth) {
+      const requested = path.resolve(expandTilde(raw.claude_auth));
+      authPath = fs.existsSync(requested) && fs.statSync(requested).isDirectory()
+        ? path.join(requested, ".credentials.json")
+        : requested;
+    } else {
+      const fileCredential = path.join(process.env.HOME || "", ".claude", ".credentials.json");
+      if (fs.existsSync(fileCredential) && fs.statSync(fileCredential).isFile()) {
+        authPath = fileCredential;
+      } else if (claudeKeychainAvailable()) {
+        const credential = extractClaudeKeychainCredential();
+        if (credential) {
+          temporaryCredentialDir = fs.mkdtempSync(path.join(os.tmpdir(), "mazebench-claude-auth-"));
+          authPath = path.join(temporaryCredentialDir, "credentials.json");
+          fs.writeFileSync(authPath, credential, { mode: 0o600 });
+        }
+      }
+    }
+    if (!authPath || !fs.existsSync(authPath) || !fs.statSync(authPath).isFile()) {
+      throw new Error("Claude Code subscription credentials are unavailable. Run `claude auth login`, then retry.");
+    }
+    credentialEnvironment.push("-e", "MAZEBENCH_CLAUDE_AUTH_FILE=/run/mazebench-credentials/claude-credentials.json");
+    credentialMounts.push("-v", `${authPath}:/run/mazebench-credentials/claude-credentials.json:ro`);
+  } else {
+    const requested = raw.kimi_auth
+      ? path.resolve(expandTilde(raw.kimi_auth))
+      : path.resolve(process.env.KIMI_CODE_HOME || path.join(process.env.HOME || "", ".kimi-code"));
+    const kimiHome = fs.existsSync(requested) && fs.statSync(requested).isDirectory()
+      ? requested
+      : path.dirname(requested);
+    const configPath = fs.existsSync(requested) && fs.statSync(requested).isDirectory()
+      ? path.join(requested, "config.toml")
+      : requested;
+    if (!fs.existsSync(configPath) || !fs.statSync(configPath).isFile()) {
+      throw new Error("Kimi Code account configuration is unavailable. Run `kimi login`, then retry.");
+    }
+    credentialEnvironment.push("-e", "MAZEBENCH_KIMI_CONFIG_FILE=/run/mazebench-credentials/kimi-config.toml");
+    credentialMounts.push("-v", `${configPath}:/run/mazebench-credentials/kimi-config.toml:ro`);
+    const credentialsDir = path.join(kimiHome, "credentials");
+    if (fs.existsSync(credentialsDir) && fs.statSync(credentialsDir).isDirectory()) {
+      credentialEnvironment.push("-e", "MAZEBENCH_KIMI_CREDENTIALS_DIR=/run/mazebench-credentials/kimi-credentials");
+      credentialMounts.push("-v", `${credentialsDir}:/run/mazebench-credentials/kimi-credentials:ro`);
+    }
+    const deviceId = path.join(kimiHome, "device_id");
+    if (fs.existsSync(deviceId) && fs.statSync(deviceId).isFile()) {
+      credentialEnvironment.push("-e", "MAZEBENCH_KIMI_DEVICE_ID_FILE=/run/mazebench-credentials/kimi-device-id");
+      credentialMounts.push("-v", `${deviceId}:/run/mazebench-credentials/kimi-device-id:ro`);
     }
   }
 
   const dockerArgs = [
     "run", "--rm", "-i", "--cidfile", cidFile,
     "--user", "root",
+    "--read-only",
+    "--pids-limit", "512",
+    "--memory", "4g",
+    "--cpus", "2",
     "--cap-drop", "ALL",
     "--cap-add", "SYS_ADMIN",
     "--cap-add", "SETUID",
     "--cap-add", "SETGID",
+    "--cap-add", "SETPCAP",
     "--cap-add", "CHOWN",
     "--cap-add", "DAC_OVERRIDE",
     "--security-opt", "seccomp=unconfined",
     "--security-opt", "apparmor=unconfined",
     "-e", "MAZEBENCH_IN_CONTAINER=1",
-    "-v", `${hostOutputs}:/app/outputs/maze-local`,
+    ...credentialEnvironment,
+    "--tmpfs", "/tmp:rw,nosuid,nodev,size=1g",
+    "-v", `${hostRunDir}:/run/mazebench-output`,
+    "-v", `${hostWorkspaceRoot}:/run/mazebench-workspace`,
+    ...credentialMounts,
     ...containerRuntimeMountArgs(ROOT_DIR)
   ];
-  // Keep only this run's CLI conversation transcript across disposable
-  // containers. These are the provider-owned stores consumed by `codex exec
-  // resume <id>` / `claude --resume <id>`, and persisting them avoids mounting
-  // the user's global agent history or colliding with the nested auth mounts.
-  if (config.model === "codex") {
-    const codexSessions = path.join(agentStateDir, "codex", "sessions");
-    fs.mkdirSync(codexSessions, { recursive: true });
-    dockerArgs.push("-v", `${codexSessions}:/home/pwuser/.codex/sessions`);
-  } else if (config.model === "claude") {
-    const claudeProjects = path.join(agentStateDir, "claude", "projects");
-    fs.mkdirSync(claudeProjects, { recursive: true });
-    dockerArgs.push("-v", `${claudeProjects}:/home/pwuser/.claude/projects`);
-  }
   // Draft/online worlds are not baked into the image — mount the game dir
   // read-only. Its images/assets_3d symlinks resolve against the in-image
   // /app/games/maze copy.
@@ -2241,55 +2934,13 @@ function runInContainer(config, raw) {
     }
     dockerArgs.push("-v", `${gameDir}:/app/games/${config.gameId}:ro`);
   }
-  for (const key of ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]) {
-    if (process.env[key]) dockerArgs.push("-e", key);
-  }
-  // Optional: mount ONLY the credential file (read-only) for subscription
-  // logins. We deliberately do NOT mount the whole ~/.codex or ~/.claude, which
-  // hold history, memories, logs, etc. — that would leak personal data into the
-  // container and can be gigabytes.
-  let codexAutoMounted = false;
-  if (raw.codex_auth) {
-    const p = path.resolve(expandTilde(raw.codex_auth));
-    const file = fs.existsSync(p) && fs.statSync(p).isDirectory() ? path.join(p, "auth.json") : p;
-    dockerArgs.push("-v", `${file}:/home/pwuser/.codex/auth.json:ro`);
-  } else if (config.model === "codex" && !process.env.OPENAI_API_KEY) {
-    // Auto: mount the Codex subscription login (~/.codex/auth.json) read-only when
-    // no explicit credential is given, so `model=codex` just works.
-    const authFile = path.join(process.env.HOME || "", ".codex", "auth.json");
-    if (fs.existsSync(authFile)) {
-      dockerArgs.push("-v", `${authFile}:/home/pwuser/.codex/auth.json:ro`);
-      codexAutoMounted = true;
-    }
-  }
-  if (raw.claude_auth) {
-    const p = path.resolve(expandTilde(raw.claude_auth));
-    const file = fs.existsSync(p) && fs.statSync(p).isDirectory() ? path.join(p, ".credentials.json") : p;
-    dockerArgs.push("-v", `${file}:/home/pwuser/.claude/.credentials.json:ro`);
-  }
-  // Auto: a Claude Code subscription login lives in the macOS Keychain (no file
-  // to mount), so materialize just that credential into a short-lived temp file
-  // when no explicit Claude credential was supplied.
-  let claudeCredTemp = null;
-  if (
-    config.model === "claude" &&
-    !raw.claude_auth &&
-    !process.env.ANTHROPIC_API_KEY &&
-    !process.env.CLAUDE_CODE_OAUTH_TOKEN &&
-    claudeKeychainAvailable()
-  ) {
-    claudeCredTemp = path.join("/tmp", `mazebench-claude-cred-${process.pid}.json`);
-    dockerArgs.push("-v", `${claudeCredTemp}:/home/pwuser/.claude/.credentials.json:ro`);
-  }
   dockerArgs.push(config.image, ...inner);
 
   if (isTruthy(raw.dry_run, false)) {
     console.log(`# would run in container (${config.image}):`);
     console.log([config.dockerBin, ...dockerArgs].join(" "));
-    if (claudeCredTemp) {
-      console.log("# (mounts your Claude Code subscription credential from the Keychain, read-only)");
-    }
-    console.log(`\n# host artifacts would appear under: ${hostOutputs}`);
+    console.log(`\n# host artifacts would appear under: ${hostRunDir}`);
+    if (temporaryCredentialDir) fs.rmSync(temporaryCredentialDir, { recursive: true, force: true });
     return 0;
   }
 
@@ -2299,56 +2950,30 @@ function runInContainer(config, raw) {
   if (dockerProbe.status !== 0) {
     console.error(
       `Container runtime not found: ${config.dockerBin}\n` +
-        "Install Docker (or pass docker_bin=<path>, e.g. docker_bin=podman), or run on the\n" +
-        "host with the CLI sandbox via container=false."
+        "Install and start Docker; local host execution is intentionally unavailable."
     );
     return 1;
   }
-  fs.mkdirSync(hostOutputs, { recursive: true });
-
-  // Stage the Keychain credential just before running, and remove it after.
-  if (claudeCredTemp) {
-    const cred = extractClaudeKeychainCredential();
-    if (!cred) {
-      console.error("Could not read your Claude Code credential from the Keychain.");
-      return 1;
-    }
-    fs.writeFileSync(claudeCredTemp, cred, { mode: 0o600 });
-  }
+  fs.mkdirSync(hostRunDir, { recursive: true });
+  fs.mkdirSync(hostWorkspaceRoot, { recursive: true });
 
   console.log(`\n=== Running in container: ${config.image} ===`);
-  console.log(`Host FS is isolated; only ${hostOutputs} is mounted writable.`);
-  console.log("The current maze runtime is mounted read-only so this run uses the latest behavior.");
-  const hasCred =
-    process.env.OPENAI_API_KEY || process.env.ANTHROPIC_API_KEY ||
-    process.env.CLAUDE_CODE_OAUTH_TOKEN || raw.codex_auth || raw.claude_auth ||
-    claudeCredTemp || codexAutoMounted;
-  if (!hasCred) {
-    console.warn(
-      "Warning: the agent inside the container has no credentials. Set OPENAI_API_KEY " +
-        "/ ANTHROPIC_API_KEY, or pass codex_auth=~/.codex (Codex) / claude_auth=<file> (Claude)."
-    );
-  }
+  console.log(`Only this run directory and its fresh model workspace are mounted writable.`);
+  console.log(`The evaluated ${config.model} process cannot see the mounted MazeBench runtime or run artifacts.`);
 
   const result = spawnSync(config.dockerBin, dockerArgs, { cwd: ROOT_DIR, stdio: "inherit" });
-  if (claudeCredTemp) {
-    try {
-      fs.unlinkSync(claudeCredTemp);
-    } catch (_error) {
-      /* best effort */
-    }
-  }
+  if (temporaryCredentialDir) fs.rmSync(temporaryCredentialDir, { recursive: true, force: true });
   if (result.error) {
     console.error(
       `\nFailed to launch container: ${result.error.message}\n` +
-        `Is the image built? Run: docker build -t ${config.image} .  (or: npm run maze:build-image)`
+        `Is the image built? Run: npm run maze:build-local-agents`
     );
     return 1;
   }
   if (result.status !== 0) {
     console.error(
       `\nContainer exited with status ${result.status}. If the image is missing, build it:\n` +
-        `  docker build -t ${config.image} .   (or: npm run maze:build-image)`
+        `  npm run maze:build-local-agents`
     );
   }
   return result.status || 0;
@@ -2545,26 +3170,14 @@ async function runWizard(raw) {
     }
   }
 
-  out.container = out.model === "kimi"
-    ? "false"
-    : await promptSelect("Access?", [
-        { label: "Container", value: "true", hint: "isolated from your files — recommended" },
-        { label: "Host", value: "false", hint: "native OS sandbox with launch-time verification" }
-      ]);
+  out.container = "true";
 
   out.tool_use = await promptSelect("Tool use?", [
     { label: "No Tools", value: "read-only", hint: "game controls only; no files, shell, web, memory, or workers" },
     { label: "[PY] Tools", value: "offline", hint: "isolated Python scratchpad; no host files or network" }
   ]);
-
-  if (out.tool_use === "offline" && out.model !== "kimi") {
-    out.swarm = await promptSelect("Orchestration?", [
-      { label: "Single", value: "false", hint: "one lead agent" },
-      { label: "Swarm", value: "true", hint: "lead controls identical-model workers" }
-    ]);
-  } else {
-    out.swarm = "false";
-  }
+  out.tools = out.tool_use === "offline" ? "true" : "false";
+  out.swarm = "false";
 
   out.video = await promptSelect("Render replay video?", [
     { label: "Yes", value: "on" },
@@ -2592,9 +3205,7 @@ async function runWizard(raw) {
   return out;
 }
 
-// Kept temporarily for the pure event/parser helpers imported by historical
-// run views. Nothing calls this former launcher implementation.
-async function retiredLocalMain() {
+async function localCodexMain() {
   const { raw: parsedRaw, passthrough } = parseArgs(process.argv.slice(2));
   let raw = parsedRaw;
 
@@ -2613,11 +3224,20 @@ async function retiredLocalMain() {
 
   const model = String(raw.model || "").toLowerCase();
 
-  if (!model || !["codex", "claude", "kimi"].includes(model)) {
-    console.error(
-      "Usage: node scripts/maze-agent-local.js --model <codex|claude|kimi> [moves=N level=HxI ...]"
-    );
+  if (!SUPPORTED_LOCAL_AGENT_VERSIONS[model]) {
+    console.error("Usage: node scripts/maze-agent-local.js --model codex|claude|kimi [moves=N level=HxI ...]");
     process.exit(2);
+  }
+  const inference = String(raw.inference || "subscription").trim().toLowerCase();
+  if (!["subscription", "prime"].includes(inference) || (inference === "prime" && model !== "codex")) {
+    throw new Error("Prime inference is supported only by the isolated Codex runner.");
+  }
+  if ((raw.image && raw.image !== "mazebench-agent") ||
+      (raw.docker_bin && raw.docker_bin !== "docker") ||
+      (raw.codex_bin && raw.codex_bin !== "codex") ||
+      (raw.claude_bin && raw.claude_bin !== "claude") ||
+      (raw.kimi_bin && raw.kimi_bin !== "kimi")) {
+    throw new Error("Local agents use the pinned mazebench-agent image and its bundled provider CLIs.");
   }
 
   const view = VIEW_NAMES.includes(String(raw.view)) ? String(raw.view) : "top-diagonal";
@@ -2627,21 +3247,21 @@ async function retiredLocalMain() {
   const sessionFile = raw.session ? path.resolve(raw.session) : path.join(outDir, "session.json");
   const inContainer = process.env.MAZEBENCH_IN_CONTAINER === "1";
   const wantsContainer = isTruthy(raw.container, true);
-  const requestedToolUse = String(raw.tool_use || "").trim().toLowerCase();
-  const toolUse = ["read-only", "offline"].includes(requestedToolUse)
-    ? requestedToolUse
-    : isTruthy(raw.tools, false)
-      ? "offline"
-      : "read-only";
-  const requestedSwarm = toolUse === "offline" && isTruthy(raw.swarm, false);
-  const autoRunTools = toolUse === "offline" && isTruthy(raw.auto_run_tools, true);
-  const autoRunAllFrames = autoRunTools && isTruthy(raw.auto_run_all_frames, true);
-  if (model === "kimi" && requestedSwarm) {
-    throw new Error("Kimi Code local runs currently support a single isolated agent, not swarm workers.");
+  const requestedTools = isTruthy(raw.tools, false);
+  const requestedToolUse = String(raw.tool_use || (requestedTools ? "offline" : "read-only")).trim().toLowerCase();
+  if (!["read-only", "offline"].includes(requestedToolUse) ||
+      requestedTools !== (requestedToolUse === "offline") || isTruthy(raw.swarm, false)) {
+    throw new Error("Local agents expose only the game controls and optional isolated Python; shell, host files, web, and workers remain disabled.");
   }
-  const swarm = requestedSwarm;
+  if (!wantsContainer && !inContainer) {
+    throw new Error("Local agents cannot run on the host. The disposable Docker boundary is mandatory.");
+  }
+  const toolUse = requestedToolUse;
+  const autoRunTools = toolUse === "offline" && isTruthy(raw.auto_run_tools, true);
+  const autoRunAllFrames = autoRunTools && isTruthy(raw.auto_run_all_frames, false);
+  const swarm = false;
   const unlimited = isTruthy(raw.unlimited, false);
-  const hostAccess = !wantsContainer && !inContainer;
+  const hostAccess = false;
   const agentHomeStat = inContainer ? fs.statSync("/home/pwuser") : null;
   let workspaceIdentity = outDir;
   try {
@@ -2652,14 +3272,25 @@ async function retiredLocalMain() {
     /* direct CLI launches may not have created outDir yet */
   }
   const workspaceKey = crypto.createHash("sha256").update(workspaceIdentity).digest("hex").slice(0, 24);
-  const workspaceRoot = path.join(os.tmpdir(), "mazebench-agent-workspaces", workspaceKey);
+  const workspaceRoot = raw.workspace_root
+    ? path.resolve(String(raw.workspace_root))
+    : path.join(os.tmpdir(), "mazebench-agent-workspaces", workspaceKey);
   const workspaceDir = path.join(workspaceRoot, "workspace");
   const swarmDir = path.join(outDir, "swarm");
   const swarmWorkspaceDir = path.join(workspaceRoot, "swarm-workspaces");
   const codexRuntimeDir = path.join(outDir, ".codex-runtime");
   const pythonSandboxStateDir = path.join(outDir, ".python-sandbox");
-  const kimiRuntimeDir = path.join(workspaceRoot, "kimi-home");
+  const kimiRuntimeDir = path.join(outDir, "agent-state", "kimi");
   const kimiSkillsDir = path.join(kimiRuntimeDir, "empty-skills");
+  const primeCredential = inference === "prime"
+    ? readPrimeCredential(
+        inContainer
+          ? process.env.MAZEBENCH_PRIME_CONFIG_FILE || "/run/mazebench-credentials/prime-config.json"
+          : raw.prime_auth
+            ? path.resolve(expandTilde(raw.prime_auth))
+            : path.join(process.env.HOME || "", ".prime", "config.json")
+      )
+    : null;
 
   const requestedMode = String(raw.mode || raw.observation || "text").toLowerCase();
   const mode = ["json", "vision"].includes(requestedMode) ? requestedMode : "text";
@@ -2700,6 +3331,8 @@ async function retiredLocalMain() {
     agentUid: agentHomeStat?.uid ?? (typeof process.getuid === "function" ? process.getuid() : 0),
     agentGid: agentHomeStat?.gid ?? (typeof process.getgid === "function" ? process.getgid() : 0),
     model,
+    inference,
+    primeInferenceUrl: primeCredential?.inference_url || "",
     modelName: raw.model_name || raw.llm || "",
     reasoning: String(raw.reasoning || raw.effort || "").toLowerCase(),
     codexFast: isTruthy(raw.codex_fast, false),
@@ -2716,21 +3349,22 @@ async function retiredLocalMain() {
     pythonSandboxStateDir,
     agentWorkspaceDir: inContainer ? "/app/workspace" : workspaceDir,
     agentSwarmWorkspaceDir: inContainer ? "/app/swarm-workspaces" : swarmWorkspaceDir,
-    agentCodexRuntimeDir: inContainer ? "/run/mazebench-codex-runtime" : codexRuntimeDir,
-    agentKimiRuntimeDir: kimiRuntimeDir,
-    agentKimiSkillsDir: kimiSkillsDir,
+    agentCodexRuntimeDir: inContainer ? "/home/pwuser/.codex/maze-runtime" : codexRuntimeDir,
+    agentKimiRuntimeDir: inContainer ? "/home/pwuser/.kimi-code" : kimiRuntimeDir,
+    agentKimiSkillsDir: inContainer ? "/home/pwuser/.kimi-code/empty-skills" : kimiSkillsDir,
+    agentKimiProfile: inContainer ? "/home/pwuser/.kimi-code/mazebench-agent.md" : path.join(kimiRuntimeDir, "mazebench-agent.md"),
     // The outer Docker launcher re-execs before starting an agent. Actual host
     // and in-container agents both use MCP so maze persistence stays outside
     // their file/tool sandbox.
     mcpEnabled: !wantsContainer || inContainer,
-    // Continue a prior run. seed=true means the session.json (action history) is
-    // present in outDir so we resume the maze from it instead of starting fresh.
-    // resume=<conversation-id> additionally resumes the CLI conversation so the
-    // model keeps its full memory (a true continue). resume implies seed.
+    // Provider conversation state and game state are independent. A valid
+    // session.json alone permits observing an existing game. `resume` may be
+    // present without one when a provider stalled before its first maze_start;
+    // that case must resume the transcript but cold-start the game.
     resume: String(raw.resume || "").trim(),
     forkSession: isTruthy(raw.fork_session, false),
     sessionId: String(raw.session_id || "").trim(),
-    seed: isTruthy(raw.seed, false) || Boolean(String(raw.resume || "").trim()),
+    seed: hasResumableGameSession(sessionFile),
     sessionFile,
     video: isTruthy(raw.video, true) && !isTruthy(raw.no_video, false),
     view,
@@ -2742,15 +3376,13 @@ async function retiredLocalMain() {
     yaw: ((positiveInt(raw.yaw, 0) % 4) + 4) % 4
   };
 
-  if (config.model === "kimi" && (config.container || inContainer)) {
-    throw new Error("Kimi Code local runs use the verified host permission boundary; pass container=false.");
-  }
-  if (config.model === "kimi") verifyKimiCliCompatibility(config);
-
-  // Default: isolate the whole run inside a container. `container=false` (or the
-  // in-container re-exec, flagged by MAZEBENCH_IN_CONTAINER) runs on the host.
+  // The outer launcher re-execs once inside Docker. `container=false` is
+  // accepted only for that trusted in-container re-exec.
   if (config.container && !inContainer) {
     process.exit(runInContainer(config, raw));
+  }
+  if (!inContainer) {
+    throw new Error("Local agents cannot run on the host. The disposable Docker boundary is mandatory.");
   }
 
   fs.mkdirSync(outDir, { recursive: true });
@@ -2759,28 +3391,22 @@ async function retiredLocalMain() {
   fs.mkdirSync(config.swarmDir, { recursive: true });
   fs.mkdirSync(config.swarmWorkspaceDir, { recursive: true });
   migrateSeedSessionObservation(config);
-  // Claude Code 2.1.214 connects CLI-supplied stdio MCP servers asynchronously.
-  // In the intentionally empty restricted workspace its first model request can
-  // outrun that connection and receive no game tools. Start the existing
-  // authenticated localhost transport before launching Claude so its tools are
-  // ready immediately. Containers already require the same transport.
   prepareAgentRuntime(config);
-  if (!isTruthy(raw.dry_run, false) && config.toolUse === "offline") {
-    verifyToolIsolation(config);
-    console.log("Tool isolation verified: Python scratch writes allowed; repository, host files, symlink escapes, subprocesses, and network blocked.");
+  if (!isTruthy(raw.dry_run, false)) {
+    const isolation = localAgentIsolationPreflight(config);
+    console.log(
+      `Local ${config.model} isolation verified (${isolation.provider_version}): repository, run output, credential source, ` +
+      "host files, shell, web, file tools, apps, and workers are unavailable."
+    );
+    const toolIsolation = verifyToolIsolation(config);
+    if (toolIsolation) {
+      console.log("Local Python isolation verified: scratch writes allowed; repository/host reads, subprocesses, and network blocked.");
+    }
+    if (isTruthy(raw.preflight_only, false)) return;
   }
   const privateMcp = needsPrivateMcpServer(config)
     ? await startPrivateMcpServer(config)
     : null;
-  if (config.model === "kimi") {
-    try {
-      prepareKimiRuntime(config);
-    } catch (error) {
-      privateMcp?.stop();
-      throw error;
-    }
-  }
-
   const prompt = buildPrompt(config);
 
   if (isTruthy(raw.dry_run, false)) {
@@ -2790,7 +3416,6 @@ async function retiredLocalMain() {
     console.log([bin, ...shown].join(" "));
     console.log(`# with <prompt>:\n${prompt}`);
     console.log(`\n# artifacts would land in: ${config.outDir}`);
-    scrubKimiRuntimeSecrets(config);
     privateMcp?.stop();
     return;
   }
@@ -2814,7 +3439,6 @@ async function retiredLocalMain() {
     }
     recordNoMoveIfIdle(config, actionCountBefore);
   } finally {
-    scrubKimiRuntimeSecrets(config);
     privateMcp?.stop();
   }
 
@@ -2866,13 +3490,21 @@ async function retiredLocalMain() {
 }
 
 async function main() {
-  throw new Error(RETIRED_LOCAL_AGENT_MESSAGE);
+  return localCodexMain();
 }
 
 module.exports = {
   RETIRED_LOCAL_AGENT_MESSAGE,
+  SUPPORTED_LOCAL_AGENT_VERSIONS,
+  SUPPORTED_LOCAL_CLAUDE_VERSION,
+  SUPPORTED_LOCAL_CODEX_VERSION,
+  SUPPORTED_LOCAL_KIMI_VERSION,
   actionFromShellCommand,
   agentCommand,
+  assertLocalAgentCommandIsolation,
+  assertLocalClaudeCommandIsolation,
+  assertLocalCodexCommandIsolation,
+  assertLocalKimiCommandIsolation,
   actionsFromShellCommand,
   actionsFromToolCall,
   buildMcpPrompt,
@@ -2882,9 +3514,13 @@ module.exports = {
   distillClaudeEvents,
   distillCodexEvents,
   distillKimiEvents,
+  hasResumableGameSession,
   kimiAllowedTools,
+  kimiAgentProfile,
   kimiMcpConfig,
   loadCodexModels,
+  localAgentIsolationPreflight,
+  localCodexIsolationPreflight,
   migrateSeedSessionObservation,
   needsPrivateMcpServer,
   providerFailureFromEvents,

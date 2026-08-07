@@ -7,6 +7,7 @@
   // Hosted Prime evaluations expose lifecycle state immediately and the scored
   // sample at completion, and use a different run-page lifecycle while active.
   const isPrime = initial.kind === "prime" || initial.model === "prime";
+  const usesHostedPrimeLifecycle = isPrime && initial.prime_execution !== "local-isolated";
   const statusEl = document.getElementById("run-status");
   const boardEl = document.getElementById("run-board");
   const boardWrap = document.getElementById("run-board-wrap");
@@ -264,9 +265,9 @@
     }
   }
 
-  if (isPrime && stopButton) stopButton.textContent = "Cancel Run";
+  if (usesHostedPrimeLifecycle && stopButton) stopButton.textContent = "Cancel Run";
 
-  const FEED_RENDER_BATCH = 200;
+  const FEED_RENDER_BATCH = 50;
   const MAX_RETAINED_LOG_CHARACTERS = 512 * 1024;
   const BOARD_STATE_NOVELTY_WINDOW = 100;
   const DEFAULT_REPLAY_FPS = 30;
@@ -346,6 +347,7 @@
     toolsData: null,
     toolsSignature: "",
     toolsWorkspaceId: "primary",
+    toolsCollapsedDirectories: new Map(),
     toolsInspectorRequest: 0
   };
 
@@ -442,15 +444,37 @@
     if (!toolsFileTree || !toolsFileEmpty || !toolsPath) return;
     toolsPath.textContent = workspace?.virtual_path || "/workspace";
     const entries = Array.isArray(workspace?.entries) ? workspace.entries : [];
-    toolsFileTree.innerHTML = entries.map((entry) => {
+    const directoryKey = (directoryPath) => `${workspace?.id || "primary"}:${directoryPath}`;
+    const directoryIsCollapsed = (directoryPath) => {
+      const key = directoryKey(directoryPath);
+      if (!state.toolsCollapsedDirectories.has(key)) {
+        state.toolsCollapsedDirectories.set(key, directoryPath === "observations");
+      }
+      return state.toolsCollapsedDirectories.get(key) === true;
+    };
+    const childrenByParent = new Map();
+    entries.forEach((entry) => {
+      const entryPath = String(entry.path || "");
+      const separator = entryPath.lastIndexOf("/");
+      const parentPath = separator < 0 ? "" : entryPath.slice(0, separator);
+      if (!childrenByParent.has(parentPath)) childrenByParent.set(parentPath, []);
+      childrenByParent.get(parentPath).push(entry);
+    });
+    const renderEntry = (entry) => {
       const depth = Math.max(0, String(entry.path || "").split("/").length - 1);
-      const icon = entry.type === "directory" ? "▾" : entry.type === "symlink" ? "↗" : "•";
+      const collapsed = entry.type === "directory" && directoryIsCollapsed(entry.path);
+      const icon = entry.type === "directory" ? (collapsed ? "▸" : "▾") : entry.type === "symlink" ? "↗" : "•";
       const meta = entry.type === "file" ? formatBytes(entry.size) : entry.type;
       const content = `<span class="run-tools__file-icon" aria-hidden="true">${icon}</span><span class="run-tools__file-name">${escapeText(entry.name)}</span><span class="run-tools__file-meta">${escapeText(meta)}</span>`;
-      return entry.type === "file"
+      const row = entry.type === "file"
         ? `<button type="button" class="run-tools__file" data-workspace-file="${escapeText(entry.path)}" style="--depth:${depth}">${content}</button>`
-        : `<div class="run-tools__file is-${escapeText(entry.type)}" style="--depth:${depth}">${content}</div>`;
-    }).join("");
+        : entry.type === "directory"
+          ? `<button type="button" class="run-tools__file is-directory" data-workspace-directory="${escapeText(entry.path)}" aria-expanded="${collapsed ? "false" : "true"}" style="--depth:${depth}">${content}</button>`
+          : `<div class="run-tools__file is-${escapeText(entry.type)}" style="--depth:${depth}">${content}</div>`;
+      if (entry.type !== "directory" || collapsed) return row;
+      return row + (childrenByParent.get(String(entry.path || "")) || []).map(renderEntry).join("");
+    };
+    toolsFileTree.innerHTML = (childrenByParent.get("") || []).map(renderEntry).join("");
     toolsFileEmpty.hidden = entries.length > 0;
     toolsFileTree.hidden = entries.length === 0;
     if (workspace?.truncated) {
@@ -508,10 +532,13 @@
         const changes = execution.workspace_changes || {};
         const changed = [changes.created, changes.modified, changes.deleted]
           .reduce((sum, entries) => sum + (Array.isArray(entries) ? entries.length : 0), 0);
+        const savedScript = execution.script_path
+          ? `<span>saved as ${escapeText(execution.script_path)}</span>`
+          : "";
         return `<button type="button" class="run-tools__execution is-${escapeText(execution.status || "completed")}" data-tool-execution="${escapeText(execution.id)}" data-tool-status="${escapeText(execution.status || "completed")}">
           <span class="run-tools__execution-index">#${Number(execution.sequence || 0).toLocaleString()}</span>
           <span class="run-tools__execution-copy"><strong>${escapeText(execution.code_preview || "Python command")}</strong><small>${escapeText(execution.output_preview || "No output")}</small></span>
-          <span class="run-tools__execution-meta">${repeat}${changed ? `<span>${changed.toLocaleString()} file change${changed === 1 ? "" : "s"}</span>` : ""}<span data-tool-status-label>${escapeText(toolsStatusLabel(execution))}</span></span>
+          <span class="run-tools__execution-meta">${savedScript}${repeat}${changed ? `<span>${changed.toLocaleString()} file change${changed === 1 ? "" : "s"}</span>` : ""}<span data-tool-status-label>${escapeText(toolsStatusLabel(execution))}</span></span>
         </button>`;
       }).join("");
     }
@@ -568,7 +595,7 @@
       showToolsInspector({
         kind: "Python execution",
         title: `Execution #${Number(execution.sequence || 0).toLocaleString()}`,
-        meta: `${execution.actor || "lead"} · ${toolsStatusLabel(execution)} · ${formatBytes(execution.code_bytes)}${Number(execution.repeat_count || 1) > 1 ? ` · same source run ${execution.repeat_count} times` : ""}`,
+        meta: `${execution.actor || "lead"} · ${toolsStatusLabel(execution)} · ${formatBytes(execution.code_bytes)}${execution.script_path ? ` · saved as ${execution.script_path}` : ""}${Number(execution.repeat_count || 1) > 1 ? ` · same source run ${execution.repeat_count} times` : ""}`,
         sections: [
           { label: "Exact Python source", text: execution.code, className: "is-code" },
           { label: "Standard output", text: execution.stdout, optional: true },
@@ -1748,7 +1775,9 @@
   }
 
   function renderControls(run) {
-    if (stopButton) stopButton.hidden = !(isPrime && ["running", "stopping"].includes(run.status));
+    if (stopButton) {
+      stopButton.hidden = !(usesHostedPrimeLifecycle && ["running", "stopping"].includes(run.status));
+    }
     if (primeEvaluationLink) {
       primeEvaluationLink.hidden = !run.prime_evaluation_url;
       if (run.prime_evaluation_url) primeEvaluationLink.href = run.prime_evaluation_url;
@@ -4088,7 +4117,7 @@
   // ---- live image -----------------------------------------------------------
 
   function showImage(url, turn) {
-    if (!url) return;
+    if (!url || !liveImage) return;
     livePlaceholder?.classList.remove("is-history");
     // Each turn gets its own frame URL, so only touch the <img> when the URL
     // actually changes — the poll loop calls this every tick, and resetting
@@ -4099,7 +4128,7 @@
     }
     if (liveBitmap) liveBitmap.hidden = true;
     liveImage.hidden = false;
-    livePlaceholder.hidden = true;
+    if (livePlaceholder) livePlaceholder.hidden = true;
     if (captionEl && turn != null) {
       captionEl.textContent = Number(turn) === 0 ? "move 0 · starting state" : `after move ${turn}`;
       captionEl.hidden = false;
@@ -4130,9 +4159,11 @@
     if (showsAsciiBitmap || showsJsonGrid) return;
 
     const hasRenderedImage = Boolean(state.lastImageUrl || liveImage?.src);
-    liveImage.hidden = !hasRenderedImage;
-    livePlaceholder.hidden = hasRenderedImage;
-    livePlaceholder.classList.add("is-history");
+    if (liveImage) liveImage.hidden = !hasRenderedImage;
+    if (livePlaceholder) {
+      livePlaceholder.hidden = hasRenderedImage;
+      livePlaceholder.classList.add("is-history");
+    }
     const label = livePlaceholder?.querySelector("span:last-child");
     if (label) label.textContent = observation.mode === "vision"
       ? `No saved vision frame for move ${turn}`
@@ -4317,7 +4348,7 @@
       renderStats(progress.run);
       renderSwarmViews(progress.swarm_views);
 
-      if (isPrime) {
+      if (usesHostedPrimeLifecycle) {
         // Hosted Prime lifecycle and logs stream immediately. The actions,
         // usage, boards, and replay are enriched from the finalized sample.
         ingestActions(progress.actions || []);
@@ -4379,7 +4410,7 @@
           setStatus(progress.run.auto_quit_triggered
             ? "Auto-quitting — state novelty reached the configured threshold."
             : "Stopping…");
-        } else if (isPrime) {
+        } else if (usesHostedPrimeLifecycle) {
           const rp = progress.replay_progress;
           setStatus(
             rp && rp.phase && rp.phase !== "done"
@@ -4428,7 +4459,7 @@
             ? `Run failed — ${rolloutError}.`
             : progress.run.status !== "finished"
               ? `Run ${progress.run.status}.`
-            : isPrime
+            : usesHostedPrimeLifecycle
               ? ""
               : `${progress.run.complete ? "Complete" : "Ended"} — ${progress.run.gem_count ?? 0}/${progress.run.gem_total ?? "—"} gems in ${progress.run.turns} moves.`,
           progress.run.status === "failed"
@@ -4606,6 +4637,18 @@
     renderToolsFiles(workspace);
   });
   toolsFileTree?.addEventListener("click", (event) => {
+    const directory = event.target.closest("[data-workspace-directory]");
+    if (directory) {
+      const directoryPath = String(directory.dataset.workspaceDirectory || "");
+      const key = `${state.toolsWorkspaceId}:${directoryPath}`;
+      state.toolsCollapsedDirectories.set(
+        key,
+        directory.getAttribute("aria-expanded") === "true"
+      );
+      const workspace = state.toolsData?.workspaces?.find((entry) => entry.id === state.toolsWorkspaceId);
+      renderToolsFiles(workspace);
+      return;
+    }
     const button = event.target.closest("[data-workspace-file]");
     if (button) void inspectWorkspaceFile(button.dataset.workspaceFile);
   });
@@ -4660,14 +4703,14 @@
 
   // In vision mode the ASCII board is irrelevant (the agent only sees images),
   // so show just the image, centered.
-  if (!isPrime && isVision) {
+  if (!usesHostedPrimeLifecycle && isVision) {
     boardWrap.hidden = true;
     document.getElementById("run-live-grid").classList.add("is-image-only");
   }
 
   // A Prime vision run has no text board to show — the model reads images — so
   // drop the "what the agent sees" panel entirely (the replay video covers it).
-  if (isPrime && isVision) {
+  if (usesHostedPrimeLifecycle && isVision) {
     const seeSection = document.getElementById("run-see-section");
     if (seeSection) seeSection.hidden = true;
   }

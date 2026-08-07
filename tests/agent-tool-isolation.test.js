@@ -4,13 +4,22 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const {
+  SUPPORTED_LOCAL_AGENT_VERSIONS,
+  SUPPORTED_LOCAL_CLAUDE_VERSION,
+  SUPPORTED_LOCAL_CODEX_VERSION,
+  SUPPORTED_LOCAL_KIMI_VERSION,
   agentCommand,
+  assertLocalClaudeCommandIsolation,
+  assertLocalCodexCommandIsolation,
+  assertLocalKimiCommandIsolation,
   buildMcpPrompt,
   claudeSandboxSettings,
   codexMcpConfigArgs,
   distillClaudeEvents,
   distillCodexEvents,
   distillKimiEvents,
+  hasResumableGameSession,
+  kimiAgentProfile,
   kimiMcpConfig,
   migrateSeedSessionObservation,
   needsPrivateMcpServer,
@@ -19,6 +28,8 @@ const {
 
 const root = path.resolve(__dirname, "..");
 const localAgentSource = fs.readFileSync(path.join(root, "scripts", "maze-agent-local.js"), "utf8");
+const agentRunsSource = fs.readFileSync(path.join(root, "server", "agent-runs.js"), "utf8");
+const localAgentDockerfile = fs.readFileSync(path.join(root, "Dockerfile"), "utf8");
 const workspace = path.join(os.tmpdir(), "game-only-agent-test");
 const baseConfig = {
   agentSwarmWorkspaceDir: path.join(workspace, "swarm-workspaces"),
@@ -69,6 +80,10 @@ const baseConfig = {
   yaw: 0
 };
 
+assert.match(localAgentSource, /const resuming = \$\{JSON\.stringify\(Boolean\(config\.resume\)\)\}/);
+assert.match(localAgentSource, /workspace_state_valid: resuming \|\| workspaceEntries\.length === 0/);
+assert.match(localAgentSource, /name !== "workspace_empty" && value !== true/);
+
 for (const mode of ["text", "json", "vision"]) {
   const config = {
     ...baseConfig,
@@ -93,6 +108,42 @@ for (const mode of ["text", "json", "vision"]) {
   if (mode !== "json") assert.doesNotMatch(prompt, /player position|x\/y\/elevation/i);
 }
 
+{
+  const retryDir = fs.mkdtempSync(path.join(os.tmpdir(), "maze-cold-start-retry-"));
+  const missingSessionFile = path.join(retryDir, "session.json");
+  const coldRetryPrompt = buildMcpPrompt({
+    ...baseConfig,
+    outDir: retryDir,
+    resume: "provider-thread-without-game",
+    seed: true,
+    sessionFile: missingSessionFile
+  });
+  assert.equal(hasResumableGameSession(missingSessionFile), false);
+  assert.match(coldRetryPrompt, /COLD-START RECOVERY/);
+  assert.match(coldRetryPrompt, /no primary game was ever created/);
+  assert.match(coldRetryPrompt, /Call game_start exactly once as your first game-control call/);
+  assert.doesNotMatch(coldRetryPrompt, /Call game_observe first/);
+  assert.doesNotMatch(coldRetryPrompt, /MORE primary game actions/);
+
+  fs.writeFileSync(
+    missingSessionFile,
+    `${JSON.stringify({ initial: { level: "P" }, lastStatus: { level: "P" }, actions: [] })}\n`
+  );
+  const warmRetryPrompt = buildMcpPrompt({
+    ...baseConfig,
+    outDir: retryDir,
+    resume: "provider-thread-with-game",
+    seed: false,
+    sessionFile: missingSessionFile
+  });
+  assert.equal(hasResumableGameSession(missingSessionFile), true);
+  assert.match(warmRetryPrompt, /Call game_observe first/);
+  assert.match(warmRetryPrompt, /do not call game_start/);
+  assert.match(warmRetryPrompt, /MORE primary game actions/);
+  assert.doesNotMatch(warmRetryPrompt, /COLD-START RECOVERY/);
+  fs.rmSync(retryDir, { recursive: true, force: true });
+}
+
 const toolsOnConfig = {
   ...baseConfig,
   hostAccess: true,
@@ -104,10 +155,12 @@ const toolsOnConfig = {
 const toolsOnPrompt = buildMcpPrompt(toolsOnConfig);
 assert.match(toolsOnPrompt, /TOOLS mode/);
 assert.match(toolsOnPrompt, /python_exec/);
-assert.match(toolsOnPrompt, /current working directory is writable and persists/);
-assert.match(toolsOnPrompt, /resuming without a saved program[\s\S]*MUST use python_exec to create and execute[\s\S]*at least one reusable Python program/);
-assert.match(toolsOnPrompt, /Path\("planner\.py"\)\.write_text/);
-assert.match(toolsOnPrompt, /runpy\.run_path\("planner\.py"\)/);
+assert.match(toolsOnPrompt, /relative \.py script_path chosen by you/);
+assert.match(toolsOnPrompt, /create, reuse, modify, and organize as many relative-path \.py/);
+assert.match(toolsOnPrompt, /Python is optional; decide naturally/);
+assert.doesNotMatch(toolsOnPrompt, /planner\.py|solver\.py|reuse the same path|disposable inline-only/);
+assert.match(toolsOnPrompt, /observations\/current\.json/);
+assert.match(toolsOnPrompt, /PYTHON WORKSPACE OBSERVATION BRIDGE/);
 assert.match(toolsOnPrompt, /cannot read MazeBench source, repositories/);
 assert.match(toolsOnPrompt, /Shell, file-browser,\s+editor, web, app, and connector tools are disabled/);
 assert.doesNotMatch(toolsOnPrompt, /tool availability is not guaranteed/);
@@ -115,8 +168,9 @@ assert.doesNotMatch(toolsOnPrompt, new RegExp(root.replace(/[.*+?^${}()|[\]\\]/g
 assert.doesNotMatch(toolsOnPrompt, /TOOLS-OFF mode/);
 assert.doesNotMatch(toolsOnPrompt, /maze_scorecard/);
 assert.doesNotMatch(toolsOnPrompt, /AUTO-RUN TOOLS HARNESS IS ENABLED/);
-assert.match(localAgentSource, /isTruthy\(raw\.auto_run_tools, true\)/);
-assert.match(localAgentSource, /isTruthy\(raw\.auto_run_all_frames, true\)/);
+assert.match(localAgentSource, /const autoRunTools = toolUse === "offline" && isTruthy\(raw\.auto_run_tools, true\)/);
+assert.match(agentRunsSource, /const autoRunTools = toolUse === "offline" &&\s+!\(params\.auto_run_tools === false \|\| params\.auto_run_tools === "false"\)/);
+assert.match(localAgentSource, /const autoRunAllFrames = autoRunTools && isTruthy\(raw\.auto_run_all_frames, false\)/);
 
 const jsonToolsPrompt = buildMcpPrompt({
   ...toolsOnConfig,
@@ -126,16 +180,13 @@ const jsonToolsPrompt = buildMcpPrompt({
   autoRunTools: true,
   autoRunAllFrames: true
 });
-assert.match(jsonToolsPrompt, /JSON SOLVER WORKSPACE BRIDGE/);
+assert.match(jsonToolsPrompt, /PYTHON WORKSPACE OBSERVATION BRIDGE/);
 assert.match(jsonToolsPrompt, /observations\/current\.json/);
 assert.match(jsonToolsPrompt, /observations\/history\.jsonl/);
-assert.match(jsonToolsPrompt, /Do not copy or retype JSON/);
 assert.match(jsonToolsPrompt, /json\.loads\(Path\("observations\/current\.json"\)\.read_text\(\)\)/);
-assert.match(jsonToolsPrompt, /MUST create a real reusable[\s\S]*planner\.py or solver\.py/);
-assert.match(jsonToolsPrompt, /Inline-only JSON analysis does not satisfy this requirement/);
-assert.match(jsonToolsPrompt, /runpy\.run_path/);
+assert.doesNotMatch(jsonToolsPrompt, /reusable planner|Revise and rerun|throwaway Python/);
 assert.match(jsonToolsPrompt, /observation_revision/);
-assert.match(jsonToolsPrompt, /maze_action_sequence\(route_file="route\.json"\)/);
+assert.match(jsonToolsPrompt, /route file submitted to\s+maze_action_sequence/);
 assert.match(jsonToolsPrompt, /observation is omniscient/);
 
 const autoRunToolsPrompt = buildMcpPrompt({
@@ -144,9 +195,10 @@ const autoRunToolsPrompt = buildMcpPrompt({
 });
 assert.match(autoRunToolsPrompt, /AUTO-RUN TOOLS HARNESS IS ENABLED/);
 assert.match(autoRunToolsPrompt, /maze_action_sequence/);
-assert.match(autoRunToolsPrompt, /ordered action list that your saved\s+Python program actually generated/);
-assert.match(autoRunToolsPrompt, /produces two or more moves[\s\S]*entire remaining route/);
-assert.match(autoRunToolsPrompt, /solver's full route/);
+assert.match(autoRunToolsPrompt, /ordered action list you intend to\s+apply/);
+assert.match(autoRunToolsPrompt, /intend to apply two or more moves[\s\S]*route/);
+assert.match(autoRunToolsPrompt, /single call may contain the full route/);
+assert.doesNotMatch(autoRunToolsPrompt, /saved Python|planner or solver|solver's prediction/);
 assert.match(autoRunToolsPrompt, /final full\s+observation/);
 assert.match(autoRunToolsPrompt, /include_intermediate_observations=true/);
 assert.match(autoRunToolsPrompt, /every intermediate ASCII board, JSON observation, or vision frame/);
@@ -193,7 +245,10 @@ assert.match(codexArgs, /skills\.include_instructions=false/);
 assert.match(codexArgs, /skills\.bundled\.enabled=false/);
 assert.match(codexArgs, /web_search="disabled"/);
 assert.match(codexArgs, /hooks\.PreToolUse/);
-for (const feature of ["apps", "plugins", "memories", "multi_agent", "tool_search", "shell_tool", "computer_use"]) {
+for (const feature of [
+  "apps", "plugins", "plugin_sharing", "memories", "multi_agent", "tool_search",
+  "shell_tool", "unified_exec", "computer_use"
+]) {
   const index = codex.argv.indexOf(feature);
   assert(index > 0 && codex.argv[index - 1] === "--disable", `${feature} must be disabled`);
 }
@@ -208,6 +263,105 @@ assert.deepEqual(
   ['mcp_servers.game.enabled_tools=["game_start","game_observe","game_action"]']
 );
 assert(codex.argv.includes('model_reasoning_summary="detailed"'));
+
+const isolatedCodexConfig = {
+  ...codexConfig,
+  agentCodexRuntimeDir: "/run/mazebench-codex-runtime",
+  agentWorkspaceDir: "/app/workspace",
+  codexRuntimeDir: "/run/mazebench-output/.codex-runtime",
+  inContainer: true,
+  outDir: "/run/mazebench-output",
+  swarmWorkspaceDir: "/run/mazebench-workspace/swarm-workspaces",
+  tools: false,
+  workspaceDir: "/run/mazebench-workspace/workspace"
+};
+const isolatedCodex = agentCommand(isolatedCodexConfig, buildMcpPrompt(isolatedCodexConfig));
+assert.equal(assertLocalCodexCommandIsolation(isolatedCodexConfig, isolatedCodex), true);
+const isolatedPrimeCodexConfig = {
+  ...isolatedCodexConfig,
+  inference: "prime",
+  modelName: "openai/gpt-5.6-luna",
+  primeInferenceUrl: "https://api.pinference.ai/api/v1"
+};
+const isolatedPrimeCodex = agentCommand(
+  isolatedPrimeCodexConfig,
+  buildMcpPrompt(isolatedPrimeCodexConfig)
+);
+assert.equal(assertLocalCodexCommandIsolation(isolatedPrimeCodexConfig, isolatedPrimeCodex), true);
+assert.match(isolatedPrimeCodex.argv.join("\n"), /model_provider="prime_intellect"/);
+assert.match(isolatedPrimeCodex.argv.join("\n"), /wire_api="responses"/);
+assert.match(isolatedPrimeCodex.argv.join("\n"), /prime-auth\.js/);
+assert.doesNotMatch(isolatedPrimeCodex.argv.join("\n"), /env_key|experimental_bearer_token/);
+assert.throws(
+  () => assertLocalCodexCommandIsolation(isolatedPrimeCodexConfig, {
+    ...isolatedPrimeCodex,
+    argv: [...isolatedPrimeCodex.argv, "-c", 'model_providers.prime_intellect.env_key="PRIME_API_KEY"']
+  }),
+  /credentials/i
+);
+const isolatedCodexToolsConfig = {
+  ...isolatedCodexConfig,
+  agentSwarmWorkspaceDir: "/app/swarm-workspaces",
+  toolUse: "offline",
+  tools: true
+};
+const isolatedCodexTools = agentCommand(isolatedCodexToolsConfig, buildMcpPrompt(isolatedCodexToolsConfig));
+assert.equal(assertLocalCodexCommandIsolation(isolatedCodexToolsConfig, isolatedCodexTools), true);
+assert.match(isolatedCodexTools.argv.join("\n"), /mcp_servers\.mazebench\.enabled_tools=.*python_exec/);
+assert.match(isolatedCodexTools.argv.join("\n"), /"\/app\/workspace"="write"/);
+for (const unsafeCommand of [
+  { ...isolatedCodex, argv: [...isolatedCodex.argv, "--enable", "unified_exec"] },
+  { ...isolatedCodex, argv: [...isolatedCodex.argv, "--add-dir", "/app"] },
+  { ...isolatedCodex, argv: [...isolatedCodex.argv, "-c", "permissions.mazebench_agent.network.enabled=true"] },
+  {
+    ...isolatedCodex,
+    argv: isolatedCodex.argv.map((value) => value === 'mcp_servers.game.enabled_tools=["game_start","game_observe","game_action"]'
+      ? 'mcp_servers.game.enabled_tools=["game_start","game_observe","game_action","exec"]'
+      : value)
+  }
+]) {
+  assert.throws(
+    () => assertLocalCodexCommandIsolation(isolatedCodexConfig, unsafeCommand),
+    /isolation|missing|non-game|widen/i
+  );
+}
+assert.equal(SUPPORTED_LOCAL_CODEX_VERSION, "0.146.0");
+assert.equal(SUPPORTED_LOCAL_CLAUDE_VERSION, "2.1.220");
+assert.equal(SUPPORTED_LOCAL_KIMI_VERSION, "0.29.1");
+assert.deepEqual(SUPPORTED_LOCAL_AGENT_VERSIONS, {
+  codex: "0.146.0",
+  claude: "2.1.220",
+  kimi: "0.29.1"
+});
+assert.match(localAgentDockerfile, /FROM mcr\.microsoft\.com\/playwright:v1\.60\.0-noble/);
+for (const packagePattern of [
+  /"@openai\/codex@\$\{CODEX_VERSION\}"/,
+  /"@anthropic-ai\/claude-code@\$\{CLAUDE_CODE_VERSION\}"/,
+  /"@moonshot-ai\/kimi-code@\$\{KIMI_CODE_VERSION\}"/
+]) {
+  assert.match(localAgentDockerfile, packagePattern);
+}
+for (const label of ["local-codex", "local-claude", "local-kimi"]) {
+  assert.match(localAgentDockerfile, new RegExp(`org\\.mazebench\\.${label}\\.version`));
+}
+for (const boundary of [
+  /"--read-only"/,
+  /"--tmpfs", config\.outDir/,
+  /credentialSources\.map\(\(source\) => path\.dirname\(source\)\)/,
+  /"--tmpfs", path\.dirname\(config\.workspaceDir\)/,
+  /"--bind", config\.workspaceDir, config\.agentWorkspaceDir/,
+  /"--ro-bind", authFile, "\/home\/pwuser\/\.codex\/auth\.json"/,
+  /"--ro-bind", authFile, "\/home\/pwuser\/\.claude\/\.credentials\.json"/,
+  /"--setenv", "KIMI_CODE_HOME", "\/home\/pwuser\/\.kimi-code"/,
+  /"--bounding-set=-all"/,
+  /"--inh-caps=-all"/,
+  /"--ambient-caps=-all"/,
+  /capabilities_dropped/,
+  /no_new_privileges/
+]) {
+  assert.match(localAgentSource, boundary);
+}
+assert.doesNotMatch(localAgentSource, /Host access|switch to Host access/);
 
 const codexSparkConfig = {
   ...codexConfig,
@@ -261,6 +415,36 @@ assert.equal(needsPrivateMcpServer({ ...baseConfig, model: "kimi" }), true, "hos
 assert.equal(needsPrivateMcpServer(codexConfig), false, "host Codex can use its synchronous stdio MCP startup");
 assert.equal(needsPrivateMcpServer({ ...codexConfig, inContainer: true }), true);
 
+const isolatedClaudeConfig = {
+  ...claudeConfig,
+  agentWorkspaceDir: "/app/workspace",
+  inContainer: true,
+  outDir: "/run/mazebench-output",
+  workspaceDir: "/run/mazebench-workspace/workspace"
+};
+const isolatedClaude = agentCommand(isolatedClaudeConfig, buildMcpPrompt(isolatedClaudeConfig));
+assert.equal(assertLocalClaudeCommandIsolation(isolatedClaudeConfig, isolatedClaude), true);
+const isolatedClaudeToolsConfig = { ...isolatedClaudeConfig, toolUse: "offline", tools: true };
+const isolatedClaudeTools = agentCommand(isolatedClaudeToolsConfig, buildMcpPrompt(isolatedClaudeToolsConfig));
+assert.equal(assertLocalClaudeCommandIsolation(isolatedClaudeToolsConfig, isolatedClaudeTools), true);
+assert(
+  isolatedClaudeTools.argv[isolatedClaudeTools.argv.indexOf("--allowedTools") + 1]
+    .split(",")
+    .includes("mcp__mazebench__python_exec")
+);
+assert.equal(JSON.parse(claudeSandboxSettings(isolatedClaudeToolsConfig)).sandbox.autoAllowBashIfSandboxed, false);
+for (const flag of ["--no-chrome", "--disable-slash-commands", "--strict-mcp-config"]) {
+  assert(isolatedClaude.argv.includes(flag), `${flag} must be enabled for isolated Claude Code`);
+}
+assert.equal(isolatedClaude.argv[isolatedClaude.argv.indexOf("--prompt-suggestions") + 1], "false");
+assert.throws(
+  () => assertLocalClaudeCommandIsolation(isolatedClaudeConfig, {
+    ...isolatedClaude,
+    argv: [...isolatedClaude.argv, "--add-dir", "/app"]
+  }),
+  /widen/i
+);
+
 const claudeToolsOn = agentCommand(
   { ...toolsOnConfig, model: "claude", modelName: "claude-test" },
   toolsOnPrompt
@@ -299,8 +483,8 @@ for (const builtin of ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "WebFetc
 assert.equal(claudeToolsOn.argv.includes("--add-dir"), false);
 
 const kimiConfig = { ...baseConfig, model: "kimi", modelName: "kimi/k3", reasoning: "high" };
-assert.match(localAgentSource, /SUPPORTED_KIMI_CODE_VERSIONS = new Set\(\["0\.28\.1"\]\)/);
-assert.match(localAgentSource, /if \(config\.model === "kimi"\) verifyKimiCliCompatibility\(config\)/);
+assert.match(localAgentSource, /SUPPORTED_KIMI_CODE_VERSIONS = new Set\(\[SUPPORTED_LOCAL_KIMI_VERSION\]\)/);
+assert.match(localAgentSource, /SUPPORTED_LOCAL_AGENT_VERSIONS\[model\]/);
 const kimiPrompt = buildMcpPrompt(kimiConfig);
 assert.match(kimiPrompt, /after five consecutive game_action[\s\S]*same normalized action/i);
 assert.match(kimiPrompt, /A different action resets the repetition[\s\S]*game_observe resets the[\s\S]*count/i);
@@ -319,7 +503,42 @@ assert.equal(kimi.env.KIMI_CODE_HOME, kimiConfig.agentKimiRuntimeDir);
 assert.equal(kimi.env.KIMI_DISABLE_TELEMETRY, "1");
 assert.equal(kimi.env.KIMI_CODE_NO_AUTO_UPDATE, "1");
 assert.equal(kimi.env.KIMI_DISABLE_CRON, "1");
+assert.equal(kimi.env.KIMI_CODE_EXPERIMENTAL_FLAG, "1");
 assert.equal(kimi.env.KIMI_MODEL_THINKING_EFFORT, "high");
+const restrictedKimiProfile = kimiAgentProfile(kimiConfig);
+assert.match(restrictedKimiProfile, /subagents: \[\]/);
+for (const tool of [
+  "mcp__game__game_start",
+  "mcp__game__game_observe",
+  "mcp__game__game_action"
+]) {
+  assert.match(restrictedKimiProfile, new RegExp(`  - ${tool}`));
+}
+assert.doesNotMatch(restrictedKimiProfile, /mcp__mazebench__python_exec/);
+
+const isolatedKimiConfig = {
+  ...kimiConfig,
+  agentKimiProfile: "/home/pwuser/.kimi-code/mazebench-agent.md",
+  agentKimiRuntimeDir: "/home/pwuser/.kimi-code",
+  agentKimiSkillsDir: "/home/pwuser/.kimi-code/empty-skills",
+  agentWorkspaceDir: "/app/workspace",
+  inContainer: true,
+  outDir: "/run/mazebench-output",
+  workspaceDir: "/run/mazebench-workspace/workspace"
+};
+const isolatedKimi = agentCommand(isolatedKimiConfig, buildMcpPrompt(isolatedKimiConfig));
+assert.equal(assertLocalKimiCommandIsolation(isolatedKimiConfig, isolatedKimi), true);
+const isolatedKimiToolsConfig = { ...isolatedKimiConfig, toolUse: "offline", tools: true };
+const isolatedKimiTools = agentCommand(isolatedKimiToolsConfig, buildMcpPrompt(isolatedKimiToolsConfig));
+assert.equal(assertLocalKimiCommandIsolation(isolatedKimiToolsConfig, isolatedKimiTools), true);
+assert.match(kimiAgentProfile(isolatedKimiToolsConfig), /mcp__mazebench__python_exec/);
+assert.throws(
+  () => assertLocalKimiCommandIsolation(isolatedKimiConfig, {
+    ...isolatedKimi,
+    argv: [...isolatedKimi.argv, "--yolo"]
+  }),
+  /unreviewed option/i
+);
 
 const unsafeKimiConfig = `
 default_model = "kimi/k3"

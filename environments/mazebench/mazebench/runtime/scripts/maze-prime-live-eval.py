@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from openai.types.responses.response_usage import InputTokensDetails
+from prime_sandboxes import AsyncSandboxClient
 from verifiers.v1.graph import PendingTurn
 from verifiers.v1.dialects.responses import OpenAIResponse, ProviderUsage, ResponsesDialect
 
@@ -34,6 +35,38 @@ _original_commit = PendingTurn.commit
 _exported_action_counts: dict[str, int] = {}
 _exported_agent_markers: dict[str, set[str]] = {}
 _agent_marker = re.compile(r"MAZEBENCH_EVENT_V1:([A-Za-z0-9_-]+)")
+
+
+def _patch_prime_creation_budget() -> None:
+    """Fail a stuck warm-image allocation promptly instead of waiting minutes."""
+    if getattr(AsyncSandboxClient, "_mazebench_creation_budget_patched", False):
+        return
+    original = AsyncSandboxClient.wait_for_creation
+    configured = max(
+        5,
+        min(60, int(os.environ.get("MAZEBENCH_PRIME_SANDBOX_MAX_ATTEMPTS", "15") or 15)),
+    )
+
+    async def wait_for_creation(
+        self,
+        sandbox_id,
+        max_attempts=60,
+        stability_checks=1,
+        image_build_timeout_seconds=3000,
+    ):
+        return await original(
+            self,
+            sandbox_id,
+            max_attempts=min(max_attempts, configured),
+            stability_checks=stability_checks,
+            image_build_timeout_seconds=image_build_timeout_seconds,
+        )
+
+    AsyncSandboxClient.wait_for_creation = wait_for_creation
+    AsyncSandboxClient._mazebench_creation_budget_patched = True
+
+
+_patch_prime_creation_budget()
 
 
 def _patch_prime_codex_reasoning_summary() -> None:

@@ -37,6 +37,13 @@ try {
   assert.match(filesystemPolicy, new RegExp(`${canonicalScratch.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}.*write`));
   assert.match(filesystemPolicy, new RegExp(`${canonicalRoot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}.*deny`));
   assert.doesNotMatch(filesystemPolicy, new RegExp(`${canonicalRoot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}.*(?:read|write)`));
+  const demotedCommand = pythonSandboxCommand({
+    ...options,
+    runUid: typeof process.getuid === "function" ? process.getuid() : 0,
+    runGid: typeof process.getgid === "function" ? process.getgid() : 0
+  });
+  assert.equal(demotedCommand.config.runUid, typeof process.getuid === "function" ? process.getuid() : 0);
+  assert.equal(demotedCommand.config.runGid, typeof process.getgid === "function" ? process.getgid() : 0);
 
   const preflight = preflightPythonSandbox(options);
   assert.equal(preflight.verified, true);

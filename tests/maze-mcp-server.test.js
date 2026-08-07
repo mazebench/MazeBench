@@ -53,7 +53,7 @@ try {
     { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "maze_start", arguments: {} } },
     { jsonrpc: "2.0", id: 5, method: "tools/call", params: { name: "maze_action", arguments: { action: "right" } } },
     { jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "maze_action", arguments: { action: "down" } } },
-    { jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "python_exec", arguments: { code: "from pathlib import Path\nimport runpy\nPath('notes.txt').write_text('mapped', encoding='utf-8')\nPath('planner.py').write_text('def next_move():\\n    return \\\"up\\\"\\n', encoding='utf-8')\nplanner = runpy.run_path('planner.py')\nprint(planner['next_move']())" } } },
+    { jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "python_exec", arguments: { script_path: "analysis/driver.py", code: "from pathlib import Path\nimport runpy\nPath('notes.txt').write_text('mapped', encoding='utf-8')\nPath('planner.py').write_text('def next_move():\\n    return \\\"up\\\"\\n', encoding='utf-8')\nplanner = runpy.run_path('planner.py')\nprint(planner['next_move']())" } } },
     { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "maze_clone", arguments: {} } },
     { jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "maze_action", arguments: { clone_id: "guessed-worker", action: "up" } } },
     { jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "maze_workers", arguments: {} } }
@@ -89,7 +89,8 @@ try {
     "game_won",
     "game_lost",
     "level",
-    "ascii_legend"
+    "ascii_legend",
+    "observation_workspace"
   ]);
   assert.equal(firstObservation.observation_mode, "ascii");
   assert.match(firstObservation.level, /P|p/);
@@ -101,7 +102,9 @@ try {
   assert.deepEqual(listedTools.map((tool) => tool.name), ["maze_start", "maze_observe", "maze_action", "maze_workers", "python_exec"]);
   const listedPython = listedTools.find((tool) => tool.name === "python_exec");
   assert.match(listedPython?.description || "", /writable persistent isolated scratch workspace/);
-  assert.match(listedPython?.description || "", /relative-path files[\s\S]*persist for the run/);
+  assert.match(listedPython?.description || "", /caller-selected relative \.py script_path/);
+  assert.equal(Object.prototype.hasOwnProperty.call(listedPython?.inputSchema?.properties?.script_path || {}, "default"), false);
+  assert.deepEqual(listedPython?.inputSchema?.required, ["code", "script_path"]);
   assert.doesNotMatch(JSON.stringify(listedTools), /clone_id|maze_clone/i);
   assert.equal(listedTools.some((tool) => /scorecard/i.test(tool.name)), false);
   assert(responses.find((response) => response.id === 3)?.error, "the lead cannot call maze_clone");
@@ -115,6 +118,17 @@ try {
   assert(fs.existsSync(path.join(runDir, "initial-status.json")));
   assert.equal(fs.existsSync(path.join(runDir, "current-render-state.json")), false);
   assert.equal(responses.find((response) => response.id === 6)?.result?.isError, true, "the MCP boundary enforces the lead budget");
+  const asciiWorkspaceObservation = JSON.parse(
+    fs.readFileSync(path.join(leadWorkspace, "observations", "current.json"), "utf8")
+  );
+  assert.equal(asciiWorkspaceObservation.observation_mode, "ascii");
+  assert.equal(asciiWorkspaceObservation.observation_revision, 1);
+  assert.match(asciiWorkspaceObservation.level, /P|p/);
+  assert.match(
+    fs.readFileSync(path.join(leadWorkspace, "analysis", "driver.py"), "utf8"),
+    /Path\('notes\.txt'\)/,
+    "python_exec must save its source even when sandbox startup later fails"
+  );
   const pythonResponse = responses.find((response) => response.id === 7)?.result;
   if (codexAvailable) {
     assert.equal(pythonResponse?.structuredContent?.stdout, "up\n");
@@ -425,16 +439,20 @@ try {
   const pythonStarted = activity.find((entry) => entry.tool === "python_exec" && entry.status === "running");
   assert.match(pythonStarted.python_code, /Path\('notes\.txt'\)/);
   assert.match(pythonStarted.python_code_hash, /^[a-f0-9]{64}$/);
+  assert.equal(pythonStarted.python_script_path, "analysis/driver.py");
   const pythonFinished = activity.find((entry) =>
     entry.tool === "python_exec" && entry.status === (codexAvailable ? "completed" : "failed")
   );
   if (codexAvailable) {
     assert.equal(pythonFinished.python_result.stdout, "up\n");
     assert(Number.isFinite(pythonFinished.python_result.cpu_time_ms));
-    assert.deepEqual(new Set(pythonFinished.workspace_changes.created), new Set(["notes.txt", "planner.py"]));
+    assert.deepEqual(
+      new Set(pythonFinished.workspace_changes.created),
+      new Set(["analysis/driver.py", "notes.txt", "planner.py"])
+    );
   } else {
     assert.match(pythonFinished.error, /Codex executable was not found on PATH/);
-    assert.deepEqual(pythonFinished.workspace_changes.created, []);
+    assert.deepEqual(pythonFinished.workspace_changes.created, ["analysis/driver.py"]);
   }
   const instanceEvents = fs.readFileSync(path.join(runDir, "maze-instance-events.jsonl"), "utf8")
     .trim()
@@ -674,7 +692,7 @@ runpy.run_path("planner.py")`;
     { jsonrpc: "2.0", method: "notifications/initialized" },
     { jsonrpc: "2.0", id: 29, method: "tools/list", params: {} },
     { jsonrpc: "2.0", id: 30, method: "tools/call", params: { name: "maze_start", arguments: {} } },
-    { jsonrpc: "2.0", id: 31, method: "tools/call", params: { name: "python_exec", arguments: { code: jsonPlannerCode } } },
+    { jsonrpc: "2.0", id: 31, method: "tools/call", params: { name: "python_exec", arguments: { script_path: "driver.py", code: jsonPlannerCode } } },
     {
       jsonrpc: "2.0",
       id: 32,
@@ -741,6 +759,8 @@ runpy.run_path("planner.py")`;
   const pythonPlanner = jsonBridgeResponses.find((response) => response.id === 31)?.result;
   if (codexAvailable) {
     assert.equal(pythonPlanner?.structuredContent?.stdout, "1\n");
+    assert.equal(pythonPlanner?.structuredContent?.script_path, "driver.py");
+    assert.match(fs.readFileSync(path.join(jsonBridgeWorkspace, "driver.py"), "utf8"), /program =/);
     assert.match(fs.readFileSync(path.join(jsonBridgeWorkspace, "planner.py"), "utf8"), /observations\/current\.json/);
   } else {
     assert.equal(pythonPlanner?.isError, true);

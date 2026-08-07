@@ -16,8 +16,23 @@
   const HARNESSES = [
     {
       id: "custom",
-      name: "Game agent",
+      name: "Prime Agent",
       logo: '<img src="/logos/prime.png" alt="" width="128" height="128" loading="eager" decoding="sync" fetchpriority="high">'
+    },
+    {
+      id: "codex",
+      name: "Codex",
+      logo: '<img src="/logos/codex.png" alt="" width="128" height="128" loading="eager" decoding="sync" fetchpriority="high">'
+    },
+    {
+      id: "claude-code",
+      name: "Claude Code",
+      logo: '<img src="/logos/claude.png" alt="" width="128" height="128" loading="eager" decoding="sync" fetchpriority="high">'
+    },
+    {
+      id: "kimi-code",
+      name: "Kimi Code",
+      logo: '<img src="/logos/kimi.svg" alt="" width="128" height="128" loading="eager" decoding="sync" fetchpriority="high">'
     }
   ];
   const LOCAL_SETUP = {
@@ -32,8 +47,8 @@
       login: "claude auth login"
     },
     "kimi-code": {
-      docs: "https://www.kimi.com/code/docs/en/kimi-code-cli/guides/getting-started.html",
-      install: "curl -fsSL https://code.kimi.com/kimi-code/install.sh | bash\nkimi login",
+      docs: "https://moonshotai.github.io/kimi-code/en/guides/getting-started.html",
+      install: "npm install -g @moonshot-ai/kimi-code\nkimi login",
       login: "kimi login"
     }
   };
@@ -383,17 +398,20 @@
   }
 
   function primePythonToolsAvailable() {
-    return false;
+    return state.execution === "prime" &&
+      state.mode !== "vision" &&
+      ["codex", "claude_code"].includes(effectiveHarnessId());
   }
 
   function runOptionsReady() {
+    const isolatedLocalAgent = state.execution === "local" && Boolean(localProviderId());
     return Boolean(
       composerSettingsReady() &&
       state.mode &&
       (
         state.execution === "prime"
           ? (!primePythonToolsAvailable() || state.toolUse)
-          : state.toolUse && state.orchestration
+          : isolatedLocalAgent ? state.toolUse : (state.toolUse && state.orchestration)
       )
     );
   }
@@ -471,7 +489,8 @@
   function renderExecutionPicker() {
     const wrapper = document.getElementById("harness-execution");
     const picker = document.getElementById("execution-picker");
-    if (wrapper) wrapper.hidden = true;
+    const supportsLocal = Boolean(localProviderId());
+    if (wrapper) tweenVisibility(wrapper, supportsLocal, 420);
     picker?.querySelectorAll("[data-execution]").forEach((option) => {
       const blockedPrimeAgentHarness = option.dataset.execution === "prime" && !primeHarnessLaunchable();
       const selected = option.dataset.execution === state.execution;
@@ -499,13 +518,17 @@
       note.textContent = state.harness === "custom"
         ? "The selected framework harness and game Toolset run in separate Prime Sandboxes."
         : state.harness && state.harness !== "none" && state.execution === "prime"
-        ? `${HARNESSES.find((entry) => entry.id === state.harness)?.name || "This harness"} is hosted by Prime and connected to MazeBench's isolated game controls.`
-        : "Prime supplies inference through the isolated Verifiers environment.";
+        ? state.harness === "codex"
+          ? "Codex uses Prime model inference inside MazeBench's fresh disposable local isolation, with only the selected game/Python controls."
+          : `${HARNESSES.find((entry) => entry.id === state.harness)?.name || "This harness"} is hosted by Prime and connected to MazeBench's isolated game controls.`
+        : state.execution === "local"
+          ? `Local ${HARNESSES.find((entry) => entry.id === state.harness)?.name || "agent"} runs in a disposable Docker boundary with game controls and an optional isolated Python scratchpad.`
+          : "Prime supplies inference through the isolated Verifiers environment.";
     }
   }
 
   function setExecution(value) {
-    const next = "prime";
+    const next = value === "local" && localProviderId() ? "local" : "prime";
     if (next === "prime" && !primeHarnessLaunchable()) {
       setStatus(selectedCustomHarness()?.reason || "This harness is not compatible with the isolated Prime game controls.", true);
       return;
@@ -585,7 +608,8 @@
     }
 
     const routeLabels = {
-      native: "native Verifiers harness"
+      native: "native Verifiers harness",
+      prime_agent_cli: "official Prime Agent v0.7.0"
     };
     status.textContent = selected.launchable
       ? `${selected.label} · ${routeLabels[selected.adapter] || "isolated gateway"}`
@@ -665,13 +689,20 @@
     const installed = env[`${provider}_installed`] ?? Boolean(env[provider]);
     const authenticated = env[`${provider}_authenticated`] ?? Boolean(env[provider]);
     const subscription = env[`${provider}_subscription`] ?? Boolean(env[provider]);
+    const imageVersions = env.local_agent_image_versions || {};
+    const requiredVersions = env.local_agent_required_versions || {};
     return {
       checking: false,
       available: Boolean(env[provider]) && Boolean(subscription),
       installed: Boolean(installed),
       authenticated: Boolean(authenticated),
       subscription: Boolean(subscription),
-      authMethod: env[`${provider}_auth_method`] || ""
+      authMethod: env[`${provider}_auth_method`] || "",
+      dockerInstalled: Boolean(env.docker_installed),
+      dockerRunning: Boolean(env.docker_running),
+      imageReady: Boolean(env.local_agent_image ?? env.local_codex_image),
+      imageVersion: String(imageVersions[provider] || env.local_codex_image_version || ""),
+      requiredVersion: String(requiredVersions[provider] || env.local_codex_required_version || "")
     };
   }
 
@@ -702,6 +733,43 @@
   function showLocalSetup(harnessId = state.harness, availability = localRunAvailability(harnessId)) {
     const harness = HARNESSES.find((entry) => entry.id === harnessId);
     const setup = LOCAL_SETUP[harnessId];
+    if (!availability.dockerInstalled) {
+      presentProviderSetup({
+        logo: harness?.logo || "",
+        title: "Install Docker Desktop",
+        message: `${harness?.name || "This local agent"} is available only through MazeBench's disposable Docker isolation boundary.`,
+        command: "Install Docker Desktop, start it, then return here.",
+        note: "MazeBench intentionally has no host-access fallback.",
+        docs: "https://docs.docker.com/desktop/",
+        retry: () => checkLocalAvailability(harnessId)
+      });
+      return;
+    }
+    if (!availability.dockerRunning) {
+      presentProviderSetup({
+        logo: harness?.logo || "",
+        title: "Start Docker Desktop",
+        message: "Docker is installed, but its isolated runtime is not running.",
+        command: "Open Docker Desktop and wait until it reports that Docker is running.",
+        docs: "https://docs.docker.com/desktop/",
+        retry: () => checkLocalAvailability(harnessId)
+      });
+      return;
+    }
+    if (!availability.imageReady) {
+      presentProviderSetup({
+        logo: harness?.logo || "",
+        title: availability.imageVersion ? "Rebuild local agent isolation" : "Build local agent isolation",
+        message: availability.imageVersion
+          ? `The installed image contains ${harness?.name || "this provider"} ${availability.imageVersion}; MazeBench requires ${availability.requiredVersion}.`
+          : "The reviewed MazeBench local-agent image has not been built yet.",
+        command: "npm run maze:build-local-agents",
+        note: "Run this from the MazeBenchEngine repository, then check again.",
+        docs: setup.docs,
+        retry: () => checkLocalAvailability(harnessId)
+      });
+      return;
+    }
     const wrongLocalAuth = availability.authenticated && !availability.subscription;
     const message = !availability.installed
       ? `Install ${harness?.name || "the CLI"}, then sign in once from your terminal.`
@@ -809,7 +877,16 @@
         if (state.execution === "local") setExecution("prime");
         state.localAvailability = "inactive";
         renderExecutionPicker();
-        setStatus("Local subscription setup is needed.", true);
+        setStatus(
+          !availability.dockerInstalled
+            ? `Docker setup is needed for isolated local ${harnessName}.`
+            : !availability.dockerRunning
+              ? `Start Docker to use isolated local ${harnessName}.`
+              : !availability.imageReady
+                ? "Build the certified local-agent image."
+                : `Local ${harnessName} account setup is needed.`,
+          true
+        );
         return availability;
       }
 
@@ -886,6 +963,7 @@
       loadModels(harnessId, { fresh: !state.catalogs[catalogKey(harnessId)] });
     }
     if (state.execution === "prime") void checkPrimeAvailability();
+    if (localProviderId(harnessId)) void checkLocalAvailability(harnessId);
   }
 
   // ---- model picker ---------------------------------------------------------
@@ -1365,7 +1443,8 @@
     const hasToolUse = Boolean(state.toolUse);
     const hasOrchestration = Boolean(state.orchestration);
     const hasBudget = state.unlimited || moveBudget() > 0;
-    const localBudgetReady = hasObservation && hasToolUse && hasOrchestration;
+    const isolatedLocalAgent = state.execution === "local" && Boolean(localProviderId());
+    const localBudgetReady = hasObservation && hasToolUse && (isolatedLocalAgent || hasOrchestration);
 
     const setCardVisibility = (card, show) => {
       if (!card) return;
@@ -1377,7 +1456,7 @@
     setCardVisibility(localSettings?.querySelector(".setting-card--tool-use"), hasObservation);
     setCardVisibility(
       localSettings?.querySelector(".setting-card--orchestration"),
-      hasObservation && state.toolUse === "offline" && state.harness !== "kimi-code"
+      hasObservation && !isolatedLocalAgent && state.toolUse === "offline" && state.harness !== "kimi-code"
     );
     setCardVisibility(localSettings?.querySelector(".setting-card--budget"), localBudgetReady);
     setCardVisibility(localSettings?.querySelector(".setting-card--give-up"), localBudgetReady && hasBudget);
@@ -1516,27 +1595,28 @@
       picker.classList.toggle("has-selection", Boolean(state.toolUse));
       picker.classList.toggle("is-second", state.toolUse === "offline");
     });
-    const autoRunOption = document.getElementById("auto-run-tools-option");
-    const autoRunInput = document.getElementById("run-auto-run-tools");
-    const allFramesOption = document.getElementById("auto-run-all-frames-option");
-    const allFramesInput = document.getElementById("run-auto-run-all-frames");
-    if (autoRunOption) autoRunOption.hidden = state.toolUse !== "offline";
-    if (autoRunInput) {
-      autoRunInput.disabled = state.toolUse !== "offline";
-      autoRunInput.checked = state.toolUse === "offline" && state.autoRunTools;
-    }
+    document.querySelectorAll("[data-auto-run-tools-option]").forEach((option) => {
+      option.hidden = state.toolUse !== "offline";
+    });
+    document.querySelectorAll("[data-auto-run-tools]").forEach((input) => {
+      input.disabled = state.toolUse !== "offline";
+      input.checked = state.toolUse === "offline" && state.autoRunTools;
+    });
     const allFramesEnabled = state.toolUse === "offline" && state.autoRunTools;
-    if (allFramesOption) allFramesOption.hidden = !allFramesEnabled;
-    if (allFramesInput) {
-      allFramesInput.disabled = !allFramesEnabled;
-      allFramesInput.checked = allFramesEnabled && state.autoRunAllFrames;
-    }
+    document.querySelectorAll("[data-auto-run-all-frames-option]").forEach((option) => {
+      option.hidden = !allFramesEnabled;
+    });
+    document.querySelectorAll("[data-auto-run-all-frames]").forEach((input) => {
+      input.disabled = !allFramesEnabled;
+      input.checked = allFramesEnabled && state.autoRunAllFrames;
+    });
   }
 
   function setToolUse(value, syncSteps = true) {
     const next = value === "read-only" || value === "offline" ? value : null;
     if (state.toolUse !== next) {
-      state.orchestration = next === "read-only" || state.harness === "kimi-code" ? "single" : null;
+      const isolatedLocalAgent = state.execution === "local" && Boolean(localProviderId());
+      state.orchestration = isolatedLocalAgent || next === "read-only" || state.harness === "kimi-code" ? "single" : null;
       state.autoRunTools = next === "offline";
       state.autoRunAllFrames = next === "offline";
     }
@@ -1711,28 +1791,59 @@
       return;
     }
 
-    const body = {
-      kind: "prime",
-      harness: effectiveHarnessId(),
-      harness_config: state.harness === "custom" ? { ...state.customHarnessConfig } : {},
-      model_name: resolvedModelName(),
-      max_turns: moveBudget(),
-      unlimited: state.unlimited,
-      mode: state.mode,
-      vision: state.mode === "vision",
-      omniscient: state.mode === "json" && state.omniscient,
-      hide_names: state.mode !== "vision" && state.hideNames,
-      hide_names_seed: state.mode !== "vision" && state.hideNames ? state.hideNamesSeed.trim() : "",
-      reasoning: state.reasoning,
-      tools: primePythonToolsAvailable() && state.toolUse === "offline",
-      tool_use: primePythonToolsAvailable() ? state.toolUse : "read-only",
-      allow_quit: state.allowQuit,
-      auto_quit: state.autoQuit,
-      auto_quit_threshold: state.autoQuitThreshold,
-      auto_quit_mode: state.autoQuitMode,
-      auto_quit_window: state.autoQuitWindow,
-      video: false
-    };
+    const body = state.execution === "prime"
+      ? {
+          kind: "prime",
+          harness: effectiveHarnessId(),
+          harness_config: state.harness === "custom" ? { ...state.customHarnessConfig } : {},
+          model_name: resolvedModelName(),
+          max_turns: moveBudget(),
+          unlimited: state.unlimited,
+          mode: state.mode,
+          vision: state.mode === "vision",
+          omniscient: state.mode === "json" && state.omniscient,
+          hide_names: state.mode !== "vision" && state.hideNames,
+          hide_names_seed: state.mode !== "vision" && state.hideNames ? state.hideNamesSeed.trim() : "",
+          reasoning: state.reasoning,
+          tools: primePythonToolsAvailable() && state.toolUse === "offline",
+          tool_use: primePythonToolsAvailable() ? state.toolUse : "read-only",
+          auto_run_tools: primePythonToolsAvailable() && state.toolUse === "offline" && state.autoRunTools,
+          auto_run_all_frames: primePythonToolsAvailable() && state.toolUse === "offline" && state.autoRunTools && state.autoRunAllFrames,
+          allow_quit: state.allowQuit,
+          auto_quit: state.autoQuit,
+          auto_quit_threshold: state.autoQuitThreshold,
+          auto_quit_mode: state.autoQuitMode,
+          auto_quit_window: state.autoQuitWindow,
+          video: false
+        }
+      : {
+          kind: "local",
+          subscription: true,
+          model: localProviderId(),
+          game_id: state.worldId,
+          level_id: effectiveLevelId(),
+          moves: moveBudget(),
+          unlimited: state.unlimited,
+          allow_quit: state.allowQuit,
+          auto_quit: state.autoQuit,
+          auto_quit_threshold: state.autoQuitThreshold,
+          auto_quit_mode: state.autoQuitMode,
+          auto_quit_window: state.autoQuitWindow,
+          mode: state.mode,
+          omniscient: state.mode === "json" && state.omniscient,
+          hide_names: state.mode !== "vision" && state.hideNames,
+          hide_names_seed: state.mode !== "vision" && state.hideNames ? state.hideNamesSeed.trim() : "",
+          model_name: resolvedModelName(),
+          reasoning: state.reasoning,
+          codex_fast: state.harness === "codex" && document.getElementById("run-codex-fast").checked,
+          container: true,
+          video: false,
+          tools: state.toolUse === "offline",
+          tool_use: state.toolUse,
+          auto_run_tools: state.toolUse === "offline" && state.autoRunTools,
+          auto_run_all_frames: state.toolUse === "offline" && state.autoRunTools && state.autoRunAllFrames,
+          swarm: false
+        };
 
     body.count = 1;
     beginLaunch();
@@ -1744,6 +1855,15 @@
         const environment = await refreshEnvironment();
         if (!environment?.prime || !environment?.uv) {
           setStatus(showPrimeSetup(environment), true);
+          return;
+        }
+      } else {
+        const environment = await refreshEnvironment();
+        const launchedHarness = ({ codex: "codex", claude: "claude-code", kimi: "kimi-code" })[body.model];
+        const availability = localRunAvailability(launchedHarness, environment);
+        if (!availability.available) {
+          showLocalSetup(launchedHarness, availability);
+          setStatus(`Isolated local ${HARNESSES.find((entry) => entry.id === launchedHarness)?.name || "agent"} setup is incomplete.`, true);
           return;
         }
       }
@@ -2203,14 +2323,18 @@
   document.querySelectorAll(".segmented__option[data-tool-use]").forEach((option) => {
     option.addEventListener("click", () => setToolUse(option.dataset.toolUse));
   });
-  document.getElementById("run-auto-run-tools")?.addEventListener("change", (event) => {
-    state.autoRunTools = state.toolUse === "offline" && event.currentTarget.checked;
-    state.autoRunAllFrames = state.autoRunTools;
-    syncToolUsePicker();
+  document.querySelectorAll("[data-auto-run-tools]").forEach((input) => {
+    input.addEventListener("change", (event) => {
+      state.autoRunTools = state.toolUse === "offline" && event.currentTarget.checked;
+      state.autoRunAllFrames = state.autoRunTools;
+      syncToolUsePicker();
+    });
   });
-  document.getElementById("run-auto-run-all-frames")?.addEventListener("change", (event) => {
-    state.autoRunAllFrames = state.toolUse === "offline" && state.autoRunTools && event.currentTarget.checked;
-    syncToolUsePicker();
+  document.querySelectorAll("[data-auto-run-all-frames]").forEach((input) => {
+    input.addEventListener("change", (event) => {
+      state.autoRunAllFrames = state.toolUse === "offline" && state.autoRunTools && event.currentTarget.checked;
+      syncToolUsePicker();
+    });
   });
   document.querySelectorAll(".segmented__option[data-orchestration]").forEach((option) => {
     option.addEventListener("click", () => setOrchestration(option.dataset.orchestration));

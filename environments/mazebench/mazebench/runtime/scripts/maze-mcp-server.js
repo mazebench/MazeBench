@@ -41,6 +41,12 @@ const PYTHON_SANDBOX_STATE_DIR = path.resolve(
 );
 const CODEX_BIN = process.env.MAZEBENCH_CODEX_BIN || "codex";
 const PYTHON_BIN = process.env.MAZEBENCH_PYTHON_BIN || "";
+const PYTHON_RUN_UID = /^\d+$/.test(process.env.MAZEBENCH_PYTHON_RUN_UID || "")
+  ? Number(process.env.MAZEBENCH_PYTHON_RUN_UID)
+  : undefined;
+const PYTHON_RUN_GID = /^\d+$/.test(process.env.MAZEBENCH_PYTHON_RUN_GID || "")
+  ? Number(process.env.MAZEBENCH_PYTHON_RUN_GID)
+  : undefined;
 const ACTIVITY_LOG = path.resolve(
   process.env.MAZEBENCH_TOOL_ACTIVITY_FILE || path.join(RUN_DIR, "tool-activity.jsonl")
 );
@@ -507,7 +513,9 @@ function pythonSandboxOptions(workspace) {
     stateDir: path.join(PYTHON_SANDBOX_STATE_DIR, key),
     deniedPaths: [REPO_ROOT, RUN_DIR, os.homedir()],
     codexBin: CODEX_BIN,
-    pythonBin: PYTHON_BIN
+    pythonBin: PYTHON_BIN,
+    runUid: PYTHON_RUN_UID,
+    runGid: PYTHON_RUN_GID
   };
 }
 
@@ -649,11 +657,25 @@ function sequencePlan(input, effectiveInput) {
   return { actions: normalizedActions, routeFile, observationRevision };
 }
 
+function observationWorkspaceMode() {
+  if (process.env.MAZEBENCH_MODE === "vision") return null;
+  return process.env.MAZEBENCH_MODE === "json" ? "json" : "text";
+}
+
 function rawObservation(value) {
   if (!value || typeof value !== "object") return null;
   const status = value.status && typeof value.status === "object" ? value.status : value;
-  if (!status.json_observation) return null;
-  return publicObservationStatus(status, { mode: "json" });
+  const mode = observationWorkspaceMode();
+  if (!mode) return null;
+  if (mode === "json" && !status.json_observation) return null;
+  if (
+    mode === "text" &&
+    typeof status.level !== "string" &&
+    typeof status.observation !== "string"
+  ) {
+    return null;
+  }
+  return publicObservationStatus(status, { mode });
 }
 
 function observationWorkspaceDirectory(workspace) {
@@ -669,7 +691,7 @@ function observationWorkspaceDirectory(workspace) {
 }
 
 function deliveredObservationRecords(value, effectiveInput) {
-  if (process.env.MAZEBENCH_MODE !== "json" || !value || typeof value !== "object") return [];
+  if (!observationWorkspaceMode() || !value || typeof value !== "object") return [];
   if (!Object.prototype.hasOwnProperty.call(value, "final_observation")) {
     const observation = rawObservation(value);
     return observation
@@ -727,17 +749,70 @@ function syncObservationWorkspace(value, effectiveInput) {
   };
 }
 
+function normalizedPythonScriptPath(value) {
+  const candidate = String(value || "").trim();
+  if (!candidate || candidate.includes("\\") || candidate.includes("\0") || path.isAbsolute(candidate)) {
+    throw new Error("script_path must be a relative .py file inside the solver workspace.");
+  }
+  const normalized = path.posix.normalize(candidate);
+  if (
+    normalized === "." ||
+    normalized === ".." ||
+    normalized.startsWith("../") ||
+    path.posix.extname(normalized).toLowerCase() !== ".py"
+  ) {
+    throw new Error("script_path must be a relative .py file inside the solver workspace.");
+  }
+  return normalized;
+}
+
+function writePythonProgram(workspace, scriptPath, code) {
+  fs.mkdirSync(workspace, { recursive: true, mode: 0o700 });
+  const root = fs.realpathSync(workspace);
+  const relative = normalizedPythonScriptPath(scriptPath);
+  const target = path.resolve(root, ...relative.split("/"));
+  if (!pathInsideWorkspace(root, target) || target === root) {
+    throw new Error("script_path must stay inside the solver workspace.");
+  }
+  const parent = path.dirname(target);
+  fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
+  const canonicalParent = fs.realpathSync(parent);
+  if (!pathInsideWorkspace(root, canonicalParent)) {
+    throw new Error("script_path must stay inside the solver workspace.");
+  }
+  try {
+    if (fs.lstatSync(target).isSymbolicLink()) {
+      throw new Error("script_path cannot be a symbolic link.");
+    }
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+  }
+  const canonicalTarget = path.join(canonicalParent, path.basename(target));
+  const temporary = path.join(
+    canonicalParent,
+    `.${path.basename(target)}.${process.pid}.${crypto.randomBytes(3).toString("hex")}.tmp`
+  );
+  fs.writeFileSync(temporary, String(code || ""), { encoding: "utf8", mode: 0o600 });
+  fs.renameSync(temporary, canonicalTarget);
+  return relative;
+}
+
 function runPythonTool(input = {}) {
   if (RESTRICTED_MODE) throw new Error("Python is disabled in game-only mode.");
   const workspace = pythonWorkspaceForInput(input);
+  const scriptPath = writePythonProgram(workspace, input.script_path, input.code);
   const options = pythonSandboxOptions(workspace);
   if (!PYTHON_PREFLIGHTS.has(workspace)) {
     PYTHON_PREFLIGHTS.set(workspace, preflightPythonSandbox(options));
   }
-  return runSandboxedPython(String(input.code || ""), {
+  const result = runSandboxedPython(
+    `import runpy\nrunpy.run_path(${JSON.stringify(scriptPath)}, run_name="__main__")`,
+    {
     ...options,
     timeoutSeconds: Number(input.timeout_seconds) || 10
-  });
+    }
+  );
+  return { ...result, script_path: scriptPath };
 }
 
 const LEAD_TOOLS = [
@@ -810,14 +885,18 @@ const LEAD_TOOLS = [
   },
   {
     name: "python_exec",
-    description: "Run Python in this agent's writable persistent isolated scratch workspace. In JSON mode, observations/current.json is automatically synchronized from the latest sanitized game result, so programs can import it without copying MCP output. Each call uses a fresh Python process, while relative-path files in the current working directory persist for the run. Create and reuse Python programs with pathlib/open and execute them with runpy/import. Repository files, host files, run artifacts, subprocesses, and network access are blocked.",
+    description: "Save and run Python in this agent's writable persistent isolated scratch workspace. Every call saves code to the caller-selected relative .py script_path, then executes that file in a fresh Python process. The caller may create, reuse, modify, and organize any number of relative-path .py, .json, and scratch files. In ASCII and JSON modes, observations/current.json is automatically synchronized from the latest sanitized game result. Files persist for the run. Repository files, host files, run artifacts, subprocesses, and network access are blocked.",
     inputSchema: {
       type: "object",
       properties: {
         code: { type: "string", description: "Python source code to execute." },
+        script_path: {
+          type: "string",
+          description: "Caller-selected relative .py path to save and execute."
+        },
         timeout_seconds: { type: "integer", minimum: 1, maximum: 60, default: 10 }
       },
-      required: ["code"],
+      required: ["code", "script_path"],
       additionalProperties: false
     }
   }
@@ -874,14 +953,18 @@ const WORKER_TOOLS = [
   },
   {
     name: "python_exec",
-    description: "Run Python in this worker's private writable persistent isolated scratch workspace. In JSON mode, observations/current.json is automatically synchronized from the latest sanitized game result, so programs can import it without copying MCP output. Each call uses a fresh Python process, while relative-path files in the current working directory persist for the run. Create and reuse Python programs with pathlib/open and execute them with runpy/import. Repository files, host files, run artifacts, subprocesses, and network access are blocked.",
+    description: "Save and run Python in this worker's private writable persistent isolated scratch workspace. Every call saves code to the caller-selected relative .py script_path, then executes that file in a fresh Python process. The caller may create, reuse, modify, and organize any number of relative-path .py, .json, and scratch files. In ASCII and JSON modes, observations/current.json is automatically synchronized from the latest sanitized game result. Files persist for the run. Repository files, host files, run artifacts, subprocesses, and network access are blocked.",
     inputSchema: {
       type: "object",
       properties: {
         code: { type: "string", description: "Python source code to execute." },
+        script_path: {
+          type: "string",
+          description: "Caller-selected relative .py path to save and execute."
+        },
         timeout_seconds: { type: "integer", minimum: 1, maximum: 60, default: 10 }
       },
-      required: ["code"],
+      required: ["code", "script_path"],
       additionalProperties: false
     }
   }
@@ -1039,7 +1122,7 @@ function normalizedToolCall(requestedName, input = {}, { workerOnly = false } = 
     maze_action_sequence: RESTRICTED_MODE
       ? ["actions", "include_intermediate_observations"]
       : ["actions", "route_file", "include_intermediate_observations"],
-    python_exec: ["code", "timeout_seconds"]
+    python_exec: ["code", "script_path", "timeout_seconds"]
   }[name] || []);
   const extraKey = Object.keys(input).find((key) => !allowedKeys.has(key));
   if (extraKey) throw new Error(`Unsupported argument "${extraKey}" for ${requestedName}.`);
@@ -1094,7 +1177,14 @@ function normalizedToolCall(requestedName, input = {}, { workerOnly = false } = 
     if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 60) {
       throw new Error("timeout_seconds must be an integer between 1 and 60.");
     }
-    return { name, input: { code: String(input.code || ""), timeout_seconds: timeoutSeconds } };
+    return {
+      name,
+      input: {
+        code: String(input.code || ""),
+        script_path: normalizedPythonScriptPath(input.script_path),
+        timeout_seconds: timeoutSeconds
+      }
+    };
   }
   return { name, input: {} };
 }
@@ -1452,6 +1542,7 @@ async function handle(
         ? {
             python_code: pythonCode,
             python_code_hash: pythonCodeHash,
+            python_script_path: input.script_path,
             timeout_seconds: input.timeout_seconds
           }
         : {})
@@ -1468,7 +1559,9 @@ async function handle(
         resetKimiActionStreak(context);
       }
       const value = callTool(name, input, context);
-      const observationWorkspace = syncObservationWorkspace(value, effectiveInput);
+      const observationWorkspace = RESTRICTED_MODE
+        ? null
+        : syncObservationWorkspace(value, effectiveInput);
       const loopControl = kimiLoopControl(name, value, effectiveInput, context);
       const control = {
         ...(loopControl || {}),
@@ -1774,5 +1867,6 @@ module.exports = {
   listWorkers,
   safeWorkerId,
   sessionFor,
+  syncObservationWorkspace,
   toolContent
 };

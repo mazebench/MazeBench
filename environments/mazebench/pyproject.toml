@@ -20,6 +20,7 @@ include = [
     "mazebench/prompts/*.txt",
     "mazebench/runtime/**/*",
     "mazebench_codex/**/*.py",
+    "mazebench_prime_agent/**/*.py",
     "mazebench_tools/**/*.py",
     "README.md",
     "pyproject.toml",

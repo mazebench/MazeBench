@@ -28,7 +28,8 @@ LABELS = {
     "codex": "Codex",
     "kimi_code": "Kimi Code",
     "mini_swe_agent": "mini-swe-agent",
-    "null": "Game agent",
+    "mazebench_prime_agent": "Prime Agent",
+    "null": "Null",
     "pi": "Pi",
     "rlm": "RLM",
     "terminus_2": "Terminus 2",
@@ -43,19 +44,20 @@ GAME_TOOLS_ONLY_ROUTES = {
             "multi_agent": False,
         },
     },
-    "null": {
-        "adapter": "native",
-        "runtime_harness_id": "null",
-        "default_config": {},
+    "mazebench_prime_agent": {
+        "adapter": "prime_agent_cli",
+        "runtime_harness_id": "mazebench_prime_agent",
+        "default_config": {"version": "0.7.0"},
     },
 }
+LOCAL_HARNESS_IDS = ("mazebench_prime_agent",)
 
 
 def adapter_for(harness_id: str, harness_type: type[vf.Harness]) -> dict[str, Any]:
     del harness_type
     if harness_id in GAME_TOOLS_ONLY_ROUTES:
         return {
-            "adapter": "native",
+            "adapter": GAME_TOOLS_ONLY_ROUTES[harness_id]["adapter"],
             "runtime_harness_id": harness_id,
         }
     return {
@@ -66,10 +68,13 @@ def adapter_for(harness_id: str, harness_type: type[vf.Harness]) -> dict[str, An
 
 def discover() -> dict[str, Any]:
     harnesses: list[dict[str, Any]] = []
-    for module in sorted(
-        pkgutil.iter_modules(builtin_harnesses.__path__), key=lambda item: item.name
-    ):
-        harness_id = module.name
+    harness_ids = sorted(
+        {
+            *(module.name for module in pkgutil.iter_modules(builtin_harnesses.__path__)),
+            *LOCAL_HARNESS_IDS,
+        }
+    )
+    for harness_id in harness_ids:
         harness_type = harness_class(harness_id)
         config_type = harness_config_type(harness_id)
         config = config_type.model_validate({"id": harness_id})
@@ -111,7 +116,7 @@ def discover() -> dict[str, Any]:
                 "observation_modes": [
                     "text",
                     "json",
-                    *(["vision"] if harness_id == "null" else []),
+                    *(["vision"] if harness_id == "mazebench_prime_agent" else []),
                 ],
                 "supports_mcp": bool(harness_type.SUPPORTS_MCP),
                 "configurable": configurable,
@@ -127,11 +132,12 @@ def discover() -> dict[str, Any]:
     version = importlib.metadata.version("verifiers")
     payload: dict[str, Any] = {
         "schema_version": 1,
-        "source": "pinned-prime-verifiers",
+        "source": "pinned-prime-verifiers-and-mazebench-adapters",
         "verifiers_version": version,
         "verifiers_revision": commit,
         "policy": (
-            "MazeBench uses unmodified Verifiers harnesses in isolated Prime runtimes. "
+            "MazeBench uses pinned Verifiers harnesses plus a pinned Prime Agent adapter "
+            "in isolated Prime runtimes. "
             "Each approved route pins its standard harness configuration so the model can "
             "reach the named MazeBench game controls without receiving shell, host filesystem, "
             "or repository access."
