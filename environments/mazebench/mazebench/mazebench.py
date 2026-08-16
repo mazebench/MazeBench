@@ -1774,6 +1774,11 @@ class MazeBenchUser:
 class MazeBenchTaskBehavior:
     async def finalize(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
         del runtime
+        write_live_actions(list(trace.state.maze_actions))
+        if not trace.state.maze_scorecard:
+            trace.state.game_lost = True
+            if not trace.state.maze_status_error:
+                trace.state.maze_status_error = "trusted game state unavailable"
         trace.info["maze_actions"] = trace.state.maze_actions
         if trace.state.maze_auto_quit:
             trace.info["maze_auto_quit"] = trace.state.maze_auto_quit

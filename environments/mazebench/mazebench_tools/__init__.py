@@ -28,7 +28,6 @@ from mazebench.mazebench import (
     slim_status,
     target_text_for_row,
     valid_action_commands,
-    write_live_actions,
 )
 from mcp.types import CallToolResult, ImageContent, TextContent
 from pydantic import Field
@@ -58,10 +57,6 @@ class MazeBenchToolConfig(MazeBenchConfig):
     id: str = "mazebench-tools"
     task: MazeBenchToolTaskConfig = Field(default_factory=MazeBenchToolTaskConfig)
     python_tools: bool = False
-
-
-class MazeBenchToolTraceState(MazeBenchState):
-    """State written only by the isolated evaluator-owned tool server."""
 
 
 def _public_observation(status: dict[str, Any], mode: str) -> dict[str, Any]:
@@ -221,7 +216,7 @@ still be called exactly once by this new harness process.
 {instructions}"""
 
 
-class MazeBenchToolset(vf.Toolset[MazeBenchToolsetConfig, MazeBenchToolTraceState]):
+class MazeBenchToolset(vf.Toolset[MazeBenchToolsetConfig, MazeBenchState]):
     """Named model controls backed by a game in this tool-server sandbox."""
 
     # Codex and Prime Agent require a non-empty MCP server name. The raw MCP
@@ -1021,7 +1016,7 @@ print(json.dumps({"exit_code": exit_code, "stdout": stdout.getvalue()[-256000:],
 
 class MazeBenchToolTask(
     MazeBenchTaskBehavior,
-    vf.Task[MazeBenchTaskData, MazeBenchToolTraceState, MazeBenchToolTaskConfig],
+    vf.Task[MazeBenchTaskData, MazeBenchState, MazeBenchToolTaskConfig],
 ):
     """A task whose only game access is the evaluator-owned MCP server."""
 
@@ -1042,14 +1037,6 @@ class MazeBenchToolTask(
     async def low_state_novelty(self, trace: vf.Trace) -> bool:
         del trace
         return False
-
-    async def finalize(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
-        write_live_actions(list(trace.state.maze_actions))
-        if not trace.state.maze_scorecard:
-            trace.state.game_lost = True
-            if not trace.state.maze_status_error:
-                trace.state.maze_status_error = "trusted game state unavailable"
-        await MazeBenchTaskBehavior.finalize(self, trace, runtime)
 
 
 class MazeBenchToolTaskWithPython(MazeBenchToolTask):

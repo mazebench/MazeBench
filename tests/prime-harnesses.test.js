@@ -103,7 +103,12 @@ try {
   );
   assert.match(
     runSource,
-    /\["codex", \{\s*adapter: "native",\s*runtimeHarnessId: "codex"[\s\S]*disabled_tools: \["shell_tool"\]/
+    /\["codex", \{\s*adapter: "native",\s*runtimeHarnessId: "codex"[\s\S]*disabled_tools: \["shell_tool"\][\s\S]*vm: true[\s\S]*allow: \[\][\s\S]*block: \["\*"\]/
+  );
+  assert.doesNotMatch(runSource, /PRIME_CODEX_AGENT_IMAGE|mazebench-codex-agent/);
+  assert.equal(
+    fs.existsSync(path.join(environmentDir, "prime-images", "codex-agent.Dockerfile")),
+    false
   );
   assert.match(runSource, /runtimeConfig \|\| \{ type: "prime" \}/);
   assert.match(runsSource, /"verifiers-native-harness"/);
@@ -162,7 +167,8 @@ try {
     toolsTasksetSource,
     /Field\(min_length=1, max_length=MAX_ACTION_SEQUENCE_LENGTH\)/
   );
-  assert.match(toolsTasksetSource, /class MazeBenchToolTraceState\(MazeBenchState\)/);
+  assert.doesNotMatch(toolsTasksetSource, /MazeBenchToolTraceState/);
+  assert.match(toolsTasksetSource, /vf\.Toolset\[MazeBenchToolsetConfig, MazeBenchState\]/);
   assert.match(toolsTasksetSource, /class MazeBenchToolsetConfig\(vf\.ToolsetConfig\)/);
   assert.match(toolsTasksetSource, /tools: MazeBenchToolsetConfig/);
   assert.doesNotMatch(toolsTasksetSource, /PrimeRuntime|mcp_launch|_install_.*sandbox/);
@@ -388,6 +394,10 @@ try {
   assert.match(codexConfig, /disabled_tools = \["shell_tool"\]/);
   assert.match(codexConfig, /version = "0\.144\.5"/);
   assert.match(codexConfig, /multi_agent = false/);
+  assert.doesNotMatch(codexConfig, /image =/);
+  assert.match(codexConfig, /vm = true/);
+  assert.match(codexConfig, /allow = \[\]/);
+  assert.match(codexConfig, /block = \["\*"\]/);
 
   const parsedVisionAgent = parseArgs([
     "--env-dir",

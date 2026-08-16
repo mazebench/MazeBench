@@ -1,18 +1,11 @@
-# Prime agent image
+# Prime agent runtimes
 
-MazeBench uses a private image for the evaluated Codex agent. The evaluator-owned
-Toolset stays outside that runtime and serves only the named game controls.
+MazeBench uses stock Prime runtime images. Verifiers installs the selected
+harness during setup, then applies the runtime's execution policy before the
+evaluated agent starts.
 
-- `codex-agent.Dockerfile` contains only the pinned Codex harness binary and its
-  small base runtime. Verifiers launches the evaluated agent in this image.
+The evaluator-owned Toolset stays outside the agent runtime and serves only the
+named game controls. The Codex runtime is a deny-all Prime VM; its version is
+pinned in the harness configuration rather than baked into a MazeBench image.
 
-Build the private image from `environments/mazebench`:
-
-```sh
-prime images push mazebench-codex-agent:0.144.5-v3 \
-  --context . --dockerfile prime-images/codex-agent.Dockerfile \
-  --platform linux/amd64 --private
-```
-
-The default can be overridden without editing source by setting
-`MAZEBENCH_PRIME_CODEX_AGENT_IMAGE` before starting MazeBench.
+`smoke.py` is retained for generic Prime runtime smoke checks.
