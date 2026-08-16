@@ -107,11 +107,10 @@ uv run eval mazebench-tools \
   --rich false
 ```
 
-`MazeBenchToolsetConfig.runtime` is a typed `PrimeConfig`, so Verifiers—not a
-shell environment variable—owns sandbox provisioning and teardown. The default
-uses a 1 CPU, 2 GB RAM, 5 GB disk Prime Sandbox in the `us` region. No Docker
-daemon is involved. The selected framework harness runs in its own sandbox and
-receives the Toolset through Verifiers' standard MCP wiring. Select the
+Each task returns an ordinary Verifiers Toolset running on the evaluator. The
+selected framework harness runs in its own sandbox and receives only that
+Toolset through Verifiers' standard MCP wiring; MazeBench has no custom runtime,
+installer, image, or port plumbing for the game server. Select the
 observation surface independently with
 `--env.taskset.observation-mode ascii`, `json`, or `vision`; add
 `--env.taskset.omniscient true` only for omniscient JSON.
@@ -288,7 +287,8 @@ farther away.
 
 Vision mode uses the same persistent game state, commands, stop conditions, rewards, and metrics as ASCII mode. Instead of an ASCII board, the model receives a short non-positional status message and a perspective PNG frame.
 
-The game Toolset installs its renderer and Chromium inside the game sandbox for vision runs:
+Vision renders on the evaluator that owns the game Toolset, so that evaluator
+must provide `playwright-core` and a compatible Chromium binary:
 
 ```bash
 uv run --project environments/mazebench eval mazebench-tools \
@@ -326,17 +326,15 @@ The separate Codex harness uses its pinned
 `disabled_tools = ["shell_tool"]` configuration. Its remaining bookkeeping
 tools have no shell or host-filesystem path and it also runs in a fresh Prime
 sandbox.
-Only the isolated tool server can update trusted game state through Verifiers'
-per-rollout state channel.
-
-For every agentic rollout, `mazebench-tools` declares a bounded
-`PrimeConfig` as its Toolset runtime. Verifiers provisions that separate
-sandbox, installs the packaged environment, launches the MCP server there, and
-destroys the sandbox with the rollout. The Node game runs inside the same
-sandbox as its trusted tool server. Verifiers connects that server to the agent
-harness as bare, named controls: `start`, `observe`, movement, camera rotation,
-recovery, level navigation, `quit`, and `action_sequence`. The game remains
-outside the agent sandbox.
+Only the evaluator-owned tool server can update trusted game state through
+Verifiers' private per-rollout state channel. `Task.toolsets` constructs that
+server directly with the standard subprocess Toolset runtime; the Node game is
+its child process and never enters the agent sandbox. Verifiers connects it to
+the agent harness as named controls: `start`, `observe`, movement, camera
+rotation, recovery, level navigation, `quit`, and `action_sequence`. When
+`python_tools` is enabled, the Toolset additionally owns one fresh zero-egress
+Prime VM whose only persistent storage is that rollout's Python scratch
+workspace.
 
 Scoring is finalized after the model exits. The agent-facing server exposes no
 generic single-action string multiplexer, scorecard, or filesystem operation.

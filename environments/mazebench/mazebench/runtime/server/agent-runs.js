@@ -5525,7 +5525,7 @@ function createAgentRunService({
           conversation_persistence: command.localIsolation ? "run-dir" : null,
           note: command.localIsolation
             ? `${command.harnessLabel} uses Prime model inference inside MazeBench's fresh disposable local Docker isolation. The evaluated Codex process receives only named game controls${command.toolUse === "offline" ? " plus preflighted run-scoped Python" : ""}; repository, host files, run artifacts, shell, web, apps, and workers stay blocked.`
-            : `${command.harnessLabel} v${command.harnessConfig.version} runs in its own Prime container and receives only MazeBench's named game controls from a separate Prime tool sandbox.`
+            : `${command.harnessLabel} v${command.harnessConfig.version} runs in its own Prime container and receives only MazeBench's named game controls from the evaluator-owned Toolset.`
         };
       } else {
         let effectiveParams = params;

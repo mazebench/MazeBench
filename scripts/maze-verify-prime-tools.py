@@ -1,4 +1,4 @@
-"""Smoke-test the harness-agnostic Prime Sandbox game Toolset."""
+"""Smoke-test the harness-agnostic MazeBench Toolset."""
 
 from __future__ import annotations
 
@@ -40,13 +40,7 @@ async def verify() -> None:
     config = MazeBenchToolsetConfig()
     assert config.colocated is False
     assert config.url is None
-    assert isinstance(config.runtime, vf.PrimeConfig)
-    assert config.runtime.region == "us"
-    assert config.runtime.workdir == "/app"
-    assert config.runtime.cpu == 1
-    assert config.runtime.memory == 2
-    assert config.runtime.disk == 5
-    assert config.runtime.gpu is None
+    assert isinstance(config.runtime, vf.SubprocessConfig)
 
     taskset = MazeBenchToolTaskset(
         MazeBenchToolConfig(
@@ -83,7 +77,7 @@ def main() -> None:
     parser.add_argument("--self-test", action="store_true")
     parser.parse_args()
     asyncio.run(verify())
-    print("MazeBench native harness boundary ready (Prime Sandbox).")
+    print("MazeBench native harness boundary ready.")
 
 
 if __name__ == "__main__":

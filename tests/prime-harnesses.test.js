@@ -163,18 +163,13 @@ try {
     /Field\(min_length=1, max_length=MAX_ACTION_SEQUENCE_LENGTH\)/
   );
   assert.match(toolsTasksetSource, /class MazeBenchToolTraceState\(MazeBenchState\)/);
-  assert.match(toolsTasksetSource, /colocated: Literal\[False\] = False/);
-  assert.match(toolsTasksetSource, /runtime: vf\.RuntimeConfig/);
-  assert.match(toolsTasksetSource, /class MazeBenchPrimeRuntime\(PrimeRuntime\)/);
-  assert.match(toolsTasksetSource, /protocol="TCP"/);
-  assert.match(toolsTasksetSource, /async def _export_python_workspace\(self\)/);
-  assert.match(toolsTasksetSource, /python-sandbox-export\.json/);
-  assert.match(toolsTasksetSource, /mcp_launch\._install_in_sandbox = _install_mazebench_in_sandbox/);
-  assert.doesNotMatch(toolsTasksetSource, /DockerRuntime|game_runtime:/);
-  assert.match(toolsTasksetSource, /url: None = None/);
+  assert.match(toolsTasksetSource, /class MazeBenchToolsetConfig\(vf\.ToolsetConfig\)/);
+  assert.match(toolsTasksetSource, /tools: MazeBenchToolsetConfig/);
+  assert.doesNotMatch(toolsTasksetSource, /PrimeRuntime|mcp_launch|_install_.*sandbox/);
+  assert.doesNotMatch(toolsTasksetSource, /runtime: vf\.RuntimeConfig|url: None|self\.config\.tools/);
   assert.match(toolsTasksetSource, /python_tools: bool = False/);
-  assert.match(toolsTasksetSource, /PYTHON_SANDBOX_CODEX_BIN/);
-  assert.match(toolsTasksetSource, /"codex_bin": PYTHON_SANDBOX_CODEX_BIN/);
+  assert.match(toolsTasksetSource, /provision_runtime\(/);
+  assert.match(toolsTasksetSource, /vf\.PrimeConfig\([\s\S]*vm=True,[\s\S]*allow=\[\]/);
   assert.match(toolsTasksetSource, /TOOL_PREFIX = "mazebench"/);
   assert.match(toolsTasksetSource, /MazeBench controls are deliberately direct-only/);
   assert.match(toolsTasksetSource, /class MazeBenchToolTask\(/);
@@ -183,7 +178,6 @@ try {
   assert.doesNotMatch(toolsTasksetSource, /def tool_servers\(|_current_rollout_tool_config/);
   assert.match(toolsTasksetSource, /NEEDS_CONTAINER = True/);
   assert.doesNotMatch(toolsTasksetSource, /_bind_game_only_harness/);
-  assert.match(toolsTasksetSource, /"colocated": False/);
   assert.match(toolsTasksetSource, /__all__ = \["MazeBenchToolTaskset"\]/);
 
   assert.match(toolsTasksetSource, /CallToolResult/);

@@ -4,12 +4,13 @@ import asyncio
 import contextlib
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import mazebench_tools
@@ -21,7 +22,7 @@ from verifiers.v1.clients import EvalClientConfig, ModelContext
 from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.envs.single_agent import SingleAgentEnv, SingleAgentEnvConfig
 from verifiers.v1.harness import HarnessConfig
-from verifiers.v1.runtimes import PrimeConfig, SubprocessConfig
+from verifiers.v1.runtimes import PrimeConfig, ProgramResult, SubprocessConfig
 from verifiers.v1.runtimes.subprocess import SubprocessRuntime
 from verifiers.v1.types import Sampling
 from verifiers.v1.utils.decorators import discover_decorated
@@ -61,25 +62,15 @@ class GameRuntimeIsolationTests(unittest.TestCase):
             node.unlink()
             self.assertEqual(resolve_default_node_bin(python), "node")
 
-    def test_tool_server_uses_a_dedicated_prime_runtime(self) -> None:
+    def test_tool_server_stays_on_the_evaluator(self) -> None:
         config = mazebench_tools.MazeBenchToolsetConfig()
 
         self.assertFalse(config.colocated)
         self.assertIsNone(config.url)
-        self.assertIsInstance(config.runtime, PrimeConfig)
-        self.assertEqual(
-            config.runtime.image,
-            "prime/mazebench/mazebench-tool-runtime:py313-codex-0.144.5-vf-b3b8f51-v3",
-        )
-        self.assertEqual(config.runtime.workdir, "/app")
-        self.assertEqual(config.runtime.region, "us")
-        self.assertEqual(config.runtime.cpu, 1)
-        self.assertEqual(config.runtime.memory, 2)
-        self.assertEqual(config.runtime.disk, 5)
-        self.assertIsNone(config.runtime.gpu)
+        self.assertIsInstance(config.runtime, SubprocessConfig)
         self.assertIsInstance(
             mcp_launch.make_runtime(config.runtime),
-            mazebench_tools.MazeBenchPrimeRuntime,
+            SubprocessRuntime,
         )
 
     def test_taskset_uses_framework_harnesses(self) -> None:
@@ -106,11 +97,11 @@ class GameRuntimeIsolationTests(unittest.TestCase):
             (ROOT / "environments/mazebench/mazebench_harnesses/codex.py").exists()
         )
 
-    def test_packaged_environment_bootstraps_without_a_verifiers_checkout(self) -> None:
-        asyncio.run(self._verify_packaged_environment_bootstrap())
-
     def test_game_controls_run_directly_in_the_tool_server(self) -> None:
         asyncio.run(self._verify_direct_game_controls())
+
+    def test_python_tool_uses_an_evaluator_owned_scratch_runtime(self) -> None:
+        asyncio.run(self._verify_python_tool())
 
     def test_json_and_vision_modes_use_the_same_sandbox_tools(self) -> None:
         asyncio.run(self._verify_observation_modes())
@@ -169,60 +160,6 @@ class GameRuntimeIsolationTests(unittest.TestCase):
         task = taskset.load()[0]
         return taskset, task
 
-    async def _verify_packaged_environment_bootstrap(self) -> None:
-        _taskset, task = await self._bound_task()
-        toolset = task.toolsets(task.config)[0]
-
-        class Runtime:
-            type = "prime"
-            config = SimpleNamespace(workdir="/app")
-
-            def __init__(self, *, prebuilt: bool) -> None:
-                self.writes: dict[str, bytes] = {}
-                self.commands: list[str] = []
-                self.command = ""
-                self.prebuilt = prebuilt
-
-            async def write(self, path: str, value: bytes) -> None:
-                self.writes[path] = value
-
-            async def run(self, argv: list[str], env: dict[str, str]):
-                del env
-                self.command = " ".join(argv)
-                self.commands.append(self.command)
-                if "test -f /opt/mazebench-image/tool-runtime" in self.command:
-                    return SimpleNamespace(
-                        exit_code=0 if self.prebuilt else 1,
-                        stdout="",
-                        stderr="",
-                    )
-                return SimpleNamespace(exit_code=0, stdout="", stderr="")
-
-        runtime = Runtime(prebuilt=False)
-        python = await mazebench_tools._install_mazebench_in_sandbox(toolset, runtime)
-
-        self.assertEqual(python, "/app/.vf-venv/bin/python")
-        self.assertEqual(len(runtime.writes), 1)
-        uploaded = next(iter(runtime.writes))
-        self.assertTrue(uploaded.startswith("/app/.vf-src/mazebench-"))
-        self.assertTrue(uploaded.endswith(".tar.gz"))
-        self.assertIn(
-            f"verifiers_revision={mazebench_tools.VERIFIERS_REVISION}",
-            runtime.commands[0],
-        )
-        self.assertIn("uv pip install", runtime.command)
-        self.assertIn("uv venv /app/.vf-venv", runtime.command)
-        self.assertIn(uploaded, runtime.command)
-        self.assertNotIn("chromium", runtime.command)
-        prebuilt_runtime = Runtime(prebuilt=True)
-        await mazebench_tools._install_mazebench_in_sandbox(toolset, prebuilt_runtime)
-        self.assertIn("--no-deps --reinstall", prebuilt_runtime.command)
-        self.assertNotIn("uv venv /app/.vf-venv", prebuilt_runtime.command)
-        self.assertIs(
-            mcp_launch._install_in_sandbox,
-            mazebench_tools._install_mazebench_in_sandbox,
-        )
-
     async def _verify_direct_game_controls(self) -> None:
         _taskset, task = await self._bound_task()
         toolset = task.toolsets(task.config)[0]
@@ -246,6 +183,79 @@ class GameRuntimeIsolationTests(unittest.TestCase):
             self.assertNotIn(str(ROOT), json.dumps(started))
         finally:
             await toolset._exit_stack.aclose()
+
+    async def _verify_python_tool(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+
+            class Runtime:
+                async def prepare_setup(self) -> None:
+                    return None
+
+                async def prepare_execution(self, routes: list[str]) -> None:
+                    self.routes = routes
+
+                async def write(self, path: str, value: bytes) -> None:
+                    target = root / path
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(value)
+
+                async def run(self, argv: list[str], env: dict[str, str]):
+                    del env
+                    command = [sys.executable, *argv[5:]]
+                    completed = await asyncio.to_thread(
+                        subprocess.run,
+                        command,
+                        cwd=root,
+                        text=True,
+                        capture_output=True,
+                        check=False,
+                    )
+                    return ProgramResult(
+                        exit_code=completed.returncode,
+                        stdout=completed.stdout,
+                        stderr=completed.stderr,
+                    )
+
+            runtime = Runtime()
+
+            @contextlib.asynccontextmanager
+            async def provision(_config):
+                yield runtime
+
+            task = mazebench_tools.MazeBenchToolTaskset(
+                mazebench_tools.MazeBenchToolConfig(
+                    num_examples=1,
+                    start_level_id="level_HxI",
+                    max_actions=1,
+                    observation_mode="json",
+                    python_tools=True,
+                )
+            ).load()[0]
+            toolset = task.toolsets(task.config)[0]
+            with patch.object(mazebench_tools, "provision_runtime", provision):
+                try:
+                    await toolset.setup_task(task.data)
+                    started = await toolset.start()
+                    result = await toolset.python_exec(
+                        "from pathlib import Path\n"
+                        "Path('note.txt').write_text('kept')\n"
+                        "print(Path('observations/current.json').exists())"
+                    )
+                    persisted = await toolset.python_exec(
+                        "from pathlib import Path\nprint(Path('note.txt').read_text())"
+                    )
+                finally:
+                    await toolset._exit_stack.aclose()
+
+            self.assertEqual(runtime.routes, [])
+            self.assertEqual(
+                started["observation_workspace"]["current_file"],
+                "observations/current.json",
+            )
+            self.assertEqual(result["exit_code"], 0)
+            self.assertEqual(result["stdout"].strip(), "True")
+            self.assertEqual(persisted["stdout"].strip(), "kept")
 
     async def _verify_observation_modes(self) -> None:
         _taskset, json_task = await self._bound_task(observation_mode="json")
@@ -445,6 +455,7 @@ class GameRuntimeIsolationTests(unittest.TestCase):
             traces = episode.traces
             self.assertEqual(len(traces), 1)
             self.assertFalse(traces[0].errors)
+            self.assertEqual(traces[0].num_branches, 1)
             self.assertTrue(
                 traces[0].state.maze_scorecard,
                 traces[0].state.model_dump_json(indent=2),
