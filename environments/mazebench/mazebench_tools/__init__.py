@@ -1026,7 +1026,7 @@ class MazeBenchToolTask(
 
     @classmethod
     def toolsets(cls, config: MazeBenchToolTaskConfig) -> list[vf.Toolset]:
-        return [cls.tools[0](config.tools)]
+        return [toolset(config.tools) for toolset in cls.tools]
 
     @vf.stop
     async def game_over(self, trace: vf.Trace) -> bool:
