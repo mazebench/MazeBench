@@ -94,9 +94,9 @@ Notes:
 - **Python support**: `requires-python = ">=3.9"` with no upper bound — the
   CLI is a stdlib-only launcher, verified on 3.9 through 3.14 (CI smoke-tests
   the wheel on both ends of that range on every run).
-- The `prime` extra depends on `verifiers>=0.1.14` from PyPI (the old direct
+- The `prime` extra depends on `verifiers>=0.3.0,<0.4` from PyPI (the direct
   Git URL would have been rejected by PyPI). Verifiers itself only supports
-  Python `>=3.10,<3.14`, so the extra uses an environment marker: on other
+  Python `>=3.11,<3.14`, so the extra uses an environment marker: on other
   Pythons `pip install mazebench[prime]` still succeeds and simply skips
   verifiers — the prime path shells out to the `prime`/`uv` CLIs anyway, so
   nothing else changes.

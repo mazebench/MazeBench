@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "source": "pinned-prime-verifiers-and-mazebench-adapters",
-  "verifiers_version": "0.2.2.dev56",
-  "verifiers_revision": "b3b8f51ed470e3c46c12bb858ad18d257dc50c5e",
+  "verifiers_version": "0.3.0",
+  "verifiers_revision": "0a4d872f021022310a08ec213a25f4efb4a0244a",
   "policy": "MazeBench uses pinned Verifiers harnesses plus a pinned Prime Agent adapter in isolated Prime runtimes. Each approved route pins its standard harness configuration so the model can reach the named MazeBench game controls without receiving shell, host filesystem, or repository access.",
   "harnesses": [
     {
@@ -20,9 +20,11 @@
       "supports_mcp": true,
       "configurable": [
         "edit",
-        "search"
+        "search",
+        "tool_timeout"
       ],
       "default_config": {
+        "tool_timeout": 600.0,
         "edit": true,
         "search": false
       },
@@ -37,6 +39,12 @@
             "default": false,
             "title": "Search",
             "type": "boolean"
+          },
+          "tool_timeout": {
+            "default": 600.0,
+            "exclusiveMinimum": 0,
+            "title": "Tool Timeout",
+            "type": "number"
           }
         }
       },
@@ -58,9 +66,11 @@
       "supports_mcp": true,
       "configurable": [
         "browser",
-        "cdp_url"
+        "cdp_url",
+        "tool_timeout"
       ],
       "default_config": {
+        "tool_timeout": 600.0,
         "browser": "chromium",
         "cdp_url": null
       },
@@ -86,6 +96,12 @@
             ],
             "default": null,
             "title": "Cdp Url"
+          },
+          "tool_timeout": {
+            "default": 600.0,
+            "exclusiveMinimum": 0,
+            "title": "Tool Timeout",
+            "type": "number"
           }
         }
       },
@@ -106,15 +122,23 @@
       ],
       "supports_mcp": true,
       "configurable": [
+        "tool_timeout",
         "version"
       ],
       "default_config": {
-        "version": "2.1.214"
+        "tool_timeout": 600.0,
+        "version": "2.1.223"
       },
       "config_schema": {
         "properties": {
+          "tool_timeout": {
+            "default": 600.0,
+            "exclusiveMinimum": 0,
+            "title": "Tool Timeout",
+            "type": "number"
+          },
           "version": {
-            "default": "2.1.214",
+            "default": "2.1.223",
             "pattern": "^[A-Za-z0-9._+-]+$",
             "title": "Version",
             "type": "string"
@@ -152,6 +176,53 @@
       "runtime_harness_id": "codex"
     },
     {
+      "id": "hermes_agent",
+      "label": "Hermes Agent",
+      "description": "Prime-provided hermes agent harness.",
+      "launchable": false,
+      "status": "unsafe_agent_tools",
+      "reason": "This harness can expose shell, filesystem, subprocess, or network capabilities beyond MazeBench game tools.",
+      "boundary": "unrestricted-agent-tools",
+      "observation_modes": [
+        "text",
+        "json"
+      ],
+      "supports_mcp": true,
+      "configurable": [
+        "tool_timeout",
+        "use_bundled_skill",
+        "version"
+      ],
+      "default_config": {
+        "tool_timeout": 600.0,
+        "version": "0.19.0",
+        "use_bundled_skill": false
+      },
+      "config_schema": {
+        "properties": {
+          "tool_timeout": {
+            "default": 600.0,
+            "exclusiveMinimum": 0,
+            "title": "Tool Timeout",
+            "type": "number"
+          },
+          "use_bundled_skill": {
+            "default": false,
+            "title": "Use Bundled Skill",
+            "type": "boolean"
+          },
+          "version": {
+            "default": "0.19.0",
+            "pattern": "^[A-Za-z0-9._+-]+$",
+            "title": "Version",
+            "type": "string"
+          }
+        }
+      },
+      "adapter": "unsupported",
+      "runtime_harness_id": ""
+    },
+    {
       "id": "kimi_code",
       "label": "Kimi Code",
       "description": "Prime-provided kimi code harness.",
@@ -165,15 +236,24 @@
       ],
       "supports_mcp": true,
       "configurable": [
+        "tool_timeout",
         "version"
       ],
       "default_config": {
-        "version": "0.29.0"
+        "tool_timeout": 600.0,
+        "version": "0.34.0"
       },
       "config_schema": {
         "properties": {
+          "tool_timeout": {
+            "default": 600.0,
+            "exclusiveMinimum": 0,
+            "title": "Tool Timeout",
+            "type": "number"
+          },
           "version": {
-            "default": "0.29.0",
+            "default": "0.34.0",
+            "pattern": "^[A-Za-z0-9._+-]+$",
             "title": "Version",
             "type": "string"
           }
@@ -220,15 +300,24 @@
       ],
       "supports_mcp": false,
       "configurable": [
+        "tool_timeout",
         "version"
       ],
       "default_config": {
-        "version": "2.4.5"
+        "tool_timeout": 600.0,
+        "version": "2.4.6"
       },
       "config_schema": {
         "properties": {
+          "tool_timeout": {
+            "default": 600.0,
+            "exclusiveMinimum": 0,
+            "title": "Tool Timeout",
+            "type": "number"
+          },
           "version": {
-            "default": "2.4.5",
+            "default": "2.4.6",
+            "pattern": "^[A-Za-z0-9._+-]+$",
             "title": "Version",
             "type": "string"
           }
@@ -250,10 +339,68 @@
         "json"
       ],
       "supports_mcp": true,
-      "configurable": [],
-      "default_config": {},
+      "configurable": [
+        "tool_timeout"
+      ],
+      "default_config": {
+        "tool_timeout": 600.0
+      },
       "config_schema": {
-        "properties": {}
+        "properties": {
+          "tool_timeout": {
+            "default": 600.0,
+            "exclusiveMinimum": 0,
+            "title": "Tool Timeout",
+            "type": "number"
+          }
+        }
+      },
+      "adapter": "unsupported",
+      "runtime_harness_id": ""
+    },
+    {
+      "id": "openclaw",
+      "label": "Openclaw",
+      "description": "Prime-provided openclaw harness.",
+      "launchable": false,
+      "status": "unsafe_agent_tools",
+      "reason": "This harness can expose shell, filesystem, subprocess, or network capabilities beyond MazeBench game tools.",
+      "boundary": "unrestricted-agent-tools",
+      "observation_modes": [
+        "text",
+        "json"
+      ],
+      "supports_mcp": true,
+      "configurable": [
+        "tool_timeout",
+        "use_bundled_skill",
+        "version"
+      ],
+      "default_config": {
+        "tool_timeout": 600.0,
+        "version": "2026.7.1-2",
+        "use_bundled_skill": true
+      },
+      "config_schema": {
+        "properties": {
+          "tool_timeout": {
+            "default": 600.0,
+            "exclusiveMinimum": 0,
+            "title": "Tool Timeout",
+            "type": "number"
+          },
+          "use_bundled_skill": {
+            "default": true,
+            "title": "Use Bundled Skill",
+            "type": "boolean"
+          },
+          "version": {
+            "default": "2026.7.1-2",
+            "pattern": "^[A-Za-z0-9._+-]+$",
+            "title": "Version",
+            "type": "string"
+          }
+        }
       },
       "adapter": "unsupported",
       "runtime_harness_id": ""
@@ -272,15 +419,24 @@
       ],
       "supports_mcp": true,
       "configurable": [
+        "tool_timeout",
         "version"
       ],
       "default_config": {
-        "version": "0.80.10"
+        "tool_timeout": 600.0,
+        "version": "0.84.0"
       },
       "config_schema": {
         "properties": {
+          "tool_timeout": {
+            "default": 600.0,
+            "exclusiveMinimum": 0,
+            "title": "Tool Timeout",
+            "type": "number"
+          },
           "version": {
-            "default": "0.80.10",
+            "default": "0.84.0",
+            "pattern": "^[A-Za-z0-9._+-]+$",
             "title": "Version",
             "type": "string"
           }
@@ -303,15 +459,23 @@
       ],
       "supports_mcp": true,
       "configurable": [
+        "tool_timeout",
         "version"
       ],
       "default_config": {
-        "version": "1.0.11"
+        "tool_timeout": 600.0,
+        "version": "1.0.15"
       },
       "config_schema": {
         "properties": {
+          "tool_timeout": {
+            "default": 600.0,
+            "exclusiveMinimum": 0,
+            "title": "Tool Timeout",
+            "type": "number"
+          },
           "version": {
-            "default": "1.0.11",
+            "default": "1.0.15",
             "pattern": "^[A-Za-z0-9._+-]+$",
             "title": "Version",
             "type": "string"
@@ -338,9 +502,11 @@
         "builtin_skills",
         "max_depth",
         "summarize_at_tokens",
+        "tool_timeout",
         "version"
       ],
       "default_config": {
+        "tool_timeout": 600.0,
         "version": "main",
         "max_depth": 0,
         "builtin_skills": [],
@@ -367,6 +533,7 @@
           "summarize_at_tokens": {
             "anyOf": [
               {
+                "exclusiveMinimum": 0,
                 "type": "integer"
               },
               {
@@ -374,9 +541,11 @@
                 "minItems": 2,
                 "prefixItems": [
                   {
+                    "exclusiveMinimum": 0,
                     "type": "integer"
                   },
                   {
+                    "exclusiveMinimum": 0,
                     "type": "integer"
                   }
                 ],
@@ -389,8 +558,15 @@
             "default": null,
             "title": "Summarize At Tokens"
           },
+          "tool_timeout": {
+            "default": 600.0,
+            "exclusiveMinimum": 0,
+            "title": "Tool Timeout",
+            "type": "number"
+          },
           "version": {
             "default": "main",
+            "minLength": 1,
             "title": "Version",
             "type": "string"
           }
@@ -413,15 +589,24 @@
       ],
       "supports_mcp": false,
       "configurable": [
+        "tool_timeout",
         "version"
       ],
       "default_config": {
+        "tool_timeout": 600.0,
         "version": "0.20.0"
       },
       "config_schema": {
         "properties": {
+          "tool_timeout": {
+            "default": 600.0,
+            "exclusiveMinimum": 0,
+            "title": "Tool Timeout",
+            "type": "number"
+          },
           "version": {
             "default": "0.20.0",
+            "pattern": "^[A-Za-z0-9._+-]+$",
             "title": "Version",
             "type": "string"
           }
@@ -431,5 +616,5 @@
       "runtime_harness_id": ""
     }
   ],
-  "catalog_fingerprint": "474904b7e3e2dd0dd0e473d572667b77918b4215472877279169f61d97a482eb"
+  "catalog_fingerprint": "53f7ff4d72b081fa8f7b376bf112425ed9bf1ce8f536ea8e2f8fe6162e906321"
 }

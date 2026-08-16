@@ -864,7 +864,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "nodejs-wheel", specifier = "==24.16.0" },
-    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=b3b8f51ed470e3c46c12bb858ad18d257dc50c5e" },
+    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=0a4d872f021022310a08ec213a25f4efb4a0244a" },
 ]
 
 [[package]]
@@ -1283,19 +1283,21 @@ toml = [
 
 [[package]]
 name = "prime-sandboxes"
-version = "0.2.34"
+version = "0.2.36"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
+    { name = "certifi" },
     { name = "connect-python" },
     { name = "httpx" },
     { name = "protobuf" },
     { name = "pydantic" },
+    { name = "pyqwest" },
     { name = "tenacity" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d8/85/3bf9aaba1485058ea30821bc26296a0869cd8416f633b10483c8fe897dd5/prime_sandboxes-0.2.34.tar.gz", hash = "sha256:d95e0b320e372f557785d216a572a2af3287136c0e355d6a9728b242897331e7", size = 81225, upload-time = "2026-07-28T20:08:44.026Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d5/c8/ca5261ff5d5c2e944e198866ead91b09bc88eb0390a905925bb6d7f9cd28/prime_sandboxes-0.2.36.tar.gz", hash = "sha256:3a5c8a7912b1ea0fb775674650835f7f86aac1a05aa8566c2db129b9a622fe55", size = 88415, upload-time = "2026-08-12T23:30:15.214Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/df/1e/79149754046add7070dbdc53242a836f6539fbc1da8bbca0c086c2998703/prime_sandboxes-0.2.34-py3-none-any.whl", hash = "sha256:75e0dccd0d310aca759d5de64ccbd732634ca267cf47a12ae0bfc01bc46bfec8", size = 42773, upload-time = "2026-07-28T20:08:42.74Z" },
+    { url = "https://files.pythonhosted.org/packages/0b/26/081296fc8e6d8ce962f2aee0e47ac843982094dedb34a1fad22d10086f37/prime_sandboxes-0.2.36-py3-none-any.whl", hash = "sha256:a5db92d927cf4a3dd37ce230027a9d83dbf21804d4f6ed2255d276c1962fa8f2", size = 49316, upload-time = "2026-08-12T23:30:14.047Z" },
 ]
 
 [[package]]
@@ -1827,7 +1829,7 @@ wheels = [
 
 [[package]]
 name = "renderers"
-version = "0.1.9.dev10"
+version = "0.1.9"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jinja2" },
@@ -1838,9 +1840,9 @@ dependencies = [
     { name = "tiktoken" },
     { name = "transformers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ae/20/9e916532c3f5133514fc6909ff1efd686c6c4bf0e99eab2dc5a10ea87eda/renderers-0.1.9.dev10.tar.gz", hash = "sha256:35c2dac8704661a0b1127cec34a6577b795579d4e8f060ce6563076c24fac18a", size = 349159, upload-time = "2026-07-30T19:49:07.731Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2f/e4/62fd26ceeb0cdd5b1d11d56a9413014f858670902dfb3d976e9860d04c96/renderers-0.1.9.tar.gz", hash = "sha256:f8516f632b1e0a1bf49d6306606c4ed8815a70671c7409ea804e79203c149999", size = 349102, upload-time = "2026-08-07T00:12:01.042Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9f/67/b4ea55e275aae6cb01ef0ed343c9874511de0d8e0173366a0ad7d7f7039f/renderers-0.1.9.dev10-py3-none-any.whl", hash = "sha256:36c4ee952239a71c41fbb3059ee7b1f48e153627937a59d8cb01f6f21695e7ee", size = 192989, upload-time = "2026-07-30T19:49:06.013Z" },
+    { url = "https://files.pythonhosted.org/packages/ba/19/7d09de9b5b37080f31618d0ebfc14c88f08911a804dae28491021e4c2d21/renderers-0.1.9-py3-none-any.whl", hash = "sha256:e31293c60afd3c632c09e41509f3e6403afecd107caa956a26a7dc9d49554335", size = 192920, upload-time = "2026-08-07T00:11:59.609Z" },
 ]
 
 [[package]]
@@ -2349,8 +2351,8 @@ wheels = [
 
 [[package]]
 name = "verifiers"
-version = "0.2.2.dev56"
-source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=b3b8f51ed470e3c46c12bb858ad18d257dc50c5e#b3b8f51ed470e3c46c12bb858ad18d257dc50c5e" }
+version = "0.3.0"
+source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=0a4d872f021022310a08ec213a25f4efb4a0244a#0a4d872f021022310a08ec213a25f4efb4a0244a" }
 dependencies = [
     { name = "aiohttp" },
     { name = "aiolimiter" },

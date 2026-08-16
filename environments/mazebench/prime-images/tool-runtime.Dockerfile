@@ -2,7 +2,7 @@ FROM python:3.13-slim
 
 ARG CODEX_VERSION=0.144.5
 ARG UV_VERSION=0.12.2
-ARG VERIFIERS_REVISION=b3b8f51ed470e3c46c12bb858ad18d257dc50c5e
+ARG VERIFIERS_REVISION=0a4d872f021022310a08ec213a25f4efb4a0244a
 
 ENV PATH="/root/.local/bin:${PATH}"
 ENV UV_LINK_MODE=copy
@@ -19,12 +19,12 @@ COPY mazebench_codex ./mazebench_codex
 COPY mazebench_prime_agent ./mazebench_prime_agent
 COPY mazebench_tools ./mazebench_tools
 
-RUN uv venv /tmp/vf-venv \
-    && uv pip install --python /tmp/vf-venv /opt/mazebench-build \
-    && uv pip install --python /tmp/vf-venv hatchling \
-    && /tmp/vf-venv/bin/python -c \
+RUN uv venv /app/.vf-venv \
+    && uv pip install --python /app/.vf-venv /opt/mazebench-build \
+    && uv pip install --python /app/.vf-venv hatchling \
+    && /app/.vf-venv/bin/python -c \
       "import importlib.metadata as m; assert m.version('nodejs-wheel') == '24.16.0'; assert m.version('verifiers')" \
-    && test -x /tmp/vf-venv/bin/node \
+    && test -x /app/.vf-venv/bin/node \
     && rm -rf /opt/mazebench-build /root/.cache/uv
 
 RUN mkdir -p /tmp/mazebench-python-codex/bin /opt/mazebench-image \

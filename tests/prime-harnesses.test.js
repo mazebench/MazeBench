@@ -67,6 +67,9 @@ try {
   const harnessCatalog = JSON.parse(
     fs.readFileSync(path.join(environmentDir, "prime-harness-catalog.json"), "utf8")
   );
+  const verifiersPin = project.match(
+    /verifiers @ git\+https:\/\/github\.com\/PrimeIntellect-ai\/verifiers\.git@([0-9a-f]{40})/
+  )?.[1];
 
   assert.match(agentSource, /kind: "local",\s*subscription: true,\s*model: localProviderId\(\)/);
   for (const provider of ["codex", "claude", "kimi"]) {
@@ -132,10 +135,8 @@ try {
   assert.match(primeAgentHarnessSource, /class MazeBench\(McpIntegration\)/);
   assert.doesNotMatch(primeAgentHarnessSource, /subprocess|host filesystem|repo_root/);
 
-  assert.match(
-    project,
-    /verifiers @ git\+https:\/\/github\.com\/PrimeIntellect-ai\/verifiers\.git@b3b8f51ed470e3c46c12bb858ad18d257dc50c5e/
-  );
+  assert.match(verifiersPin || "", /^[0-9a-f]{40}$/);
+  assert.equal(harnessCatalog.verifiers_revision, verifiersPin);
   assert.match(retiredTasksetSource, /__all__ = \["MazeBenchAgentTaskset"\]/);
   assert.match(retiredTasksetSource, /raise RuntimeError\(UNSAFE_HARNESS_MESSAGE\)/);
   assert.match(retiredTasksetSource, /Use `mazebench-tools` from/);
@@ -178,6 +179,8 @@ try {
   assert.match(toolsTasksetSource, /MazeBench controls are deliberately direct-only/);
   assert.match(toolsTasksetSource, /class MazeBenchToolTask\(/);
   assert.match(toolsTasksetSource, /class MazeBenchToolTaskset\(/);
+  assert.match(toolsTasksetSource, /def toolsets\(cls, config: MazeBenchToolTaskConfig\)/);
+  assert.doesNotMatch(toolsTasksetSource, /def tool_servers\(|_current_rollout_tool_config/);
   assert.match(toolsTasksetSource, /NEEDS_CONTAINER = True/);
   assert.doesNotMatch(toolsTasksetSource, /_bind_game_only_harness/);
   assert.match(toolsTasksetSource, /"colocated": False/);
@@ -266,7 +269,7 @@ try {
   assert.equal(
     publicHarnesses.every(
       (harness) =>
-        harness.verifiers_revision === "b3b8f51ed470e3c46c12bb858ad18d257dc50c5e"
+        harness.verifiers_revision === verifiersPin
     ),
     true
   );

@@ -6,7 +6,6 @@ import argparse
 import asyncio
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
 import verifiers.v1 as vf
 from mazebench_tools import (
@@ -15,7 +14,7 @@ from mazebench_tools import (
     MazeBenchToolTask,
     MazeBenchToolTaskset,
 )
-from verifiers.v1.decorators import discover_decorated
+from verifiers.v1.utils.decorators import discover_decorated
 
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_TOOLS = {
@@ -63,8 +62,7 @@ async def verify() -> None:
     assert task.data.resume_checkpoint_path == ""
     assert str(ROOT) not in task.data.model_dump_json()
 
-    await task.setup(SimpleNamespace(id="prime-sandbox-self-test"), SimpleNamespace())
-    toolset = task.tool_servers()[0]
+    toolset = task.toolsets(task.config)[0]
     names = {function.__name__ for function in discover_decorated(toolset, "tool")}
     assert names == EXPECTED_TOOLS
 

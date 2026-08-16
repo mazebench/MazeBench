@@ -21,7 +21,7 @@ prime images push mazebench-codex-agent:0.144.5-v3 \
   --context . --dockerfile prime-images/codex-agent.Dockerfile \
   --platform linux/amd64 --private
 
-prime images push mazebench-tool-runtime:py313-codex-0.144.5-vf-b3b8f51-v3 \
+prime images push mazebench-tool-runtime:py313-codex-0.144.5-vf-0a4d872-v4 \
   --context . --dockerfile prime-images/tool-runtime.Dockerfile \
   --platform linux/amd64 --private
 ```

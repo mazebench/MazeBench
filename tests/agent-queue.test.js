@@ -9,6 +9,7 @@ const {
   resolveAgentRunsDir
 } = require("../server/agent-runs");
 const { BOARD_STATE_HASH_VERSION } = require("../shared/board-state");
+const primeHarnessCatalog = require("../environments/mazebench/prime-harness-catalog.json");
 
 const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "mazebench-agent-queue-"));
 assert.equal(
@@ -199,7 +200,7 @@ try {
   assert.equal(customPrimeMeta.harness_boundary, "game-tools-only");
   assert.equal(customPrimeMeta.harness_adapter, "prime_agent_cli");
   assert.equal(customPrimeMeta.harness_taskset, "mazebench-tools");
-  assert.equal(customPrimeMeta.verifiers_revision, "b3b8f51ed470e3c46c12bb858ad18d257dc50c5e");
+  assert.equal(customPrimeMeta.verifiers_revision, primeHarnessCatalog.verifiers_revision);
   assert.match(customPrimeMeta.harness_catalog_fingerprint, /^[0-9a-f]{64}$/);
   assert.deepEqual(customPrimeMeta.launch_params.harness_config, { version: "0.7.0" });
   assert.match(customPrimeMeta.command, /--harness mazebench_prime_agent/);

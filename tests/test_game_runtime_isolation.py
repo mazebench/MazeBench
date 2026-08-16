@@ -13,19 +13,18 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import mazebench_tools
-from mazebench.mazebench import resolve_default_node_bin
 import verifiers.v1.mcp.launch as mcp_launch
 import verifiers.v1.rollout as rollout_module
+from mazebench.mazebench import resolve_default_node_bin
 from mcp.types import CallToolResult, ImageContent
-from verifiers.v1.clients import ModelContext
-from verifiers.v1.clients.eval import EvalClient
+from verifiers.v1.clients import EvalClientConfig, ModelContext
 from verifiers.v1.configs.agent import AgentConfig
-from verifiers.v1.decorators import discover_decorated
 from verifiers.v1.envs.single_agent import SingleAgentEnv, SingleAgentEnvConfig
 from verifiers.v1.harness import HarnessConfig
 from verifiers.v1.runtimes import PrimeConfig, SubprocessConfig
 from verifiers.v1.runtimes.subprocess import SubprocessRuntime
 from verifiers.v1.types import Sampling
+from verifiers.v1.utils.decorators import discover_decorated
 
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_GAME_TOOLS = {
@@ -45,9 +44,7 @@ EXPECTED_GAME_TOOLS = {
     "quit",
     "action_sequence",
 }
-EXPECTED_FRAMEWORK_GAME_TOOLS = {
-    f"mazebench_{name}" for name in EXPECTED_GAME_TOOLS
-}
+EXPECTED_FRAMEWORK_GAME_TOOLS = {f"mazebench_{name}" for name in EXPECTED_GAME_TOOLS}
 
 
 class GameRuntimeIsolationTests(unittest.TestCase):
@@ -100,6 +97,11 @@ class GameRuntimeIsolationTests(unittest.TestCase):
         self.assertEqual(harness.config.id, "null")
         self.assertTrue(harness.SUPPORTS_MCP)
         self.assertTrue(mazebench_tools.MazeBenchToolTask.NEEDS_CONTAINER)
+        self.assertIsInstance(
+            environment.taskset.config.task,
+            mazebench_tools.MazeBenchToolTaskConfig,
+        )
+        self.assertTrue(environment._requires_tunnel({}))
         self.assertFalse(
             (ROOT / "environments/mazebench/mazebench_harnesses/codex.py").exists()
         )
@@ -135,7 +137,7 @@ class GameRuntimeIsolationTests(unittest.TestCase):
             )
         )
 
-    def test_tool_server_requires_rollout_binding(self) -> None:
+    def test_task_declares_the_rollout_toolset(self) -> None:
         taskset = mazebench_tools.MazeBenchToolTaskset(
             mazebench_tools.MazeBenchToolConfig(
                 num_examples=1,
@@ -143,8 +145,12 @@ class GameRuntimeIsolationTests(unittest.TestCase):
             )
         )
         task = taskset.load()[0]
-        with self.assertRaisesRegex(RuntimeError, "active rollout binding"):
-            task.tool_servers()
+        toolsets = task.toolsets(task.config)
+
+        self.assertEqual(len(toolsets), 1)
+        self.assertIsInstance(toolsets[0], mazebench_tools.MazeBenchToolset)
+        self.assertFalse(hasattr(task, "tool_servers"))
+        self.assertEqual(task.data.node_bin, "node")
 
     async def _bound_task(
         self,
@@ -161,18 +167,19 @@ class GameRuntimeIsolationTests(unittest.TestCase):
             )
         )
         task = taskset.load()[0]
-        await task.setup(SimpleNamespace(id=f"test-{id(task)}"), SimpleNamespace())
         return taskset, task
 
     async def _verify_packaged_environment_bootstrap(self) -> None:
         _taskset, task = await self._bound_task()
-        toolset = task.tool_servers()[0]
+        toolset = task.toolsets(task.config)[0]
 
         class Runtime:
             type = "prime"
+            config = SimpleNamespace(workdir="/app")
 
             def __init__(self, *, prebuilt: bool) -> None:
                 self.writes: dict[str, bytes] = {}
+                self.commands: list[str] = []
                 self.command = ""
                 self.prebuilt = prebuilt
 
@@ -182,6 +189,7 @@ class GameRuntimeIsolationTests(unittest.TestCase):
             async def run(self, argv: list[str], env: dict[str, str]):
                 del env
                 self.command = " ".join(argv)
+                self.commands.append(self.command)
                 if "test -f /opt/mazebench-image/tool-runtime" in self.command:
                     return SimpleNamespace(
                         exit_code=0 if self.prebuilt else 1,
@@ -191,22 +199,25 @@ class GameRuntimeIsolationTests(unittest.TestCase):
                 return SimpleNamespace(exit_code=0, stdout="", stderr="")
 
         runtime = Runtime(prebuilt=False)
-        python = await mazebench_tools._install_mazebench_in_sandbox(
-            toolset, runtime
-        )
+        python = await mazebench_tools._install_mazebench_in_sandbox(toolset, runtime)
 
-        self.assertEqual(python, "/tmp/vf-venv/bin/python")
-        self.assertEqual(list(runtime.writes), ["/tmp/vf-src/mazebench.tar.gz"])
+        self.assertEqual(python, "/app/.vf-venv/bin/python")
+        self.assertEqual(len(runtime.writes), 1)
+        uploaded = next(iter(runtime.writes))
+        self.assertTrue(uploaded.startswith("/app/.vf-src/mazebench-"))
+        self.assertTrue(uploaded.endswith(".tar.gz"))
+        self.assertIn(
+            f"verifiers_revision={mazebench_tools.VERIFIERS_REVISION}",
+            runtime.commands[0],
+        )
         self.assertIn("uv pip install", runtime.command)
-        self.assertIn("uv venv /tmp/vf-venv", runtime.command)
-        self.assertIn("/tmp/vf-src/mazebench", runtime.command)
+        self.assertIn("uv venv /app/.vf-venv", runtime.command)
+        self.assertIn(uploaded, runtime.command)
         self.assertNotIn("chromium", runtime.command)
         prebuilt_runtime = Runtime(prebuilt=True)
-        await mazebench_tools._install_mazebench_in_sandbox(
-            toolset, prebuilt_runtime
-        )
+        await mazebench_tools._install_mazebench_in_sandbox(toolset, prebuilt_runtime)
         self.assertIn("--no-deps --reinstall", prebuilt_runtime.command)
-        self.assertNotIn("uv venv /tmp/vf-venv", prebuilt_runtime.command)
+        self.assertNotIn("uv venv /app/.vf-venv", prebuilt_runtime.command)
         self.assertIs(
             mcp_launch._install_in_sandbox,
             mazebench_tools._install_mazebench_in_sandbox,
@@ -214,7 +225,7 @@ class GameRuntimeIsolationTests(unittest.TestCase):
 
     async def _verify_direct_game_controls(self) -> None:
         _taskset, task = await self._bound_task()
-        toolset = task.tool_servers()[0]
+        toolset = task.toolsets(task.config)[0]
         try:
             await toolset.setup_task(task.data)
             started = await toolset.start()
@@ -238,7 +249,7 @@ class GameRuntimeIsolationTests(unittest.TestCase):
 
     async def _verify_observation_modes(self) -> None:
         _taskset, json_task = await self._bound_task(observation_mode="json")
-        json_toolset = json_task.tool_servers()[0]
+        json_toolset = json_task.toolsets(json_task.config)[0]
         try:
             await json_toolset.setup_task(json_task.data)
             observation = (await json_toolset.start())["observation"]
@@ -260,7 +271,7 @@ class GameRuntimeIsolationTests(unittest.TestCase):
                 return None
 
         _taskset, vision_task = await self._bound_task(observation_mode="vision")
-        vision_toolset = vision_task.tool_servers()[0]
+        vision_toolset = vision_task.toolsets(vision_task.config)[0]
         with patch.object(mazebench_tools, "VisionSession", FakeVisionSession):
             try:
                 await vision_toolset.setup_task(vision_task.data)
@@ -360,8 +371,10 @@ class GameRuntimeIsolationTests(unittest.TestCase):
         server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
-        client = EvalClient(
-            f"http://127.0.0.1:{server.server_port}/v1", "fake-provider-key"
+        key_var = "MAZEBENCH_TEST_PROVIDER_KEY"
+        client = EvalClientConfig(
+            base_url=f"http://127.0.0.1:{server.server_port}/v1",
+            api_key_var=key_var,
         )
 
         def local_runtime(_config, name=None):
@@ -409,7 +422,12 @@ class GameRuntimeIsolationTests(unittest.TestCase):
                 if real_prime
                 else patch.object(environment, "_requires_tunnel", return_value=False)
             )
-            with tool_runtime_patch, harness_runtime_patch, tunnel_patch:
+            with (
+                patch.dict(os.environ, {key_var: "fake-provider-key"}),
+                tool_runtime_patch,
+                harness_runtime_patch,
+                tunnel_patch,
+            ):
                 async with environment.serving():
                     episode = await environment.run_episode(
                         task,
@@ -456,7 +474,6 @@ class GameRuntimeIsolationTests(unittest.TestCase):
                     any(part.get("type") == "image_url" for part in content)
                 )
         finally:
-            await client.close()
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)

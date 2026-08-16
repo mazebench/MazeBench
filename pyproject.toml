@@ -35,12 +35,12 @@ Homepage = "https://mazebench.com"
 Source = "https://github.com/mazebench/MazeBenchEngine"
 
 [project.optional-dependencies]
-# The Prime Verifiers library currently supports >=3.10,<3.14; the marker keeps
+# The Prime Verifiers library currently supports >=3.11,<3.14; the marker keeps
 # `pip install mazebench[prime]` from failing on other Pythons (the CLI itself
 # never imports verifiers — the prime path shells out to the `prime`/`uv` CLIs,
 # so everything else works regardless).
 prime = [
-    "verifiers>=0.1.14; python_version >= '3.10' and python_version < '3.14'",
+    "verifiers>=0.3.0,<0.4 ; python_full_version >= '3.11' and python_full_version < '3.14'",
 ]
 
 [project.scripts]

@@ -58,6 +58,7 @@ MAX_ACTION_SEQUENCE_LENGTH = 1_000
 PYTHON_SANDBOX_CODEX_VERSION = "0.144.5"
 PYTHON_SANDBOX_CODEX_DIR = "/tmp/mazebench-python-codex"
 PYTHON_SANDBOX_CODEX_BIN = f"{PYTHON_SANDBOX_CODEX_DIR}/bin/codex"
+VERIFIERS_REVISION = "0a4d872f021022310a08ec213a25f4efb4a0244a"
 PRIME_TOOL_RUNTIME_IMAGE = os.environ.get(
     "MAZEBENCH_PRIME_TOOL_RUNTIME_IMAGE",
     "prime/mazebench/mazebench-tool-runtime:py313-codex-0.144.5-vf-b3b8f51-v3",
@@ -88,7 +89,6 @@ class MazeBenchToolsetConfig(vf.ToolsetConfig):
         )
     )
     url: None = None
-    artifact_nonce: str = ""
     resume_checkpoint: dict[str, Any] | None = None
     vision: bool = False
     python_workspace_path: str = ""
@@ -140,7 +140,9 @@ class MazeBenchPrimeRuntime(PrimeRuntime):
                 ],
                 {},
             )
-            entries = json.loads(listing.stdout or "[]") if listing.exit_code == 0 else []
+            entries = (
+                json.loads(listing.stdout or "[]") if listing.exit_code == 0 else []
+            )
             destination_root = Path(workspace_path).resolve()
             total_bytes = 0
             for candidate in entries[:1_024]:
@@ -169,11 +171,7 @@ class MazeBenchPrimeRuntime(PrimeRuntime):
             metadata_paths = (
                 (activity_path, False),
                 (
-                    str(
-                        Path(activity_path).with_name(
-                            "python-sandbox-preflight.json"
-                        )
-                    ),
+                    str(Path(activity_path).with_name("python-sandbox-preflight.json")),
                     True,
                 ),
             )
@@ -181,7 +179,7 @@ class MazeBenchPrimeRuntime(PrimeRuntime):
             for remote_path, required in metadata_paths:
                 try:
                     data = await self.read(remote_path)
-                except Exception as download_error:
+                except Exception as download_error:  # noqa: BLE001
                     fallback = await self.run(["cat", remote_path], {})
                     if fallback.exit_code != 0:
                         if required:
@@ -199,7 +197,7 @@ class MazeBenchPrimeRuntime(PrimeRuntime):
                     target.parent.mkdir(parents=True, exist_ok=True)
                     target.write_bytes(data)
                     report["metadata_files"].append(target.name)
-        except Exception as error:  # best-effort export must not leak the paid sandbox
+        except Exception as error:  # noqa: BLE001 - export must not leak the paid sandbox
             report["ok"] = False
             report["error"] = str(error)[:500]
         finally:
@@ -224,9 +222,8 @@ def _make_mazebench_runtime(
     if not isinstance(config, vf.PrimeConfig):
         return _verifiers_make_runtime(config, name)
     runtime = MazeBenchPrimeRuntime(config, name)
-    binding = _current_rollout_tool_config.get()
-    if binding is not None:
-        tool_config = binding[2]
+    tool_config = _current_tool_config.get()
+    if tool_config is not None:
         runtime.configure_python_export(
             tool_config.python_workspace_path,
             tool_config.python_activity_path,
@@ -239,13 +236,18 @@ def _make_mazebench_runtime(
 mcp_launch.make_runtime = _make_mazebench_runtime
 
 
-_current_rollout_tool_config: ContextVar[
-    tuple[object, str, MazeBenchToolsetConfig] | None
-] = ContextVar("mazebench_rollout_tool_config", default=None)
+_current_tool_config: ContextVar[MazeBenchToolsetConfig | None] = ContextVar(
+    "mazebench_tool_config", default=None
+)
+
+
+class MazeBenchToolTaskConfig(MazeBenchTaskConfig):
+    tools: MazeBenchToolsetConfig = Field(default_factory=MazeBenchToolsetConfig)
 
 
 class MazeBenchToolConfig(MazeBenchConfig):
     id: str = "mazebench-tools"
+    task: MazeBenchToolTaskConfig = Field(default_factory=MazeBenchToolTaskConfig)
     python_tools: bool = False
     tools: MazeBenchToolsetConfig = Field(default_factory=MazeBenchToolsetConfig)
 
@@ -380,7 +382,9 @@ locate or access them. Do not claim moves or scores that were not returned by th
 
 
 def _tool_system_prompt(*, python_tools: bool = False) -> str:
-    python_policy = " Python tools are available for isolated computation." if python_tools else ""
+    python_policy = (
+        " Python tools are available for isolated computation." if python_tools else ""
+    )
     return (
         "Use only the supplied game controls for game interaction. "
         "Use python_exec only for isolated computation when it is enabled. "
@@ -426,8 +430,6 @@ class MazeBenchToolset(vf.Toolset[MazeBenchToolsetConfig, MazeBenchToolTraceStat
     TOOL_PREFIX = "mazebench"
 
     async def setup_task(self, task: MazeBenchTaskData) -> None:
-        if not self.config.artifact_nonce:
-            raise RuntimeError("MazeBench game tools require a rollout binding.")
         self.task = task
         self._lock = asyncio.Lock()
         self._actions: list[dict[str, Any]] = []
@@ -448,8 +450,7 @@ class MazeBenchToolset(vf.Toolset[MazeBenchToolsetConfig, MazeBenchToolTraceStat
             raise RuntimeError(
                 "The MazeBench tool sandbox has no packaged Node runtime."
             )
-        digest = hashlib.sha256(self.config.artifact_nonce.encode()).hexdigest()[:16]
-        self._run_dir = Path(tempfile.mkdtemp(prefix=f"mazebench-game-{digest}-"))
+        self._run_dir = Path(tempfile.mkdtemp(prefix="mazebench-game-"))
         self._state_path = self._run_dir / "session.json"
         self._exit_stack.callback(shutil.rmtree, self._run_dir, True)
         self._vision_session: VisionSession | None = None
@@ -1061,24 +1062,34 @@ async def _install_mazebench_in_sandbox(server: ServerBase, runtime: vf.Runtime)
 
     if not isinstance(server, MazeBenchToolset):
         return await _verifiers_install_in_sandbox(server, runtime)
-    source_dir = mcp_launch._source_dir(type(server))
-    if source_dir is None:
-        raise RuntimeError("The MazeBench tool server package source is unavailable.")
-    source = Path(source_dir)
-    root = "/tmp/vf-src"
-    await runtime.write(
-        f"{root}/{source.name}.tar.gz",
-        mcp_launch._tar_source(source),
+    source = next(
+        (
+            parent
+            for parent in Path(__file__).resolve().parents
+            if (parent / "pyproject.toml").is_file()
+        ),
+        None,
     )
-    venv = "/tmp/vf-venv"
+    if source is None:
+        raise RuntimeError("The MazeBench tool server package source is unavailable.")
+    source_name, source_data = await mcp_launch._cached_sdist(source)
+    workdir = PurePosixPath(runtime.config.workdir)
+    root = str(workdir / ".vf-src")
+    temp = str(workdir / ".vf-tmp")
+    cache = str(workdir / ".vf-uv-cache")
+    remote_source = f"{root}/{source_name}"
+    await runtime.write(remote_source, source_data)
+    venv = str(workdir / ".vf-venv")
     extras = ",".join(type(server).EXTRAS)
-    package = f"{root}/{source.name}" + (f"[{extras}]" if extras else "")
+    package = remote_source + (f"[{extras}]" if extras else "")
     prebuilt_probe = await runtime.run(
         [
             "sh",
             "-c",
             (
                 f"test -f {shlex.quote(PREBUILT_TOOL_MARKER)} && "
+                f"grep -Fxq {shlex.quote(f'verifiers_revision={VERIFIERS_REVISION}')} "
+                f"{shlex.quote(PREBUILT_TOOL_MARKER)} && "
                 f"test -x {shlex.quote(venv)}/bin/python && "
                 f"test -x {shlex.quote(venv)}/bin/node"
             ),
@@ -1094,8 +1105,7 @@ async def _install_mazebench_in_sandbox(server: ServerBase, runtime: vf.Runtime)
             .replace("{bin}", PYTHON_SANDBOX_CODEX_BIN)
         )
         codex_setup = (
-            f" && ([ -x {shlex.quote(PYTHON_SANDBOX_CODEX_BIN)} ] || "
-            f"( {install} ))"
+            f" && ([ -x {shlex.quote(PYTHON_SANDBOX_CODEX_BIN)} ] || ( {install} ))"
         )
     vision_setup = ""
     if server.config.vision:
@@ -1114,17 +1124,17 @@ async def _install_mazebench_in_sandbox(server: ServerBase, runtime: vf.Runtime)
         logger.info("mazebench: reusing preinstalled tool runtime dependencies")
     else:
         install_package = (
-            f"uv venv {venv} && "
-            f"uv pip install --python {venv} {shlex.quote(package)}"
+            f"uv venv {venv} && uv pip install --python {venv} {shlex.quote(package)}"
         )
         logger.warning(
             "mazebench: prebuilt tool runtime marker missing; using cold dependency install"
         )
     setup = (
-        f"{mcp_launch._ENSURE_UV}; set -e; "
+        f"set -e; mkdir -p {shlex.quote(root)} {shlex.quote(temp)} {shlex.quote(cache)}; "
+        f"export TMPDIR={shlex.quote(temp)} UV_CACHE_DIR={shlex.quote(cache)}; "
+        f"{mcp_launch._ENSURE_UV}; "
         "(command -v git >/dev/null 2>&1 && command -v curl >/dev/null 2>&1) || "
         "(apt-get update -qq && apt-get install -y -qq git curl ca-certificates); "
-        f"tar -xzf {root}/{shlex.quote(source.name)}.tar.gz -C {root} && "
         f"{install_package}"
         f"{codex_setup}"
         f"{vision_setup}"
@@ -1353,10 +1363,6 @@ class MazeBenchToolsetWithPython(MazeBenchToolset):
             return result
 
 
-class MazeBenchToolTaskConfig(MazeBenchTaskConfig):
-    tools: MazeBenchToolsetConfig = Field(default_factory=MazeBenchToolsetConfig)
-
-
 class MazeBenchToolTask(
     MazeBenchTaskBehavior,
     vf.Task[MazeBenchTaskData, MazeBenchToolTraceState, MazeBenchToolTaskConfig],
@@ -1367,24 +1373,10 @@ class MazeBenchToolTask(
     user = None
     NEEDS_CONTAINER = True
 
-    async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
-        del runtime
-        tool_config = self.config.tools.model_copy(
-            update={
-                "artifact_nonce": trace.id,
-                "vision": self.data.observation_mode == "vision",
-            }
-        )
-        _current_rollout_tool_config.set((self, trace.id, tool_config))
-
-    def tool_servers(self) -> list[vf.Toolset]:
-        binding = _current_rollout_tool_config.get()
-        if binding is None or binding[0] is not self:
-            raise RuntimeError(
-                "MazeBench tool servers require an active rollout binding."
-            )
-        server_cls = type(self).tools[0]
-        return [server_cls(binding[2])]
+    @classmethod
+    def toolsets(cls, config: MazeBenchToolTaskConfig) -> list[vf.Toolset]:
+        _current_tool_config.set(config.tools)
+        return [cls.tools[0](config.tools)]
 
     @vf.stop
     async def game_over(self, trace: vf.Trace) -> bool:
@@ -1445,6 +1437,7 @@ class MazeBenchToolTaskset(vf.Taskset[MazeBenchToolTask, MazeBenchToolConfig]):
             tool_config = self.config.tools.model_copy(
                 update={
                     "resume_checkpoint": checkpoint,
+                    "vision": data.observation_mode == "vision",
                     "python_workspace_path": (
                         str(python_workspace) if self.config.python_tools else ""
                     ),
@@ -1477,6 +1470,7 @@ class MazeBenchToolTaskset(vf.Taskset[MazeBenchToolTask, MazeBenchToolConfig]):
                             # These evaluator paths must not be serialized through the
                             # task channel that the harness can authenticate to.
                             "repo_root": "",
+                            "node_bin": "node",
                             "resume_checkpoint_path": "",
                             "observation": "",
                             "prompt": _tool_prompt_with_resume(
