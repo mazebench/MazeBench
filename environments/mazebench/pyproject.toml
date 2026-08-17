@@ -24,8 +24,11 @@ include = [
     "mazebench_prime_agent/**/*.py",
     "mazebench_tools/**/*.py",
     "README.md",
-    "pyproject.toml",
 ]
+
+[tool.hatch.build.targets.wheel.force-include]
+# Verifiers rebuilds non-colocated Toolsets from this wheel-root project.
+"pyproject.toml" = "pyproject.toml"
 
 [tool.hatch.metadata]
 allow-direct-references = true

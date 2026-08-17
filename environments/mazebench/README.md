@@ -99,7 +99,7 @@ prime env install mazebench/mazebench@0.1.18
 MazeBench uses the Verifiers v1 evaluator:
 
 ```bash
-uv run eval mazebench-tools \
+uv run --no-editable eval mazebench-tools \
   -m openai/gpt-4.1-mini \
   -n 1 \
   -r 1 \
@@ -110,6 +110,9 @@ uv run eval mazebench-tools \
   --push false \
   --rich false
 ```
+
+Keep `--no-editable` for sandboxed Toolsets. The wheel installs its project
+metadata at the root Verifiers 0.3 rebuilds before launching the tool server.
 
 Each task returns an ordinary Verifiers Toolset running on the evaluator. The
 selected framework harness runs in its own sandbox and receives only that
@@ -133,7 +136,7 @@ framework-only runtime network policy, leaving only the evaluator-owned game
 MCP server and model interception route reachable. Run one from a checkout with:
 
 ```bash
-uv run --project environments/mazebench eval \
+uv run --no-editable --project environments/mazebench eval \
   @ configs/eval/mazebench-codex-game-only.toml
 ```
 
@@ -296,7 +299,7 @@ Toolset in the public `prime/prime/mazebench-playwright-python:v1.60.0-noble`
 VM image and installs the matching driver from the environment package:
 
 ```bash
-uv run --project environments/mazebench eval mazebench-tools \
+uv run --no-editable --project environments/mazebench eval mazebench-tools \
   -m openai/gpt-4.1-mini \
   -n 1 \
   -r 1 \

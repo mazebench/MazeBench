@@ -787,7 +787,15 @@ function runEval(opts) {
   const liveActionsPath = path.join(opts.outDir, "actions.jsonl");
   const liveReasoningPath = path.join(opts.outDir, "prime-reasoning.jsonl");
   const taskset = "mazebench-tools";
-  const argv = ["run", "--project", opts.envDir, "python", LIVE_EVAL, taskset];
+  const argv = [
+    "run",
+    "--no-editable",
+    "--project",
+    opts.envDir,
+    "python",
+    LIVE_EVAL,
+    taskset
+  ];
 
   let resumeActionCount = 0;
   if (opts.resumeCheckpoint) {

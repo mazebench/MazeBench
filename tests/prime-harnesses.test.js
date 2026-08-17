@@ -120,6 +120,7 @@ try {
     /\["--env\.taskset\.max-actions", "None", "--env\.agent\.max-turns", "None"\]/
   );
   assert.match(runSource, /runEvalWithProviderRetry/);
+  assert.match(runSource, /\[\s*"run",\s*"--no-editable",\s*"--project"/);
   assert.match(runSource, /eval-output-provider-failure/);
   assert.match(liveSource, /MAZEBENCH_EVENT_V1/);
   assert.match(liveSource, /_patch_prime_usage_schema/);
@@ -140,6 +141,10 @@ try {
 
   assert.equal(verifiersVersion, "0.3.0");
   assert.equal(harnessCatalog.verifiers_version, verifiersVersion);
+  assert.match(
+    project,
+    /\[tool\.hatch\.build\.targets\.wheel\.force-include\][\s\S]*"pyproject\.toml" = "pyproject\.toml"/
+  );
   assert.match(retiredTasksetSource, /__all__ = \["MazeBenchAgentTaskset"\]/);
   assert.match(retiredTasksetSource, /raise RuntimeError\(UNSAFE_HARNESS_MESSAGE\)/);
   assert.match(retiredTasksetSource, /Use `mazebench-tools` from/);
