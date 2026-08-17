@@ -23,6 +23,7 @@ from verifiers.v1.configs.agent import AgentConfig
 from verifiers.v1.envs.single_agent import SingleAgentEnv, SingleAgentEnvConfig
 from verifiers.v1.harness import HarnessConfig
 from verifiers.v1.runtimes import PrimeConfig, ProgramResult, SubprocessConfig
+from verifiers.v1.runtimes.prime import PrimeRuntime
 from verifiers.v1.runtimes.subprocess import SubprocessRuntime
 from verifiers.v1.types import Sampling
 from verifiers.v1.utils.decorators import discover_decorated
@@ -67,10 +68,14 @@ class GameRuntimeIsolationTests(unittest.TestCase):
 
         self.assertFalse(config.colocated)
         self.assertIsNone(config.url)
-        self.assertIsInstance(config.runtime, SubprocessConfig)
+        self.assertIsInstance(config.runtime, PrimeConfig)
+        self.assertEqual(
+            config.runtime.image,
+            "mcr.microsoft.com/playwright/python:v1.60.0-noble",
+        )
         self.assertIsInstance(
             mcp_launch.make_runtime(config.runtime),
-            SubprocessRuntime,
+            PrimeRuntime,
         )
 
     def test_taskset_uses_framework_harnesses(self) -> None:
@@ -245,6 +250,7 @@ class GameRuntimeIsolationTests(unittest.TestCase):
                     persisted = await toolset.python_exec(
                         "from pathlib import Path\nprint(Path('note.txt').read_text())"
                     )
+                    blocked = await toolset.python_exec("import _posixsubprocess")
                 finally:
                     await toolset._exit_stack.aclose()
 
@@ -256,6 +262,8 @@ class GameRuntimeIsolationTests(unittest.TestCase):
             self.assertEqual(result["exit_code"], 0)
             self.assertEqual(result["stdout"].strip(), "True")
             self.assertEqual(persisted["stdout"].strip(), "kept")
+            self.assertEqual(blocked["exit_code"], 1)
+            self.assertIn("PermissionError", blocked["stderr"])
 
     async def _verify_observation_modes(self) -> None:
         _taskset, json_task = await self._bound_task(observation_mode="json")
@@ -270,7 +278,8 @@ class GameRuntimeIsolationTests(unittest.TestCase):
             await json_toolset._exit_stack.aclose()
 
         class FakeVisionSession:
-            def __init__(self, *, task) -> None:
+            def __init__(self, *, task, playwright_core) -> None:
+                self.playwright_core = Path(playwright_core)
                 del task
 
             def frame_for_actions(self, actions: list[str]) -> str:
@@ -298,6 +307,10 @@ class GameRuntimeIsolationTests(unittest.TestCase):
                 ]
                 self.assertEqual(len(images), 1)
                 self.assertEqual(images[0].data, "aGVsbG8=")
+                self.assertEqual(
+                    vision_toolset._vision_session.playwright_core.name,
+                    "index.mjs",
+                )
             finally:
                 await vision_toolset._exit_stack.aclose()
 

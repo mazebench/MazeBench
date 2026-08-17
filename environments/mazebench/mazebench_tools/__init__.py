@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 from typing import Annotated, Any
 
+import playwright
 import verifiers.v1 as vf
 from mazebench.mazebench import (
     GAME_WON_GEM_COUNT,
@@ -41,11 +42,19 @@ BoundedActionSequence = Annotated[
     list[BoundedAction], Field(min_length=1, max_length=MAX_ACTION_SEQUENCE_LENGTH)
 ]
 WorldCoordinate = Annotated[str, Field(pattern=r"^[A-Za-z]$")]
+PLAYWRIGHT_RUNTIME_IMAGE = "mcr.microsoft.com/playwright/python:v1.60.0-noble"
 
 
 class MazeBenchToolsetConfig(vf.ToolsetConfig):
     """Evaluator-only data used to start one rollout's tool server."""
 
+    runtime: vf.RuntimeConfig = Field(
+        default_factory=lambda: vf.PrimeConfig(
+            image=PLAYWRIGHT_RUNTIME_IMAGE,
+            workdir="/app",
+            vm=True,
+        )
+    )
     resume_checkpoint: dict[str, Any] | None = None
 
 
@@ -250,13 +259,24 @@ class MazeBenchToolset(vf.Toolset[MazeBenchToolsetConfig, MazeBenchState]):
         self._exit_stack.callback(shutil.rmtree, self._run_dir, True)
         self._vision_session: VisionSession | None = None
         if task.observation_mode == "vision":
+            playwright_core = (
+                Path(playwright.__file__).resolve().parent
+                / "driver"
+                / "package"
+                / "index.mjs"
+            )
+            if not playwright_core.is_file():
+                raise RuntimeError("The packaged Playwright driver is incomplete.")
             vision_task = task.model_copy(
                 update={
                     "node_bin": str(self._node),
                     "repo_root": str(self._runtime_root),
                 }
             )
-            self._vision_session = VisionSession(task=vision_task)
+            self._vision_session = VisionSession(
+                task=vision_task,
+                playwright_core=playwright_core,
+            )
             self._exit_stack.callback(self._vision_session.close)
 
         args = [
@@ -879,12 +899,11 @@ class MazeBenchToolsetWithPython(MazeBenchToolset):
         preflight = await self._run_python(
             """from pathlib import Path
 import socket
-import subprocess
 
 checks = []
 for operation in (
     lambda: Path('/etc/hosts').read_text(),
-    lambda: subprocess.run(['/bin/true']),
+    lambda: __import__('_posixsubprocess'),
     lambda: socket.create_connection(('127.0.0.1', 9)),
 ):
     try:
@@ -925,6 +944,8 @@ def allowed(path, write=False):
     return inside(candidate, workspace) or (not write and any(inside(candidate, root) for root in runtime))
 
 def audit(event, args):
+    if event == "import" and args and args[0] == "_posixsubprocess":
+        raise PermissionError("operation unavailable in python_exec")
     if event.startswith(("subprocess.", "ctypes.", "socket.")) or event in {
         "os.exec", "os.fork", "os.forkpty", "os.posix_spawn", "os.spawn", "os.system", "pty.spawn"
     }:
@@ -955,6 +976,7 @@ for kind, limit in (
         resource.setrlimit(kind, (limit, limit))
     except (OSError, ValueError):
         pass
+sys.modules.pop("_posixsubprocess", None)
 sys.addaudithook(audit)
 os.environ.clear()
 os.environ.update({"HOME": workspace, "TMPDIR": workspace, "PATH": "/usr/local/bin:/usr/bin:/bin"})

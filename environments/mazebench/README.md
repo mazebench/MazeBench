@@ -25,7 +25,11 @@ Models navigate a real JavaScript maze world one action at a time, preserve stat
 | Shell, filesystem, subprocess, network, and Python tools | Not available | Not available |
 | Built-in coding harnesses and swarm modes | Not available | Not available |
 
-The package brings its own Node runtime for the JavaScript maze engine. Perspective vision additionally needs `playwright-core` and a compatible Chromium binary, which Prime's current Hosted Training image does not provide. Until that renderer is self-contained and tested, use ASCII mode for Hosted Training. Local game-agent runs render vision on the trusted evaluator and return each frame as an MCP image result.
+The package brings its own Node runtime for the JavaScript maze engine. Native v1
+vision evaluations run the evaluator-owned Toolset in the version-matched stock
+Playwright image; the environment package supplies the matching Playwright driver.
+The classic Hosted Training adapter remains ASCII/JSON-only. Local game-agent runs
+render vision on the trusted evaluator and return each frame as an MCP image result.
 
 ## The task
 
@@ -283,12 +287,13 @@ conditional: they assume subsequent actions keep revisiting already observed
 states. Reaching a new state raises the novelty rate and can move the cutoff
 farther away.
 
-## Experimental local vision
+## Experimental vision
 
 Vision mode uses the same persistent game state, commands, stop conditions, rewards, and metrics as ASCII mode. Instead of an ASCII board, the model receives a short non-positional status message and a perspective PNG frame.
 
-Vision renders on the evaluator that owns the game Toolset, so that evaluator
-must provide `playwright-core` and a compatible Chromium binary:
+Vision renders in the evaluator-owned game Toolset. MazeBench provisions that
+Toolset with the stock Playwright Python image and installs the matching driver
+from the environment package:
 
 ```bash
 uv run --project environments/mazebench eval mazebench-tools \
@@ -328,9 +333,9 @@ tools have no shell or host-filesystem path and it also runs in a fresh Prime
 sandbox.
 Only the evaluator-owned tool server can update trusted game state through
 Verifiers' private per-rollout state channel. `Task.toolsets` constructs that
-server directly with the standard subprocess Toolset runtime; the Node game is
-its child process and never enters the agent sandbox. Verifiers connects it to
-the agent harness as named controls: `start`, `observe`, movement, camera
+server directly in a stock Playwright Prime VM; the Node game is its child
+process and never enters the agent sandbox. Verifiers connects it to the agent
+harness as named controls: `start`, `observe`, movement, camera
 rotation, recovery, level navigation, `quit`, and `action_sequence`. When
 `python_tools` is enabled, the Toolset additionally owns one fresh zero-egress
 Prime VM whose only persistent storage is that rollout's Python scratch

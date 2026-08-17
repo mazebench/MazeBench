@@ -172,7 +172,12 @@ try {
   assert.match(toolsTasksetSource, /class MazeBenchToolsetConfig\(vf\.ToolsetConfig\)/);
   assert.match(toolsTasksetSource, /tools: MazeBenchToolsetConfig/);
   assert.doesNotMatch(toolsTasksetSource, /PrimeRuntime|mcp_launch|_install_.*sandbox/);
-  assert.doesNotMatch(toolsTasksetSource, /runtime: vf\.RuntimeConfig|url: None|self\.config\.tools/);
+  assert.match(
+    toolsTasksetSource,
+    /mcr\.microsoft\.com\/playwright\/python:v1\.60\.0-noble/
+  );
+  assert.doesNotMatch(toolsTasksetSource, /url: None|self\.config\.tools/);
+  assert.match(project, /"playwright==1\.60\.0"/);
   assert.match(toolsTasksetSource, /python_tools: bool = False/);
   assert.match(toolsTasksetSource, /provision_runtime\(/);
   assert.match(toolsTasksetSource, /vf\.PrimeConfig\([\s\S]*vm=True,[\s\S]*allow=\[\]/);

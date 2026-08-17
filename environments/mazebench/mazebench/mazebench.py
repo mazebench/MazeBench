@@ -848,7 +848,12 @@ class VisionSession:
     """Persistent maze-render-frame.js --serve session: one server + headless
     browser per rollout, with actions applied incrementally between frames."""
 
-    def __init__(self, *, task: MazeBenchTaskData) -> None:
+    def __init__(
+        self,
+        *,
+        task: MazeBenchTaskData,
+        playwright_core: str | Path | None = None,
+    ) -> None:
         self.repo_root = Path(task.repo_root or find_repo_root())
         self.timeout_seconds = max(30, int(task.timeout_seconds))
         self.init_payload = {
@@ -875,6 +880,11 @@ class VisionSession:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             encoding="utf8",
+            env=(
+                {**os.environ, "MAZEBENCH_PLAYWRIGHT_CORE": str(playwright_core)}
+                if playwright_core
+                else None
+            ),
             start_new_session=os.name == "posix",
         )
         try:

@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const http = require("node:http");
 const path = require("node:path");
 const readline = require("node:readline");
+const { pathToFileURL } = require("node:url");
 const {
   cleanupPlaywrightProfile,
   findPlaywrightBrowserChildren,
@@ -360,7 +361,10 @@ async function setCameraView(session) {
 }
 
 async function createRenderSession(payload) {
-  const { chromium } = await import("playwright-core");
+  const playwrightCore = process.env.MAZEBENCH_PLAYWRIGHT_CORE;
+  const { chromium } = await import(
+    playwrightCore ? pathToFileURL(playwrightCore).href : "playwright-core"
+  );
   const options = normalizeRenderOptions(payload);
   const server = await startServer();
   let browser = null;
