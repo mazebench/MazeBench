@@ -292,8 +292,8 @@ farther away.
 Vision mode uses the same persistent game state, commands, stop conditions, rewards, and metrics as ASCII mode. Instead of an ASCII board, the model receives a short non-positional status message and a perspective PNG frame.
 
 Vision renders in the evaluator-owned game Toolset. MazeBench provisions that
-Toolset with the stock Playwright Python image and installs the matching driver
-from the environment package:
+Toolset in the public `prime/prime/mazebench-playwright-python:v1.60.0-noble`
+VM image and installs the matching driver from the environment package:
 
 ```bash
 uv run --project environments/mazebench eval mazebench-tools \
@@ -333,13 +333,13 @@ tools have no shell or host-filesystem path and it also runs in a fresh Prime
 sandbox.
 Only the evaluator-owned tool server can update trusted game state through
 Verifiers' private per-rollout state channel. `Task.toolsets` constructs that
-server directly in a stock Playwright Prime VM; the Node game is its child
+server directly in the public MazeBench Playwright Prime VM; the Node game is its child
 process and never enters the agent sandbox. Verifiers connects it to the agent
 harness as named controls: `start`, `observe`, movement, camera
 rotation, recovery, level navigation, `quit`, and `action_sequence`. When
 `python_tools` is enabled, the Toolset additionally owns one fresh zero-egress
-Prime VM whose only persistent storage is that rollout's Python scratch
-workspace.
+VM from the same public image whose only persistent storage is that rollout's
+Python scratch workspace.
 
 Scoring is finalized after the model exits. The agent-facing server exposes no
 generic single-action string multiplexer, scorecard, or filesystem operation.

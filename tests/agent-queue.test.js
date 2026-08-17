@@ -200,7 +200,7 @@ try {
   assert.equal(customPrimeMeta.harness_boundary, "game-tools-only");
   assert.equal(customPrimeMeta.harness_adapter, "prime_agent_cli");
   assert.equal(customPrimeMeta.harness_taskset, "mazebench-tools");
-  assert.equal(customPrimeMeta.verifiers_revision, primeHarnessCatalog.verifiers_revision);
+  assert.equal(customPrimeMeta.verifiers_version, primeHarnessCatalog.verifiers_version);
   assert.match(customPrimeMeta.harness_catalog_fingerprint, /^[0-9a-f]{64}$/);
   assert.deepEqual(customPrimeMeta.launch_params.harness_config, { version: "0.7.0" });
   assert.match(customPrimeMeta.command, /--harness mazebench_prime_agent/);

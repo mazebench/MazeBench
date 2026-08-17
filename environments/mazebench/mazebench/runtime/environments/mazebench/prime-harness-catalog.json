@@ -1,9 +1,8 @@
 {
   "schema_version": 1,
-  "source": "pinned-prime-verifiers-and-mazebench-adapters",
+  "source": "verifiers-release-and-mazebench-adapters",
   "verifiers_version": "0.3.0",
-  "verifiers_revision": "0a4d872f021022310a08ec213a25f4efb4a0244a",
-  "policy": "MazeBench uses pinned Verifiers harnesses plus a pinned Prime Agent adapter in isolated Prime runtimes. Each approved route pins its standard harness configuration so the model can reach the named MazeBench game controls without receiving shell, host filesystem, or repository access.",
+  "policy": "MazeBench uses the declared Verifiers release plus a pinned Prime Agent adapter in isolated Prime runtimes. Each approved route pins its standard harness configuration so the model can reach the named MazeBench game controls without receiving shell, host filesystem, or repository access.",
   "harnesses": [
     {
       "id": "bash",
@@ -616,5 +615,5 @@
       "runtime_harness_id": ""
     }
   ],
-  "catalog_fingerprint": "53f7ff4d72b081fa8f7b376bf112425ed9bf1ce8f536ea8e2f8fe6162e906321"
+  "catalog_fingerprint": "ce105664cda79ae4d4e51f8c06ccb70dde8dc94a7a0d116b25e04627a52f5613"
 }

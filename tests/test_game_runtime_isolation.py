@@ -16,7 +16,6 @@ from unittest.mock import patch
 import mazebench_tools
 import verifiers.v1.mcp.launch as mcp_launch
 import verifiers.v1.rollout as rollout_module
-from mazebench.mazebench import resolve_default_node_bin
 from mcp.types import CallToolResult, ImageContent
 from verifiers.v1.clients import EvalClientConfig, ModelContext
 from verifiers.v1.configs.agent import AgentConfig
@@ -50,18 +49,8 @@ EXPECTED_FRAMEWORK_GAME_TOOLS = {f"mazebench_{name}" for name in EXPECTED_GAME_T
 
 
 class GameRuntimeIsolationTests(unittest.TestCase):
-    def test_default_node_uses_the_packaged_python_sibling(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_dir:
-            bin_dir = Path(temporary_dir) / "bin"
-            bin_dir.mkdir()
-            python = bin_dir / "python"
-            node = bin_dir / "node"
-            node.touch()
-
-            self.assertEqual(resolve_default_node_bin(python), str(node))
-
-            node.unlink()
-            self.assertEqual(resolve_default_node_bin(python), "node")
+    def test_task_config_keeps_the_node_command_portable(self) -> None:
+        self.assertEqual(mazebench_tools.MazeBenchToolConfig().node_bin, "node")
 
     def test_tool_server_stays_on_the_evaluator(self) -> None:
         config = mazebench_tools.MazeBenchToolsetConfig()
@@ -71,8 +60,9 @@ class GameRuntimeIsolationTests(unittest.TestCase):
         self.assertIsInstance(config.runtime, PrimeConfig)
         self.assertEqual(
             config.runtime.image,
-            "mcr.microsoft.com/playwright/python:v1.60.0-noble",
+            "prime/prime/mazebench-playwright-python:v1.60.0-noble",
         )
+        self.assertTrue(config.runtime.vm)
         self.assertIsInstance(
             mcp_launch.make_runtime(config.runtime),
             PrimeRuntime,
@@ -84,7 +74,7 @@ class GameRuntimeIsolationTests(unittest.TestCase):
                 taskset=mazebench_tools.MazeBenchToolConfig(num_examples=1),
                 agent=AgentConfig(
                     harness=HarnessConfig(id="null"),
-                    runtime=PrimeConfig(image="python:3.13-slim"),
+                    runtime=PrimeConfig(image="python:3.13-slim", vm=True),
                 ),
             )
         )
@@ -225,7 +215,12 @@ class GameRuntimeIsolationTests(unittest.TestCase):
             runtime = Runtime()
 
             @contextlib.asynccontextmanager
-            async def provision(_config):
+            async def provision(config):
+                self.assertEqual(
+                    config.image,
+                    "prime/prime/mazebench-playwright-python:v1.60.0-noble",
+                )
+                self.assertTrue(config.vm)
                 yield runtime
 
             task = mazebench_tools.MazeBenchToolTaskset(
@@ -416,7 +411,7 @@ class GameRuntimeIsolationTests(unittest.TestCase):
                     ),
                     agent=AgentConfig(
                         harness=HarnessConfig(id="null"),
-                        runtime=PrimeConfig(image="python:3.13-slim"),
+                        runtime=PrimeConfig(image="python:3.13-slim", vm=True),
                         max_turns=4,
                     ),
                 )

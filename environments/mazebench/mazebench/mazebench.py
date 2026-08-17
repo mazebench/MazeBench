@@ -10,7 +10,6 @@ import select
 import shlex
 import signal
 import subprocess
-import sys
 from datetime import datetime, timezone
 from importlib.resources import files
 from pathlib import Path
@@ -60,14 +59,7 @@ DEFAULT_VIEW = "top-diagonal"
 DEFAULT_YAW = 0
 
 
-def resolve_default_node_bin(
-    python_executable: str | Path | None = None,
-) -> str:
-    packaged_node = Path(python_executable or sys.executable).with_name("node")
-    return str(packaged_node) if packaged_node.is_file() else "node"
-
-
-DEFAULT_NODE_BIN = resolve_default_node_bin()
+DEFAULT_NODE_BIN = "node"
 DEFAULT_TIMEOUT_SECONDS = 20
 DEFAULT_MAX_ACTIONS = env_int("MAZEBENCH_MAX_ACTIONS", 256, minimum=1)
 DEFAULT_TARGET_GEMS = 0

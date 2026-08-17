@@ -904,7 +904,7 @@ dependencies = [
 requires-dist = [
     { name = "nodejs-wheel", specifier = "==24.16.0" },
     { name = "playwright", specifier = "==1.60.0" },
-    { name = "verifiers", git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=0a4d872f021022310a08ec213a25f4efb4a0244a" },
+    { name = "verifiers", specifier = "==0.3.0" },
 ]
 
 [[package]]
@@ -2423,7 +2423,7 @@ wheels = [
 [[package]]
 name = "verifiers"
 version = "0.3.0"
-source = { git = "https://github.com/PrimeIntellect-ai/verifiers.git?rev=0a4d872f021022310a08ec213a25f4efb4a0244a#0a4d872f021022310a08ec213a25f4efb4a0244a" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
     { name = "aiolimiter" },
@@ -2451,6 +2451,10 @@ dependencies = [
     { name = "tomli-w" },
     { name = "typing-extensions" },
     { name = "uvloop", marker = "platform_python_implementation != 'PyPy' and sys_platform != 'cygwin' and sys_platform != 'win32'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/1a/f8/931fb47ced84527a0f2b79f4cac8e6642dd88272fa232103db1e663c0f5a/verifiers-0.3.0.tar.gz", hash = "sha256:5070817dabfa099e7426095f8b730cfd065e8e1a32a50c538821932571bc5f9d", size = 821665, upload-time = "2026-08-07T17:08:06.877Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/49/24/698b412510011504d74f98217054d3b59a71998e609f0c3db9df16969532/verifiers-0.3.0-py3-none-any.whl", hash = "sha256:b4c734c962a48afc1f9e836f20c04b1790b168ec8d47dbbefe45d175ecc58569", size = 861293, upload-time = "2026-08-07T17:08:05.094Z" },
 ]
 
 [[package]]

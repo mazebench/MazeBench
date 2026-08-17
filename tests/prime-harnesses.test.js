@@ -67,9 +67,7 @@ try {
   const harnessCatalog = JSON.parse(
     fs.readFileSync(path.join(environmentDir, "prime-harness-catalog.json"), "utf8")
   );
-  const verifiersPin = project.match(
-    /verifiers @ git\+https:\/\/github\.com\/PrimeIntellect-ai\/verifiers\.git@([0-9a-f]{40})/
-  )?.[1];
+  const verifiersVersion = project.match(/verifiers==([0-9.]+)/)?.[1];
 
   assert.match(agentSource, /kind: "local",\s*subscription: true,\s*model: localProviderId\(\)/);
   for (const provider of ["codex", "claude", "kimi"]) {
@@ -140,8 +138,8 @@ try {
   assert.match(primeAgentHarnessSource, /class MazeBench\(McpIntegration\)/);
   assert.doesNotMatch(primeAgentHarnessSource, /subprocess|host filesystem|repo_root/);
 
-  assert.match(verifiersPin || "", /^[0-9a-f]{40}$/);
-  assert.equal(harnessCatalog.verifiers_revision, verifiersPin);
+  assert.equal(verifiersVersion, "0.3.0");
+  assert.equal(harnessCatalog.verifiers_version, verifiersVersion);
   assert.match(retiredTasksetSource, /__all__ = \["MazeBenchAgentTaskset"\]/);
   assert.match(retiredTasksetSource, /raise RuntimeError\(UNSAFE_HARNESS_MESSAGE\)/);
   assert.match(retiredTasksetSource, /Use `mazebench-tools` from/);
@@ -174,7 +172,7 @@ try {
   assert.doesNotMatch(toolsTasksetSource, /PrimeRuntime|mcp_launch|_install_.*sandbox/);
   assert.match(
     toolsTasksetSource,
-    /mcr\.microsoft\.com\/playwright\/python:v1\.60\.0-noble/
+    /prime\/prime\/mazebench-playwright-python:v1\.60\.0-noble/
   );
   assert.doesNotMatch(toolsTasksetSource, /url: None|self\.config\.tools/);
   assert.match(project, /"playwright==1\.60\.0"/);
@@ -274,7 +272,7 @@ try {
   assert.equal(
     publicHarnesses.every(
       (harness) =>
-        harness.verifiers_revision === verifiersPin
+        harness.verifiers_version === verifiersVersion
     ),
     true
   );

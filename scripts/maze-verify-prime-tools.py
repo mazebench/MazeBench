@@ -40,7 +40,11 @@ async def verify() -> None:
     config = MazeBenchToolsetConfig()
     assert config.colocated is False
     assert config.url is None
-    assert isinstance(config.runtime, vf.SubprocessConfig)
+    assert isinstance(config.runtime, vf.PrimeConfig)
+    assert config.runtime.image == (
+        "prime/prime/mazebench-playwright-python:v1.60.0-noble"
+    )
+    assert config.runtime.vm is True
 
     taskset = MazeBenchToolTaskset(
         MazeBenchToolConfig(

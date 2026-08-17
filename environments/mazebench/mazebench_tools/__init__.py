@@ -42,7 +42,7 @@ BoundedActionSequence = Annotated[
     list[BoundedAction], Field(min_length=1, max_length=MAX_ACTION_SEQUENCE_LENGTH)
 ]
 WorldCoordinate = Annotated[str, Field(pattern=r"^[A-Za-z]$")]
-PLAYWRIGHT_RUNTIME_IMAGE = "mcr.microsoft.com/playwright/python:v1.60.0-noble"
+PLAYWRIGHT_RUNTIME_IMAGE = "prime/prime/mazebench-playwright-python:v1.60.0-noble"
 
 
 class MazeBenchToolsetConfig(vf.ToolsetConfig):
@@ -884,7 +884,7 @@ class MazeBenchToolsetWithPython(MazeBenchToolset):
         self._python_runtime = await self._exit_stack.enter_async_context(
             provision_runtime(
                 vf.PrimeConfig(
-                    image="python:3.13-slim",
+                    image=PLAYWRIGHT_RUNTIME_IMAGE,
                     workdir="/workspace",
                     vm=True,
                     allow=[],

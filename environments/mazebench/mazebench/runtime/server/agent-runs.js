@@ -102,7 +102,6 @@ function normalizeEventTimestamp(value) {
 
 const VIEW_NAMES = ["top", "top-diagonal", "diagonal", "side-diagonal", "side"];
 const PRIME_HARNESS_CATALOG = require("../environments/mazebench/prime-harness-catalog.json");
-const VERIFIED_VERIFIERS_REVISION = PRIME_HARNESS_CATALOG.verifiers_revision;
 const PRIME_HARNESSES = new Map(
   PRIME_HARNESS_CATALOG.harnesses.map((definition) => [definition.id, {
     ...definition,
@@ -235,8 +234,7 @@ function publicPrimeHarnesses() {
       supports_mcp: Boolean(definition.supports_mcp),
       status: definition.status || (definition.launchable ? "compatible" : "catalog_error"),
       catalog_fingerprint: PRIME_HARNESS_CATALOG.catalog_fingerprint,
-      verifiers_version: PRIME_HARNESS_CATALOG.verifiers_version,
-      verifiers_revision: VERIFIED_VERIFIERS_REVISION
+      verifiers_version: PRIME_HARNESS_CATALOG.verifiers_version
     }));
 }
 
@@ -4944,7 +4942,6 @@ function createAgentRunService({
   function listPrimeHarnesses() {
     return {
       harnesses: publicPrimeHarnesses(),
-      verifiers_revision: VERIFIED_VERIFIERS_REVISION,
       verifiers_version: PRIME_HARNESS_CATALOG.verifiers_version,
       catalog_fingerprint: PRIME_HARNESS_CATALOG.catalog_fingerprint,
       policy: PRIME_HARNESS_CATALOG.policy
@@ -5466,7 +5463,6 @@ function createAgentRunService({
           harness_runtime_image: command.runtimeImage,
           harness_taskset: command.taskset,
           verifiers_version: command.verifiersVersion,
-          verifiers_revision: VERIFIED_VERIFIERS_REVISION,
           game_id: "maze",
           game_title: "Maze Bench Environment",
           level_id: command.levelId,
@@ -5500,7 +5496,7 @@ function createAgentRunService({
             harness_adapter: command.harnessAdapter,
             harness_runtime_id: command.runtimeHarnessId,
             harness_catalog_fingerprint: command.harnessCatalogFingerprint,
-            verifiers_revision: VERIFIED_VERIFIERS_REVISION,
+            verifiers_version: command.verifiersVersion,
             tools: command.toolUse === "offline",
             tool_use: command.toolUse,
             auto_run_tools: command.autoRunTools,
