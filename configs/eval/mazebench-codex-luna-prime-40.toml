@@ -20,7 +20,7 @@ allow_quit = true
 type = "prime"
 image = "prime/prime/mazebench-playwright-python:v1.60.0-noble"
 workdir = "/app"
-vm = false
+vm = true
 region = "us"
 
 [env.agent]
