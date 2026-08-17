@@ -1,0 +1,58 @@
+# Run with:
+# uv run --no-editable --project environments/mazebench eval @ configs/eval/mazebench-codex-luna-prime-40.toml
+model = "openai/gpt-5.6-luna"
+num_tasks = 1
+num_rollouts = 1
+max_concurrent = 1
+push = true
+rich = false
+
+[env.taskset]
+id = "mazebench-tools"
+num_examples = 1
+start_level_id = "level_HxI"
+game_won_gem_count = 100
+max_actions = 40
+observation_mode = "ascii"
+allow_quit = true
+
+[env.taskset.task.tools.runtime]
+type = "prime"
+image = "prime/prime/mazebench-playwright-python:v1.60.0-noble"
+workdir = "/app"
+vm = false
+region = "us"
+
+[env.agent]
+max_turns = 160
+
+[env.agent.harness]
+id = "codex"
+version = "0.144.5"
+multi_agent = false
+disabled_tools = [
+  "apps",
+  "browser_use",
+  "computer_use",
+  "goals",
+  "image_generation",
+  "in_app_browser",
+  "memories",
+  "multi_agent",
+  "plugins",
+  "remote_plugin",
+  "shell_tool",
+  "standalone_web_search",
+  "tool_search",
+  "tool_suggest",
+  "workspace_dependencies",
+]
+
+[env.agent.runtime]
+type = "prime"
+vm = true
+region = "us"
+allow = []
+
+[sampling]
+reasoning_effort = "medium"
