@@ -424,6 +424,20 @@ const isolatedClaudeConfig = {
 };
 const isolatedClaude = agentCommand(isolatedClaudeConfig, buildMcpPrompt(isolatedClaudeConfig));
 assert.equal(assertLocalClaudeCommandIsolation(isolatedClaudeConfig, isolatedClaude), true);
+const isolatedOxConfig = {
+  ...isolatedClaudeConfig,
+  inference: "openrouter",
+  modelName: "stealth/ox-alpha",
+  reasoning: "max"
+};
+const isolatedOx = agentCommand(isolatedOxConfig, buildMcpPrompt(isolatedOxConfig));
+assert.equal(assertLocalClaudeCommandIsolation(isolatedOxConfig, isolatedOx), true);
+assert.equal(isolatedOx.argv[isolatedOx.argv.indexOf("--model") + 1], "stealth/ox-alpha");
+assert.equal(isolatedOx.argv[isolatedOx.argv.indexOf("--effort") + 1], "max");
+assert.match(localAgentSource, /ANTHROPIC_BASE_URL: "https:\/\/openrouter\.ai\/api"/);
+assert.match(localAgentSource, /ANTHROPIC_AUTH_TOKEN: key/);
+assert.match(localAgentSource, /--ro-bind", authFile, "\/home\/pwuser\/\.claude\/openrouter-key"/);
+assert.doesNotMatch(localAgentSource, /OPENROUTER_API_KEY=\$\{/);
 const isolatedClaudeToolsConfig = { ...isolatedClaudeConfig, toolUse: "offline", tools: true };
 const isolatedClaudeTools = agentCommand(isolatedClaudeToolsConfig, buildMcpPrompt(isolatedClaudeToolsConfig));
 assert.equal(assertLocalClaudeCommandIsolation(isolatedClaudeToolsConfig, isolatedClaudeTools), true);

@@ -566,9 +566,18 @@ function createAgentRunService({
   function requireLocalSubscription(params) {
     if (!(params?.subscription === true || params?.subscription === "true")) return;
     const provider = String(params.model || "").toLowerCase();
+    const inference = String(params.inference || "subscription").trim().toLowerCase();
     const environment = typeof agentEnvironment === "function"
       ? agentEnvironment({ fresh: true })
       : {};
+    if (inference === "openrouter") {
+      if (provider !== "claude" || !environment.openrouter_authenticated) {
+        throw new Error(
+          "Ox Alpha needs an OpenRouter API key. Set OPENROUTER_API_KEY, restart MazeBench, then refresh the Agent page."
+        );
+      }
+      return;
+    }
     if (!environment[provider]) {
       const label = { claude: "Claude Code", kimi: "Kimi Code", codex: "Codex" }[provider] || provider;
       const login = { claude: "claude auth login", kimi: "kimi login", codex: "codex login" }[provider] || "";
@@ -581,6 +590,9 @@ function createAgentRunService({
     if (!(params?.subscription === true || params?.subscription === "true")) return environment;
     for (const key of ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "CODEX_ACCESS_TOKEN"]) {
       delete environment[key];
+    }
+    if (String(params.inference || "subscription").trim().toLowerCase() !== "openrouter") {
+      delete environment.OPENROUTER_API_KEY;
     }
     return environment;
   }
@@ -4690,15 +4702,27 @@ function createAgentRunService({
     });
     const versionText = String(version.stdout || "").trim().replace(/\s*\(Claude Code\)\s*$/i, "");
 
+    const openRouterModels = [{
+      id: "stealth/ox-alpha",
+      label: "Ox Alpha",
+      description: "Free preview model through OpenRouter's Anthropic-compatible gateway",
+      inference: "openrouter",
+      gateway: "OpenRouter",
+      reasoning_levels: ["low", "high", "max"],
+      default_reasoning: "max",
+      pricing: { input: 0, output: 0 },
+      vision: false
+    }];
+
     return {
-      models: aliases.map((alias) => ({
+      models: [...openRouterModels, ...aliases.map((alias) => ({
         id: alias,
         label: pickerLabels.get(alias) || `${alias.charAt(0).toUpperCase()}${alias.slice(1)} (latest)`,
         description: descriptions[alias] || `Latest model behind the ${alias} alias`,
         resolved_model_id: pickerModelIds.get(alias) || "",
         reasoning_levels: claudeReasoningLevels(pickerModelIds.get(alias) || "")
-      })),
-      source: versionText ? `Claude Code ${versionText}` : "Installed Claude Code CLI",
+      }))],
+      source: versionText ? `Claude Code ${versionText} + OpenRouter` : "Claude Code + OpenRouter",
       checked_at: modelCatalogCheckedAt(),
       default_model_id: aliases[0] || "",
       // The CLI accepts this complete syntax set, but each model above carries
@@ -4707,7 +4731,7 @@ function createAgentRunService({
       reasoning_levels: ["low", "medium", "high", "xhigh", "max"],
       reasoning_default: "",
       note: pickerLabels.size
-        ? "Models and display versions detected from this installed Claude Code build. Aliases stay dynamic when Claude rolls them forward."
+        ? "Claude aliases come from this installed CLI; Ox Alpha uses the free OpenRouter preview route."
         : detectedAliases.length
           ? "Aliases detected from the installed CLI; this build did not expose exact picker labels."
           : "Claude Code did not expose a model list. Use Custom… for a full model id."
@@ -4965,8 +4989,10 @@ function createAgentRunService({
     if (!SUPPORTED_LOCAL_AGENT_VERSIONS[model]) {
       throw new Error("Choose a certified local Codex, Claude Code, or Kimi Code runner.");
     }
-    if (!["subscription", "prime"].includes(inference) || (inference === "prime" && model !== "codex")) {
-      throw new Error("Prime inference is supported only by the isolated Codex runner.");
+    if (!["subscription", "prime", "openrouter"].includes(inference) ||
+        (inference === "prime" && model !== "codex") ||
+        (inference === "openrouter" && (model !== "claude" || String(params.model_name || "") !== "stealth/ox-alpha"))) {
+      throw new Error("OpenRouter Ox Alpha is supported only by the isolated Claude Code runner.");
     }
 
     const levelId = String(params.level_id || worldMaps.defaultLevelIdForGame(game));
@@ -5544,7 +5570,7 @@ function createAgentRunService({
 
         requireLocalSubscription(effectiveParams);
         const game = normalizedGameForRun(effectiveParams.game_id);
-        const { args, model, levelId, moves, gems, view, toolUse, autoRunTools, autoRunAllFrames, swarm, unlimited, allowQuit, autoQuit, mode, omniscient, hideNames, hideNamesSeed } = buildLocalRunArgs(runId, effectiveParams, game);
+        const { args, model, inference, levelId, moves, gems, view, toolUse, autoRunTools, autoRunAllFrames, swarm, unlimited, allowQuit, autoQuit, mode, omniscient, hideNames, hideNamesSeed } = buildLocalRunArgs(runId, effectiveParams, game);
         const requestedModelName = String(effectiveParams.model_name || "");
         const exactModelName = model === "claude"
           ? resolveClaudeCatalogModelId(requestedModelName)
@@ -5600,6 +5626,7 @@ function createAgentRunService({
           swarm,
           container: true,
           container_image: "mazebench-agent",
+          inference_provider: inference,
           video: !(effectiveParams.video === false || effectiveParams.video === "false"),
           launch_params: {
             ...launchParamsOf(effectiveParams),
@@ -5618,7 +5645,7 @@ function createAgentRunService({
           branch_provider_id: branchPreparation?.newConversationId || null,
           seeded: Boolean(effectiveParams.seed_run || effectiveParams.branch_of),
           conversation_persistence: "run-dir",
-          note: `Local ${{ codex: "Codex", claude: "Claude Code", kimi: "Kimi Code" }[model]} runs in a fresh disposable container. The evaluated process receives MazeBench game controls${toolUse === "offline" ? " plus a preflighted run-scoped Python scratchpad" : " only"}; repository, host files, run artifacts, shell, web, apps, and workers are blocked by launch-time isolation preflights.`
+          note: `Local ${{ codex: "Codex", claude: "Claude Code", kimi: "Kimi Code" }[model]}${inference === "openrouter" ? " uses OpenRouter inference and" : ""} runs in a fresh disposable container. The evaluated process receives MazeBench game controls${toolUse === "offline" ? " plus a preflighted run-scoped Python scratchpad" : " only"}; repository, host files, run artifacts, shell, web, apps, and workers are blocked by launch-time isolation preflights.`
         };
       }
     } catch (error) {

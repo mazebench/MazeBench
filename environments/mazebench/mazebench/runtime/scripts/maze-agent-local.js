@@ -1237,20 +1237,47 @@ function isolatedDockerAgentCommand(config, command) {
     providerSetenv.push("--setenv", "CODEX_HOME", "/home/pwuser/.codex");
     chownTree(sessionsDir);
   } else if (config.model === "claude") {
-    const authFile = process.env.MAZEBENCH_CLAUDE_AUTH_FILE ||
-      "/run/mazebench-credentials/claude-credentials.json";
+    const openRouter = config.inference === "openrouter";
+    const authFile = openRouter
+      ? process.env.MAZEBENCH_OPENROUTER_KEY_FILE || "/run/mazebench-credentials/openrouter-key"
+      : process.env.MAZEBENCH_CLAUDE_AUTH_FILE || "/run/mazebench-credentials/claude-credentials.json";
     if (!fs.existsSync(authFile) || !fs.statSync(authFile).isFile()) {
-      throw new Error("The isolated local Claude Code runtime has no mounted subscription credential.");
+      throw new Error(openRouter
+        ? "The isolated Claude Code/OpenRouter runtime has no mounted API key."
+        : "The isolated local Claude Code runtime has no mounted subscription credential.");
     }
     const providerDir = path.join(providerHomeDir, ".claude");
     const projectsDir = path.join(config.outDir, "agent-state", "claude", "projects");
     fs.mkdirSync(path.join(providerDir, "projects"), { recursive: true, mode: 0o700 });
     fs.writeFileSync(path.join(providerDir, ".credentials.json"), "", { mode: 0o600 });
     fs.mkdirSync(projectsDir, { recursive: true });
-    providerBindArgs.push(
-      "--ro-bind", authFile, "/home/pwuser/.claude/.credentials.json",
-      "--bind", projectsDir, "/home/pwuser/.claude/projects"
-    );
+    if (openRouter) {
+      fs.writeFileSync(
+        path.join(providerDir, "openrouter-launch.js"),
+        [
+          'const fs = require("node:fs");',
+          'const { spawn } = require("node:child_process");',
+          'const key = fs.readFileSync("/home/pwuser/.claude/openrouter-key", "utf8").trim();',
+          'if (!key) throw new Error("The mounted OpenRouter API key is empty.");',
+          'const child = spawn(process.argv[2], process.argv.slice(3), {',
+          '  stdio: "inherit",',
+          '  env: { ...process.env, ANTHROPIC_BASE_URL: "https://openrouter.ai/api", ANTHROPIC_AUTH_TOKEN: key, ANTHROPIC_API_KEY: "" }',
+          '});',
+          'child.on("error", (error) => { console.error(error.message); process.exit(1); });',
+          'child.on("exit", (code) => process.exit(code == null ? 1 : code));'
+        ].join("\n"),
+        { mode: 0o500 }
+      );
+      providerBindArgs.push(
+        "--ro-bind", authFile, "/home/pwuser/.claude/openrouter-key",
+        "--bind", projectsDir, "/home/pwuser/.claude/projects"
+      );
+    } else {
+      providerBindArgs.push(
+        "--ro-bind", authFile, "/home/pwuser/.claude/.credentials.json",
+        "--bind", projectsDir, "/home/pwuser/.claude/projects"
+      );
+    }
     credentialSources.push(authFile);
     providerSetenv.push(
       "--setenv", "CLAUDE_CONFIG_DIR", "/home/pwuser/.claude",
@@ -1315,6 +1342,13 @@ function isolatedDockerAgentCommand(config, command) {
     throw new Error(`Unknown local provider: ${config.model}`);
   }
   chownTree(providerHomeDir);
+  const providerCommand = config.model === "claude" && config.inference === "openrouter" &&
+      command.bin === config.claudeBin
+    ? {
+        bin: process.execPath,
+        argv: ["/home/pwuser/.claude/openrouter-launch.js", command.bin, ...command.argv]
+      }
+    : command;
 
   const args = [
     "--die-with-parent",
@@ -1366,8 +1400,8 @@ function isolatedDockerAgentCommand(config, command) {
     "--inh-caps=-all",
     "--ambient-caps=-all",
     "--no-new-privs",
-    command.bin,
-    ...command.argv
+    providerCommand.bin,
+    ...providerCommand.argv
   );
   return { bin: "bwrap", argv: args };
 }
@@ -2849,7 +2883,17 @@ function runInContainer(config, raw) {
     }
   } else if (config.model === "claude") {
     let authPath = "";
-    if (raw.claude_auth) {
+    if (config.inference === "openrouter") {
+      const apiKey = String(process.env.OPENROUTER_API_KEY || "").trim();
+      if (!apiKey) {
+        throw new Error("Ox Alpha needs OPENROUTER_API_KEY. Set it, restart MazeBench, then retry.");
+      }
+      temporaryCredentialDir = fs.mkdtempSync(path.join(os.tmpdir(), "mazebench-openrouter-auth-"));
+      authPath = path.join(temporaryCredentialDir, "openrouter-key");
+      fs.writeFileSync(authPath, `${apiKey}\n`, { mode: 0o600 });
+      credentialEnvironment.push("-e", "MAZEBENCH_OPENROUTER_KEY_FILE=/run/mazebench-credentials/openrouter-key");
+      credentialMounts.push("-v", `${authPath}:/run/mazebench-credentials/openrouter-key:ro`);
+    } else if (raw.claude_auth) {
       const requested = path.resolve(expandTilde(raw.claude_auth));
       authPath = fs.existsSync(requested) && fs.statSync(requested).isDirectory()
         ? path.join(requested, ".credentials.json")
@@ -2870,8 +2914,10 @@ function runInContainer(config, raw) {
     if (!authPath || !fs.existsSync(authPath) || !fs.statSync(authPath).isFile()) {
       throw new Error("Claude Code subscription credentials are unavailable. Run `claude auth login`, then retry.");
     }
-    credentialEnvironment.push("-e", "MAZEBENCH_CLAUDE_AUTH_FILE=/run/mazebench-credentials/claude-credentials.json");
-    credentialMounts.push("-v", `${authPath}:/run/mazebench-credentials/claude-credentials.json:ro`);
+    if (config.inference !== "openrouter") {
+      credentialEnvironment.push("-e", "MAZEBENCH_CLAUDE_AUTH_FILE=/run/mazebench-credentials/claude-credentials.json");
+      credentialMounts.push("-v", `${authPath}:/run/mazebench-credentials/claude-credentials.json:ro`);
+    }
   } else {
     const requested = raw.kimi_auth
       ? path.resolve(expandTilde(raw.kimi_auth))
@@ -3229,8 +3275,10 @@ async function localCodexMain() {
     process.exit(2);
   }
   const inference = String(raw.inference || "subscription").trim().toLowerCase();
-  if (!["subscription", "prime"].includes(inference) || (inference === "prime" && model !== "codex")) {
-    throw new Error("Prime inference is supported only by the isolated Codex runner.");
+  if (!["subscription", "prime", "openrouter"].includes(inference) ||
+      (inference === "prime" && model !== "codex") ||
+      (inference === "openrouter" && (model !== "claude" || String(raw.model_name || raw.llm || "") !== "stealth/ox-alpha"))) {
+    throw new Error("OpenRouter Ox Alpha is supported only by the isolated Claude Code runner.");
   }
   if ((raw.image && raw.image !== "mazebench-agent") ||
       (raw.docker_bin && raw.docker_bin !== "docker") ||

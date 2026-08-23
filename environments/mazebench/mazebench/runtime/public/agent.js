@@ -1044,7 +1044,7 @@
   }
 
   function modelChip(model, { showGroup = false } = {}) {
-    const details = modelPrice(model.pricing);
+    const details = [model.gateway, modelPrice(model.pricing)].filter(Boolean).join(" · ");
     return `<button type="button" class="chip${state.modelId === model.id ? " is-selected" : ""}"
         data-model-id="${escapeText(model.id)}" role="radio" aria-checked="${state.modelId === model.id}">
       ${showGroup && model.group ? `<span class="chip__eyebrow">${escapeText(model.group)}</span>` : ""}
@@ -1548,7 +1548,7 @@
   // each model with `vision`. A text-only model locks Vision off. Custom ids
   // are available only when no coding-agent harness is selected.
   function primeModelAcceptsImages() {
-    if (state.execution === "local") return true;
+    if (state.execution === "local") return selectedModel()?.vision !== false;
     if (state.harness === "custom" && !selectedCustomHarness()?.observation_modes?.includes("vision")) return false;
     if (state.modelId === "__custom__") return true;
     const model = selectedModel();
@@ -1820,6 +1820,7 @@
           kind: "local",
           subscription: true,
           model: localProviderId(),
+          inference: selectedModel()?.inference || "subscription",
           game_id: state.worldId,
           level_id: effectiveLevelId(),
           moves: moveBudget(),
@@ -1859,6 +1860,18 @@
         }
       } else {
         const environment = await refreshEnvironment();
+        if (body.inference === "openrouter" && !environment.openrouter_authenticated) {
+          presentProviderSetup({
+            logo: '<span aria-hidden="true" style="font-size:3rem">◈</span>',
+            title: "Connect OpenRouter for Ox Alpha",
+            message: "Ox Alpha is free, but OpenRouter still requires an API key. Export it where MazeBench starts, then restart the dev server.",
+            command: 'export OPENROUTER_API_KEY="sk-or-v1-…"\nPORT=3000 npm run dev',
+            note: "The key stays in server memory and is mounted only into the disposable Claude Code container for this run.",
+            docs: "https://openrouter.ai/settings/keys"
+          });
+          setStatus("OpenRouter API key setup is needed for Ox Alpha.", true);
+          return;
+        }
         const launchedHarness = ({ codex: "codex", claude: "claude-code", kimi: "kimi-code" })[body.model];
         const availability = localRunAvailability(launchedHarness, environment);
         if (!availability.available) {
