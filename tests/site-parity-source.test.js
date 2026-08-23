@@ -151,7 +151,7 @@ assert.match(agentScript, /kind: "prime",\s*harness: effectiveHarnessId\(\)/);
 assert.match(agentScript, /kind: "local",\s*subscription: true,\s*model: localProviderId\(\)/);
 assert.match(pages, /id="custom-harness-panel"/);
 assert.match(pages, /framework harness receives only named game controls through standard MCP wiring/);
-assert.match(pages, /authoritative game server runs in a separate sandbox/);
+assert.match(pages, /evaluator-owned Toolset keeps game source/);
 assert.match(pages, /id="harness-execution"/);
 assert.match(pages, /data-execution="local"/);
 assert.match(pages, /id="local-run-status"/);

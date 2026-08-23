@@ -1,4 +1,4 @@
-"""Smoke-test the harness-agnostic Prime Sandbox game Toolset."""
+"""Smoke-test the harness-agnostic MazeBench Toolset."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import argparse
 import asyncio
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
 import verifiers.v1 as vf
 from mazebench_tools import (
@@ -15,7 +14,7 @@ from mazebench_tools import (
     MazeBenchToolTask,
     MazeBenchToolTaskset,
 )
-from verifiers.v1.decorators import discover_decorated
+from verifiers.v1.utils.decorators import discover_decorated
 
 ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_TOOLS = {
@@ -42,12 +41,10 @@ async def verify() -> None:
     assert config.colocated is False
     assert config.url is None
     assert isinstance(config.runtime, vf.PrimeConfig)
-    assert config.runtime.region == "us"
-    assert config.runtime.workdir == "/app"
-    assert config.runtime.cpu == 1
-    assert config.runtime.memory == 2
-    assert config.runtime.disk == 5
-    assert config.runtime.gpu is None
+    assert config.runtime.image == (
+        "prime/prime/mazebench-playwright-python:v1.60.0-noble"
+    )
+    assert config.runtime.vm is True
 
     taskset = MazeBenchToolTaskset(
         MazeBenchToolConfig(
@@ -63,8 +60,7 @@ async def verify() -> None:
     assert task.data.resume_checkpoint_path == ""
     assert str(ROOT) not in task.data.model_dump_json()
 
-    await task.setup(SimpleNamespace(id="prime-sandbox-self-test"), SimpleNamespace())
-    toolset = task.tool_servers()[0]
+    toolset = task.toolsets(task.config)[0]
     names = {function.__name__ for function in discover_decorated(toolset, "tool")}
     assert names == EXPECTED_TOOLS
 
@@ -85,7 +81,7 @@ def main() -> None:
     parser.add_argument("--self-test", action="store_true")
     parser.parse_args()
     asyncio.run(verify())
-    print("MazeBench native harness boundary ready (Prime Sandbox).")
+    print("MazeBench native harness boundary ready.")
 
 
 if __name__ == "__main__":

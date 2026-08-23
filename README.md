@@ -29,9 +29,9 @@ The site opens at `http://localhost:3000`.
 
 ## Agent runs
 
-The Agent page runs the stock Verifiers harness in one Prime Sandbox and the
-authoritative game plus its MCP server in another. MazeBench contributes only
-the Toolset, which advertises exactly four game-control tools. The model
+The Agent page runs the stock Verifiers harness in an isolated Prime Sandbox.
+MazeBench contributes a task-owned Toolset on the evaluator, which advertises
+only the named game controls. The model
 receives no shell, filesystem, subprocess, network, repository, hidden state,
 or scoring capability. Replay video also requires a Chromium-family browser
 and `ffmpeg`. Run `mazebench --help` for commands and options.

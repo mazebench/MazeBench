@@ -7,7 +7,6 @@ import asyncio
 import json
 import tempfile
 from pathlib import Path
-from types import SimpleNamespace
 
 from mazebench.mazebench import (
     MazeSession,
@@ -49,8 +48,7 @@ async def verify(path: Path) -> dict:
     checkpoint = load_prime_resume_checkpoint(str(path))
     taskset = MazeBenchToolTaskset(config=config_for_checkpoint(path))
     task = taskset.load()[0]
-    await task.setup(SimpleNamespace(id="resume-verification"), SimpleNamespace())
-    toolset = task.tool_servers()[0]
+    toolset = task.toolsets(task.config)[0]
     try:
         await toolset.setup_task(task.data)
         actual_hash = str((toolset._status or {}).get("board_state_hash") or "")

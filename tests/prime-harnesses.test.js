@@ -67,6 +67,7 @@ try {
   const harnessCatalog = JSON.parse(
     fs.readFileSync(path.join(environmentDir, "prime-harness-catalog.json"), "utf8")
   );
+  const verifiersVersion = project.match(/verifiers==([0-9.]+)/)?.[1];
 
   assert.match(agentSource, /kind: "local",\s*subscription: true,\s*model: localProviderId\(\)/);
   for (const provider of ["codex", "claude", "kimi"]) {
@@ -100,7 +101,12 @@ try {
   );
   assert.match(
     runSource,
-    /\["codex", \{\s*adapter: "native",\s*runtimeHarnessId: "codex"[\s\S]*disabled_tools: \["shell_tool"\]/
+    /\["codex", \{\s*adapter: "native",\s*runtimeHarnessId: "codex"[\s\S]*disabled_tools: \["shell_tool"\][\s\S]*vm: true[\s\S]*allow: \[\][\s\S]*block: \["\*"\]/
+  );
+  assert.doesNotMatch(runSource, /PRIME_CODEX_AGENT_IMAGE|mazebench-codex-agent/);
+  assert.equal(
+    fs.existsSync(path.join(environmentDir, "prime-images", "codex-agent.Dockerfile")),
+    false
   );
   assert.match(runSource, /runtimeConfig \|\| \{ type: "prime" \}/);
   assert.match(runsSource, /"verifiers-native-harness"/);
@@ -114,6 +120,7 @@ try {
     /\["--env\.taskset\.max-actions", "None", "--env\.agent\.max-turns", "None"\]/
   );
   assert.match(runSource, /runEvalWithProviderRetry/);
+  assert.match(runSource, /\[\s*"run",\s*"--no-editable",\s*"--project"/);
   assert.match(runSource, /eval-output-provider-failure/);
   assert.match(liveSource, /MAZEBENCH_EVENT_V1/);
   assert.match(liveSource, /_patch_prime_usage_schema/);
@@ -132,9 +139,11 @@ try {
   assert.match(primeAgentHarnessSource, /class MazeBench\(McpIntegration\)/);
   assert.doesNotMatch(primeAgentHarnessSource, /subprocess|host filesystem|repo_root/);
 
+  assert.equal(verifiersVersion, "0.3.0");
+  assert.equal(harnessCatalog.verifiers_version, verifiersVersion);
   assert.match(
     project,
-    /verifiers @ git\+https:\/\/github\.com\/PrimeIntellect-ai\/verifiers\.git@b3b8f51ed470e3c46c12bb858ad18d257dc50c5e/
+    /\[tool\.hatch\.build\.targets\.wheel\.force-include\][\s\S]*"pyproject\.toml" = "pyproject\.toml"/
   );
   assert.match(retiredTasksetSource, /__all__ = \["MazeBenchAgentTaskset"\]/);
   assert.match(retiredTasksetSource, /raise RuntimeError\(UNSAFE_HARNESS_MESSAGE\)/);
@@ -161,26 +170,28 @@ try {
     toolsTasksetSource,
     /Field\(min_length=1, max_length=MAX_ACTION_SEQUENCE_LENGTH\)/
   );
-  assert.match(toolsTasksetSource, /class MazeBenchToolTraceState\(MazeBenchState\)/);
-  assert.match(toolsTasksetSource, /colocated: Literal\[False\] = False/);
-  assert.match(toolsTasksetSource, /runtime: vf\.RuntimeConfig/);
-  assert.match(toolsTasksetSource, /class MazeBenchPrimeRuntime\(PrimeRuntime\)/);
-  assert.match(toolsTasksetSource, /protocol="TCP"/);
-  assert.match(toolsTasksetSource, /async def _export_python_workspace\(self\)/);
-  assert.match(toolsTasksetSource, /python-sandbox-export\.json/);
-  assert.match(toolsTasksetSource, /mcp_launch\._install_in_sandbox = _install_mazebench_in_sandbox/);
-  assert.doesNotMatch(toolsTasksetSource, /DockerRuntime|game_runtime:/);
-  assert.match(toolsTasksetSource, /url: None = None/);
+  assert.doesNotMatch(toolsTasksetSource, /MazeBenchToolTraceState/);
+  assert.match(toolsTasksetSource, /vf\.Toolset\[MazeBenchToolsetConfig, MazeBenchState\]/);
+  assert.match(toolsTasksetSource, /class MazeBenchToolsetConfig\(vf\.ToolsetConfig\)/);
+  assert.match(toolsTasksetSource, /tools: MazeBenchToolsetConfig/);
+  assert.doesNotMatch(toolsTasksetSource, /PrimeRuntime|mcp_launch|_install_.*sandbox/);
+  assert.match(
+    toolsTasksetSource,
+    /prime\/prime\/mazebench-playwright-python:v1\.60\.0-noble/
+  );
+  assert.doesNotMatch(toolsTasksetSource, /url: None|self\.config\.tools/);
+  assert.match(project, /"playwright==1\.60\.0"/);
   assert.match(toolsTasksetSource, /python_tools: bool = False/);
-  assert.match(toolsTasksetSource, /PYTHON_SANDBOX_CODEX_BIN/);
-  assert.match(toolsTasksetSource, /"codex_bin": PYTHON_SANDBOX_CODEX_BIN/);
+  assert.match(toolsTasksetSource, /provision_runtime\(/);
+  assert.match(toolsTasksetSource, /vf\.PrimeConfig\([\s\S]*vm=True,[\s\S]*allow=\[\]/);
   assert.match(toolsTasksetSource, /TOOL_PREFIX = "mazebench"/);
   assert.match(toolsTasksetSource, /MazeBench controls are deliberately direct-only/);
   assert.match(toolsTasksetSource, /class MazeBenchToolTask\(/);
   assert.match(toolsTasksetSource, /class MazeBenchToolTaskset\(/);
+  assert.match(toolsTasksetSource, /def toolsets\(cls, config: MazeBenchToolTaskConfig\)/);
+  assert.doesNotMatch(toolsTasksetSource, /def tool_servers\(|_current_rollout_tool_config/);
   assert.match(toolsTasksetSource, /NEEDS_CONTAINER = True/);
   assert.doesNotMatch(toolsTasksetSource, /_bind_game_only_harness/);
-  assert.match(toolsTasksetSource, /"colocated": False/);
   assert.match(toolsTasksetSource, /__all__ = \["MazeBenchToolTaskset"\]/);
 
   assert.match(toolsTasksetSource, /CallToolResult/);
@@ -266,7 +277,7 @@ try {
   assert.equal(
     publicHarnesses.every(
       (harness) =>
-        harness.verifiers_revision === "b3b8f51ed470e3c46c12bb858ad18d257dc50c5e"
+        harness.verifiers_version === verifiersVersion
     ),
     true
   );
@@ -391,6 +402,10 @@ try {
   assert.match(codexConfig, /disabled_tools = \["shell_tool"\]/);
   assert.match(codexConfig, /version = "0\.144\.5"/);
   assert.match(codexConfig, /multi_agent = false/);
+  assert.doesNotMatch(codexConfig, /image =/);
+  assert.match(codexConfig, /vm = true/);
+  assert.match(codexConfig, /allow = \[\]/);
+  assert.match(codexConfig, /block = \["\*"\]/);
 
   const parsedVisionAgent = parseArgs([
     "--env-dir",

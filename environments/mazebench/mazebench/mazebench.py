@@ -10,7 +10,6 @@ import select
 import shlex
 import signal
 import subprocess
-import sys
 from datetime import datetime, timezone
 from importlib.resources import files
 from pathlib import Path
@@ -60,14 +59,7 @@ DEFAULT_VIEW = "top-diagonal"
 DEFAULT_YAW = 0
 
 
-def resolve_default_node_bin(
-    python_executable: str | Path | None = None,
-) -> str:
-    packaged_node = Path(python_executable or sys.executable).with_name("node")
-    return str(packaged_node) if packaged_node.is_file() else "node"
-
-
-DEFAULT_NODE_BIN = resolve_default_node_bin()
+DEFAULT_NODE_BIN = "node"
 DEFAULT_TIMEOUT_SECONDS = 20
 DEFAULT_MAX_ACTIONS = env_int("MAZEBENCH_MAX_ACTIONS", 256, minimum=1)
 DEFAULT_TARGET_GEMS = 0
@@ -848,7 +840,12 @@ class VisionSession:
     """Persistent maze-render-frame.js --serve session: one server + headless
     browser per rollout, with actions applied incrementally between frames."""
 
-    def __init__(self, *, task: MazeBenchTaskData) -> None:
+    def __init__(
+        self,
+        *,
+        task: MazeBenchTaskData,
+        playwright_core: str | Path | None = None,
+    ) -> None:
         self.repo_root = Path(task.repo_root or find_repo_root())
         self.timeout_seconds = max(30, int(task.timeout_seconds))
         self.init_payload = {
@@ -875,6 +872,11 @@ class VisionSession:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             encoding="utf8",
+            env=(
+                {**os.environ, "MAZEBENCH_PLAYWRIGHT_CORE": str(playwright_core)}
+                if playwright_core
+                else None
+            ),
             start_new_session=os.name == "posix",
         )
         try:
@@ -1774,6 +1776,11 @@ class MazeBenchUser:
 class MazeBenchTaskBehavior:
     async def finalize(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
         del runtime
+        write_live_actions(list(trace.state.maze_actions))
+        if not trace.state.maze_scorecard:
+            trace.state.game_lost = True
+            if not trace.state.maze_status_error:
+                trace.state.maze_status_error = "trusted game state unavailable"
         trace.info["maze_actions"] = trace.state.maze_actions
         if trace.state.maze_auto_quit:
             trace.info["maze_auto_quit"] = trace.state.maze_auto_quit

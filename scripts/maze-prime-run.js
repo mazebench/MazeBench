@@ -30,10 +30,6 @@ const HARNESS_CATALOG_FILE = path.join(ROOT_DIR, "environments", "mazebench", "p
 const HARNESS_CATALOG = JSON.parse(fs.readFileSync(HARNESS_CATALOG_FILE, "utf8"));
 const PRIME_HARNESSES = new Map(HARNESS_CATALOG.harnesses.map((entry) => [entry.id, entry]));
 const MAZEBENCH_ENV_DIR = path.join(ROOT_DIR, "environments", "mazebench");
-const PRIME_CODEX_AGENT_IMAGE = String(
-  process.env.MAZEBENCH_PRIME_CODEX_AGENT_IMAGE ||
-  "prime/mazebench/mazebench-codex-agent:0.144.5-v3"
-).trim();
 const ISOLATED_AGENT_ROUTES = new Map([
   ["codex", {
     adapter: "native",
@@ -45,8 +41,10 @@ const ISOLATED_AGENT_ROUTES = new Map([
     },
     runtimeConfig: {
       type: "prime",
-      image: PRIME_CODEX_AGENT_IMAGE,
       workdir: "/app",
+      vm: true,
+      allow: [],
+      block: ["*"],
       region: "us"
     }
   }],
@@ -789,7 +787,15 @@ function runEval(opts) {
   const liveActionsPath = path.join(opts.outDir, "actions.jsonl");
   const liveReasoningPath = path.join(opts.outDir, "prime-reasoning.jsonl");
   const taskset = "mazebench-tools";
-  const argv = ["run", "--project", opts.envDir, "python", LIVE_EVAL, taskset];
+  const argv = [
+    "run",
+    "--no-editable",
+    "--project",
+    opts.envDir,
+    "python",
+    LIVE_EVAL,
+    taskset
+  ];
 
   let resumeActionCount = 0;
   if (opts.resumeCheckpoint) {

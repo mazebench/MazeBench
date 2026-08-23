@@ -36,10 +36,9 @@ The Python `games/maze/player.py` implementation is useful but currently behind 
 
 The JavaScript engine remains the source of truth. Model evaluations use the
 `mazebench-tools` taskset with an unmodified, framework-selected harness. The
-Toolset advertises only `game_start`, `game_observe`, `game_action`, and
-`game_action_sequence` and declares an independent Prime Sandbox runtime for
-the authoritative Node game and MCP server. The model receives only sanitized
-tool schemas and results.
+task returns a standard evaluator-side Toolset for the authoritative Node game
+and MCP server. It advertises only named game controls, and the model receives
+only sanitized tool schemas and results.
 
 The direct native `mazebench` taskset is retired. The app currently approves
 the stock `null` harness because it has MCP support and no agent shell or

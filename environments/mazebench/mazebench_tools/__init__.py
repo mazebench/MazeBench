@@ -1,30 +1,19 @@
-"""MazeBench taskset for untrusted harnesses using isolated MCP game controls.
-
-MazeBench runs this evaluator-owned tool server in a sandbox separate from the
-framework-selected harness. The game lives in the tool-server sandbox and only
-named game controls cross that boundary.
-"""
+"""MazeBench taskset with evaluator-owned game tools."""
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
-import logging
 import os
-import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
-import time
-import uuid
-from contextvars import ContextVar
-from pathlib import Path, PurePosixPath
-from typing import Annotated, Any, Literal
+from pathlib import Path
+from typing import Annotated, Any
 
+import playwright
 import verifiers.v1 as vf
-import verifiers.v1.mcp.launch as mcp_launch
 from mazebench.mazebench import (
     GAME_WON_GEM_COUNT,
     MazeBenchConfig,
@@ -35,231 +24,48 @@ from mazebench.mazebench import (
     MazeBenchTaskset,
     VisionSession,
     evaluate_auto_quit,
-    find_bridge_root,
     load_prime_resume_checkpoint,
     run_blocking,
     slim_status,
     target_text_for_row,
     valid_action_commands,
-    write_live_actions,
 )
 from mcp.types import CallToolResult, ImageContent, TextContent
 from pydantic import Field
-from verifiers.v1.harnesses.codex.harness import INSTALL as CODEX_INSTALL
-from verifiers.v1.mcp.server import ServerBase
-from verifiers.v1.runtimes import register
-from verifiers.v1.runtimes.prime import PrimeRuntime
-
-logger = logging.getLogger(__name__)
+from verifiers.v1.runtimes import provision_runtime
 
 GAME_SANDBOX_FINALIZATION_SECONDS = 30
 MAX_ACTION_LENGTH = 128
 MAX_ACTION_SEQUENCE_LENGTH = 1_000
-PYTHON_SANDBOX_CODEX_VERSION = "0.144.5"
-PYTHON_SANDBOX_CODEX_DIR = "/tmp/mazebench-python-codex"
-PYTHON_SANDBOX_CODEX_BIN = f"{PYTHON_SANDBOX_CODEX_DIR}/bin/codex"
-PRIME_TOOL_RUNTIME_IMAGE = os.environ.get(
-    "MAZEBENCH_PRIME_TOOL_RUNTIME_IMAGE",
-    "prime/mazebench/mazebench-tool-runtime:py313-codex-0.144.5-vf-b3b8f51-v3",
-).strip()
-PREBUILT_TOOL_MARKER = "/opt/mazebench-image/tool-runtime"
 BoundedAction = Annotated[str, Field(min_length=1, max_length=MAX_ACTION_LENGTH)]
 BoundedActionSequence = Annotated[
     list[BoundedAction], Field(min_length=1, max_length=MAX_ACTION_SEQUENCE_LENGTH)
 ]
 WorldCoordinate = Annotated[str, Field(pattern=r"^[A-Za-z]$")]
+PLAYWRIGHT_RUNTIME_IMAGE = "prime/prime/mazebench-playwright-python:v1.60.0-noble"
 
 
 class MazeBenchToolsetConfig(vf.ToolsetConfig):
-    """A dedicated sandbox for one rollout's game tool server."""
+    """Evaluator-only data used to start one rollout's tool server."""
 
-    colocated: Literal[False] = False
     runtime: vf.RuntimeConfig = Field(
         default_factory=lambda: vf.PrimeConfig(
-            image=PRIME_TOOL_RUNTIME_IMAGE,
+            image=PLAYWRIGHT_RUNTIME_IMAGE,
             workdir="/app",
-            # Bootstrap and the authenticated rollout-state channel need egress.
-            # The model has no code-execution path inside this trusted sandbox.
-            region="us",
-            cpu=1,
-            memory=2,
-            disk=5,
-            idle_timeout=1_800,
+            vm=True,
         )
     )
-    url: None = None
-    artifact_nonce: str = ""
     resume_checkpoint: dict[str, Any] | None = None
-    vision: bool = False
-    python_workspace_path: str = ""
-    python_state_path: str = ""
-    python_activity_path: str = ""
 
 
-class MazeBenchPrimeRuntime(PrimeRuntime):
-    """Prime runtime exposing MCP over a native TCP endpoint."""
-
-    _python_export_paths: tuple[str, str, str] | None = None
-
-    def configure_python_export(
-        self, workspace_path: str, activity_path: str, state_path: str
-    ) -> None:
-        if workspace_path and activity_path and state_path:
-            self._python_export_paths = (workspace_path, activity_path, state_path)
-
-    async def expose(self, port: int) -> str:
-        exposed = await self._client.expose(self.info.id, port, protocol="TCP")
-        if not exposed.external_endpoint:
-            raise RuntimeError("Prime did not return a TCP endpoint for MazeBench.")
-        return f"http://{exposed.external_endpoint}"
-
-    async def _export_python_workspace(self) -> None:
-        if not self._python_export_paths or self._client is None:
-            return
-        workspace_path, activity_path, _state_path = self._python_export_paths
-        report: dict[str, Any] = {
-            "sandbox_id": self.info.id,
-            "workspace_path": workspace_path,
-            "exported_files": [],
-            "omitted_files": [],
-            "ok": True,
-        }
-        try:
-            listing = await self.run(
-                [
-                    "python3",
-                    "-c",
-                    (
-                        "import json, os, sys; root=sys.argv[1]; "
-                        "print(json.dumps([[os.path.relpath(os.path.join(base, name), root), "
-                        "os.path.getsize(os.path.join(base, name))] "
-                        "for base, dirs, files in os.walk(root, followlinks=False) "
-                        "for name in files if not os.path.islink(os.path.join(base, name))]))"
-                    ),
-                    workspace_path,
-                ],
-                {},
-            )
-            entries = json.loads(listing.stdout or "[]") if listing.exit_code == 0 else []
-            destination_root = Path(workspace_path).resolve()
-            total_bytes = 0
-            for candidate in entries[:1_024]:
-                if not isinstance(candidate, list) or len(candidate) != 2:
-                    continue
-                relative, size = str(candidate[0]), max(0, int(candidate[1]))
-                remote_relative = PurePosixPath(relative)
-                if remote_relative.is_absolute() or ".." in remote_relative.parts:
-                    report["omitted_files"].append(relative)
-                    continue
-                if size > 16 * 1024 * 1024 or total_bytes + size > 64 * 1024 * 1024:
-                    report["omitted_files"].append(relative)
-                    continue
-                target = (destination_root / Path(*remote_relative.parts)).resolve()
-                if not target.is_relative_to(destination_root):
-                    report["omitted_files"].append(relative)
-                    continue
-                data = await self.read(
-                    str(PurePosixPath(workspace_path) / remote_relative)
-                )
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(data)
-                total_bytes += len(data)
-                report["exported_files"].append(relative)
-
-            metadata_paths = (
-                (activity_path, False),
-                (
-                    str(
-                        Path(activity_path).with_name(
-                            "python-sandbox-preflight.json"
-                        )
-                    ),
-                    True,
-                ),
-            )
-            report["metadata_files"] = []
-            for remote_path, required in metadata_paths:
-                try:
-                    data = await self.read(remote_path)
-                except Exception as download_error:
-                    fallback = await self.run(["cat", remote_path], {})
-                    if fallback.exit_code != 0:
-                        if required:
-                            report["ok"] = False
-                        report.setdefault("metadata_errors", []).append(
-                            {
-                                "path": Path(remote_path).name,
-                                "error": str(download_error)[:300],
-                            }
-                        )
-                        continue
-                    data = fallback.stdout.encode()
-                if data:
-                    target = Path(remote_path)
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_bytes(data)
-                    report["metadata_files"].append(target.name)
-        except Exception as error:  # best-effort export must not leak the paid sandbox
-            report["ok"] = False
-            report["error"] = str(error)[:500]
-        finally:
-            _atomic_json(
-                str(Path(activity_path).with_name("python-sandbox-export.json")),
-                report,
-            )
-
-    async def teardown(self) -> None:
-        try:
-            await self._export_python_workspace()
-        finally:
-            await super().teardown()
-
-
-_verifiers_make_runtime = mcp_launch.make_runtime
-
-
-def _make_mazebench_runtime(
-    config: vf.RuntimeConfig, name: str | None = None
-) -> vf.Runtime:
-    if not isinstance(config, vf.PrimeConfig):
-        return _verifiers_make_runtime(config, name)
-    runtime = MazeBenchPrimeRuntime(config, name)
-    binding = _current_rollout_tool_config.get()
-    if binding is not None:
-        tool_config = binding[2]
-        runtime.configure_python_export(
-            tool_config.python_workspace_path,
-            tool_config.python_activity_path,
-            tool_config.python_state_path,
-        )
-    register(runtime)
-    return runtime
-
-
-mcp_launch.make_runtime = _make_mazebench_runtime
-
-
-_current_rollout_tool_config: ContextVar[
-    tuple[object, str, MazeBenchToolsetConfig] | None
-] = ContextVar("mazebench_rollout_tool_config", default=None)
+class MazeBenchToolTaskConfig(MazeBenchTaskConfig):
+    tools: MazeBenchToolsetConfig = Field(default_factory=MazeBenchToolsetConfig)
 
 
 class MazeBenchToolConfig(MazeBenchConfig):
     id: str = "mazebench-tools"
+    task: MazeBenchToolTaskConfig = Field(default_factory=MazeBenchToolTaskConfig)
     python_tools: bool = False
-    tools: MazeBenchToolsetConfig = Field(default_factory=MazeBenchToolsetConfig)
-
-
-class MazeBenchToolTraceState(MazeBenchState):
-    """State written only by the isolated evaluator-owned tool server."""
-
-
-def _atomic_json(path: str, value: dict[str, Any]) -> None:
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(f".{target.name}.{os.getpid()}.tmp")
-    temporary.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(target)
 
 
 def _public_observation(status: dict[str, Any], mode: str) -> dict[str, Any]:
@@ -380,7 +186,9 @@ locate or access them. Do not claim moves or scores that were not returned by th
 
 
 def _tool_system_prompt(*, python_tools: bool = False) -> str:
-    python_policy = " Python tools are available for isolated computation." if python_tools else ""
+    python_policy = (
+        " Python tools are available for isolated computation." if python_tools else ""
+    )
     return (
         "Use only the supplied game controls for game interaction. "
         "Use python_exec only for isolated computation when it is enabled. "
@@ -417,7 +225,7 @@ still be called exactly once by this new harness process.
 {instructions}"""
 
 
-class MazeBenchToolset(vf.Toolset[MazeBenchToolsetConfig, MazeBenchToolTraceState]):
+class MazeBenchToolset(vf.Toolset[MazeBenchToolsetConfig, MazeBenchState]):
     """Named model controls backed by a game in this tool-server sandbox."""
 
     # Codex and Prime Agent require a non-empty MCP server name. The raw MCP
@@ -426,8 +234,6 @@ class MazeBenchToolset(vf.Toolset[MazeBenchToolsetConfig, MazeBenchToolTraceStat
     TOOL_PREFIX = "mazebench"
 
     async def setup_task(self, task: MazeBenchTaskData) -> None:
-        if not self.config.artifact_nonce:
-            raise RuntimeError("MazeBench game tools require a rollout binding.")
         self.task = task
         self._lock = asyncio.Lock()
         self._actions: list[dict[str, Any]] = []
@@ -448,19 +254,29 @@ class MazeBenchToolset(vf.Toolset[MazeBenchToolsetConfig, MazeBenchToolTraceStat
             raise RuntimeError(
                 "The MazeBench tool sandbox has no packaged Node runtime."
             )
-        digest = hashlib.sha256(self.config.artifact_nonce.encode()).hexdigest()[:16]
-        self._run_dir = Path(tempfile.mkdtemp(prefix=f"mazebench-game-{digest}-"))
+        self._run_dir = Path(tempfile.mkdtemp(prefix="mazebench-game-"))
         self._state_path = self._run_dir / "session.json"
         self._exit_stack.callback(shutil.rmtree, self._run_dir, True)
         self._vision_session: VisionSession | None = None
         if task.observation_mode == "vision":
+            playwright_core = (
+                Path(playwright.__file__).resolve().parent
+                / "driver"
+                / "package"
+                / "index.mjs"
+            )
+            if not playwright_core.is_file():
+                raise RuntimeError("The packaged Playwright driver is incomplete.")
             vision_task = task.model_copy(
                 update={
                     "node_bin": str(self._node),
                     "repo_root": str(self._runtime_root),
                 }
             )
-            self._vision_session = VisionSession(task=vision_task)
+            self._vision_session = VisionSession(
+                task=vision_task,
+                playwright_core=playwright_core,
+            )
             self._exit_stack.callback(self._vision_session.close)
 
         args = [
@@ -696,7 +512,7 @@ class MazeBenchToolset(vf.Toolset[MazeBenchToolsetConfig, MazeBenchToolTraceStat
             await self._finalize_game()
         except Exception as error:  # noqa: BLE001 - scoring must fail closed
             self._invalidate_scoring(error)
-        observation_workspace = self._sync_python_observation(result)
+        observation_workspace = await self._sync_python_observation(result)
         if observation_workspace:
             result["observation_workspace"] = observation_workspace
         self._publish_state()
@@ -721,33 +537,38 @@ class MazeBenchToolset(vf.Toolset[MazeBenchToolsetConfig, MazeBenchToolTraceStat
             )
         return result
 
-    def _sync_python_observation(self, result: dict[str, Any]) -> dict[str, Any] | None:
-        workspace_value = self.config.python_workspace_path
-        if not workspace_value or self.task.observation_mode != "json":
+    async def _sync_python_observation(
+        self, result: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        runtime = getattr(self, "_python_runtime", None)
+        if runtime is None or self.task.observation_mode != "json":
             return None
         observation = result.get("final_observation") or result.get("observation")
         if not isinstance(observation, dict):
             return None
-        workspace = Path(workspace_value)
-        workspace.mkdir(parents=True, exist_ok=True, mode=0o700)
-        root = workspace.resolve()
-        directory = workspace / "observations"
-        if directory.is_symlink():
-            raise RuntimeError("The observation workspace must not be a symlink.")
-        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        resolved_directory = directory.resolve()
-        if not resolved_directory.is_relative_to(root):
-            raise RuntimeError(
-                "The observation workspace escaped its scratch directory."
-            )
         revision = len(self._actions)
         snapshot = {**observation, "observation_revision": revision}
-        _atomic_json(str(resolved_directory / f"{revision:06d}.json"), snapshot)
-        with (resolved_directory / "history.jsonl").open(
-            "a", encoding="utf-8"
-        ) as handle:
-            handle.write(json.dumps(snapshot, separators=(",", ":")) + "\n")
-        _atomic_json(str(resolved_directory / "current.json"), snapshot)
+        self._python_observations.append(snapshot)
+        await asyncio.gather(
+            runtime.write(
+                f"observations/{revision:06d}.json",
+                (json.dumps(snapshot, indent=2) + "\n").encode(),
+            ),
+            runtime.write(
+                "observations/current.json",
+                (json.dumps(snapshot, indent=2) + "\n").encode(),
+            ),
+            runtime.write(
+                "observations/history.jsonl",
+                (
+                    "\n".join(
+                        json.dumps(value, separators=(",", ":"))
+                        for value in self._python_observations
+                    )
+                    + "\n"
+                ).encode(),
+            ),
+        )
         return {
             "current_file": "observations/current.json",
             "history_file": "observations/history.jsonl",
@@ -1053,216 +874,144 @@ MazeBenchToolset.go_to_level.__annotations__["y"] = WorldCoordinate
 MazeBenchToolset.action_sequence.__annotations__["actions"] = BoundedActionSequence
 
 
-_verifiers_install_in_sandbox = mcp_launch._install_in_sandbox
-
-
-async def _install_mazebench_in_sandbox(server: ServerBase, runtime: vf.Runtime) -> str:
-    """Install this packaged environment without requiring a Verifiers checkout."""
-
-    if not isinstance(server, MazeBenchToolset):
-        return await _verifiers_install_in_sandbox(server, runtime)
-    source_dir = mcp_launch._source_dir(type(server))
-    if source_dir is None:
-        raise RuntimeError("The MazeBench tool server package source is unavailable.")
-    source = Path(source_dir)
-    root = "/tmp/vf-src"
-    await runtime.write(
-        f"{root}/{source.name}.tar.gz",
-        mcp_launch._tar_source(source),
-    )
-    venv = "/tmp/vf-venv"
-    extras = ",".join(type(server).EXTRAS)
-    package = f"{root}/{source.name}" + (f"[{extras}]" if extras else "")
-    prebuilt_probe = await runtime.run(
-        [
-            "sh",
-            "-c",
-            (
-                f"test -f {shlex.quote(PREBUILT_TOOL_MARKER)} && "
-                f"test -x {shlex.quote(venv)}/bin/python && "
-                f"test -x {shlex.quote(venv)}/bin/node"
-            ),
-        ],
-        {},
-    )
-    prebuilt = prebuilt_probe.exit_code == 0
-    codex_setup = ""
-    if server.config.python_workspace_path:
-        install = (
-            CODEX_INSTALL.replace("{version}", PYTHON_SANDBOX_CODEX_VERSION)
-            .replace("{dir}", PYTHON_SANDBOX_CODEX_DIR)
-            .replace("{bin}", PYTHON_SANDBOX_CODEX_BIN)
-        )
-        codex_setup = (
-            f" && ([ -x {shlex.quote(PYTHON_SANDBOX_CODEX_BIN)} ] || "
-            f"( {install} ))"
-        )
-    vision_setup = ""
-    if server.config.vision:
-        runtime_root = f"{venv}/lib/python3.13/site-packages/mazebench/runtime"
-        vision_setup = (
-            " && apt-get update -qq && "
-            "apt-get install -y -qq chromium >/dev/null && "
-            f"{venv}/bin/npm install --prefix {runtime_root} --no-save "
-            "--no-package-lock playwright-core@1.60.0 >/dev/null"
-        )
-    if prebuilt:
-        install_package = (
-            f"uv pip install --python {venv} --no-deps --reinstall "
-            f"--no-build-isolation {shlex.quote(package)}"
-        )
-        logger.info("mazebench: reusing preinstalled tool runtime dependencies")
-    else:
-        install_package = (
-            f"uv venv {venv} && "
-            f"uv pip install --python {venv} {shlex.quote(package)}"
-        )
-        logger.warning(
-            "mazebench: prebuilt tool runtime marker missing; using cold dependency install"
-        )
-    setup = (
-        f"{mcp_launch._ENSURE_UV}; set -e; "
-        "(command -v git >/dev/null 2>&1 && command -v curl >/dev/null 2>&1) || "
-        "(apt-get update -qq && apt-get install -y -qq git curl ca-certificates); "
-        f"tar -xzf {root}/{shlex.quote(source.name)}.tar.gz -C {root} && "
-        f"{install_package}"
-        f"{codex_setup}"
-        f"{vision_setup}"
-    )
-    started_at = time.monotonic()
-    result = await runtime.run(["sh", "-c", setup], {})
-    if result.exit_code != 0:
-        detail = (result.stderr or result.stdout).strip()[-2_000:]
-        raise RuntimeError(f"MazeBench tool server install failed: {detail}")
-    logger.info(
-        "mazebench: tool runtime ready in %.1fs (prebuilt=%s)",
-        time.monotonic() - started_at,
-        prebuilt,
-    )
-    return f"{venv}/bin/python"
-
-
-# The pinned Verifiers launcher only uploads Verifiers from a source checkout.
-# MazeBench is self-contained and pins Verifiers itself, so scope that bootstrap
-# exception to this server while leaving every other server on the stock path.
-mcp_launch._install_in_sandbox = _install_mazebench_in_sandbox
-
-
-def _workspace_snapshot(
-    workspace: Path, limit: int = 2_000
-) -> dict[str, tuple[int, int]]:
-    snapshot: dict[str, tuple[int, int]] = {}
-    if not workspace.is_dir():
-        return snapshot
-    for entry in sorted(workspace.rglob("*")):
-        if len(snapshot) >= limit:
-            break
-        try:
-            if entry.is_symlink() or not entry.is_file():
-                continue
-            relative = entry.relative_to(workspace).as_posix()
-            stat = entry.stat()
-            snapshot[relative] = (stat.st_size, stat.st_mtime_ns)
-        except (OSError, ValueError):
-            continue
-    return snapshot
-
-
-def _workspace_changes(
-    before: dict[str, tuple[int, int]], after: dict[str, tuple[int, int]]
-) -> dict[str, Any]:
-    return {
-        "created": sorted(after.keys() - before.keys()),
-        "modified": sorted(
-            path for path in before.keys() & after.keys() if before[path] != after[path]
-        ),
-        "deleted": sorted(before.keys() - after.keys()),
-        "truncated": len(before) >= 2_000 or len(after) >= 2_000,
-    }
-
-
-def _append_json_line(path: str, value: dict[str, Any]) -> None:
-    try:
-        target = Path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with target.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(value, separators=(",", ":")) + "\n")
-    except OSError:
-        pass
-
-
 class MazeBenchToolsetWithPython(MazeBenchToolset):
     """Game controls plus fail-closed Python in a run-scoped scratch workspace."""
 
     async def setup_task(self, task: MazeBenchTaskData) -> None:
         await super().setup_task(task)
         self._python_lock = asyncio.Lock()
-        report = await run_blocking(self._python_request, "preflight", "", 5)
-        _atomic_json(
-            str(
-                Path(self.config.python_activity_path).with_name(
-                    "python-sandbox-preflight.json"
+        self._python_observations: list[dict[str, Any]] = []
+        self._python_runtime = await self._exit_stack.enter_async_context(
+            provision_runtime(
+                vf.PrimeConfig(
+                    image=PLAYWRIGHT_RUNTIME_IMAGE,
+                    workdir="/workspace",
+                    vm=True,
+                    allow=[],
+                    cpu=1,
+                    memory=2,
+                    disk=5,
                 )
-            ),
-            report,
-        )
-
-    def _python_request(
-        self, operation: str, code: str, timeout_seconds: int
-    ) -> dict[str, Any]:
-        root = find_bridge_root()
-        script = root / "scripts" / "maze-python-sandbox.js"
-        if not all(
-            (
-                self.config.python_workspace_path,
-                self.config.python_state_path,
-                self.config.python_activity_path,
             )
-        ):
-            raise RuntimeError("The isolated Python scratchpad is not configured.")
-        workspace = Path(self.config.python_workspace_path)
-        state = Path(self.config.python_state_path)
-        activity = Path(self.config.python_activity_path)
-        if not script.is_file():
-            raise RuntimeError("The isolated Python scratchpad is not configured.")
-        request = {
-            "operation": operation,
-            "code": code,
-            "timeout_seconds": timeout_seconds,
-            "scratch_dir": str(workspace),
-            "state_dir": str(state),
-            "denied_paths": [str(root), str(activity.parent), str(Path.home())],
-            "codex_bin": PYTHON_SANDBOX_CODEX_BIN,
-            "python_bin": sys.executable,
-        }
-        completed = subprocess.run(
-            [self.task.node_bin, str(script)],
-            cwd=root,
-            input=json.dumps(request),
-            text=True,
-            capture_output=True,
-            timeout=timeout_seconds + 15,
-            check=False,
         )
-        if completed.returncode != 0:
-            detail = (completed.stderr or completed.stdout or "").strip().splitlines()
-            message = detail[-1] if detail else "sandbox process failed"
-            for private in (
-                str(root),
-                str(workspace),
-                str(state),
-                str(activity.parent),
-                str(Path.home()),
-            ):
-                message = message.replace(private, "<private>")
-            raise RuntimeError(
-                f"Isolated Python scratchpad unavailable: {message[:500]}"
+        await self._python_runtime.prepare_setup()
+        await self._python_runtime.prepare_execution([])
+        preflight = await self._run_python(
+            """from pathlib import Path
+import socket
+
+checks = []
+for operation in (
+    lambda: Path('/etc/hosts').read_text(),
+    lambda: __import__('_posixsubprocess'),
+    lambda: socket.create_connection(('127.0.0.1', 9)),
+):
+    try:
+        operation()
+    except PermissionError:
+        checks.append(True)
+    except Exception:
+        checks.append(False)
+    else:
+        checks.append(False)
+Path('preflight.txt').write_text('ok')
+print(checks == [True, True, True] and Path('preflight.txt').read_text() == 'ok')
+""",
+            5,
+        )
+        if preflight["exit_code"] != 0 or preflight["stdout"].strip() != "True":
+            raise RuntimeError("The isolated Python scratchpad failed its preflight.")
+
+    async def _run_python(self, code: str, timeout_seconds: int) -> dict[str, Any]:
+        await self._python_runtime.write(".mazebench/source.py", code.encode())
+        runner = r"""
+import contextlib, io, json, os, resource, sys, traceback
+source_path = sys.argv[1]
+source = open(source_path, encoding="utf-8").read()
+workspace = os.path.realpath(os.getcwd())
+runtime = tuple(os.path.realpath(path) for path in sys.path if path)
+
+def inside(path, root):
+    try:
+        return os.path.commonpath((path, root)) == root
+    except (OSError, ValueError):
+        return False
+
+def allowed(path, write=False):
+    if isinstance(path, int):
+        return path in (0, 1, 2)
+    candidate = os.path.realpath(os.fsdecode(path))
+    return inside(candidate, workspace) or (not write and any(inside(candidate, root) for root in runtime))
+
+def audit(event, args):
+    if event == "import" and args and args[0] == "_posixsubprocess":
+        raise PermissionError("operation unavailable in python_exec")
+    if event.startswith(("subprocess.", "ctypes.", "socket.")) or event in {
+        "os.exec", "os.fork", "os.forkpty", "os.posix_spawn", "os.spawn", "os.system", "pty.spawn"
+    }:
+        raise PermissionError("operation unavailable in python_exec")
+    if event == "open" and args:
+        mode = str(args[1] or "") if len(args) > 1 else ""
+        flags = int(args[2] or 0) if len(args) > 2 else 0
+        write = any(char in mode for char in "wax+") or bool(flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT))
+        if not allowed(args[0], write):
+            raise PermissionError("path unavailable in python_exec")
+    reads = {"os.chdir", "os.listdir", "os.scandir", "glob.glob", "glob.glob/2"}
+    writes = {
+        "os.chmod", "os.chown", "os.link", "os.mkdir", "os.remove", "os.rename", "os.replace",
+        "os.rmdir", "os.symlink", "os.truncate", "os.unlink", "os.utime"
+    }
+    if event in reads | writes:
+        if args and not allowed(args[0], event in writes):
+            raise PermissionError("path unavailable in python_exec")
+        if event in {"os.link", "os.rename", "os.replace", "os.symlink"} and len(args) > 1 and not allowed(args[1], True):
+            raise PermissionError("path unavailable in python_exec")
+
+for kind, limit in (
+    (resource.RLIMIT_CPU, int(sys.argv[2])),
+    (resource.RLIMIT_AS, 1024**3),
+    (resource.RLIMIT_FSIZE, 32 * 1024**2),
+):
+    try:
+        resource.setrlimit(kind, (limit, limit))
+    except (OSError, ValueError):
+        pass
+sys.modules.pop("_posixsubprocess", None)
+sys.addaudithook(audit)
+os.environ.clear()
+os.environ.update({"HOME": workspace, "TMPDIR": workspace, "PATH": "/usr/local/bin:/usr/bin:/bin"})
+stdout, stderr = io.StringIO(), io.StringIO()
+exit_code = 0
+try:
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        exec(compile(source, "<mazebench-python>", "exec"), {"__name__": "__main__", "__file__": "<mazebench-python>"})
+except BaseException:
+    exit_code = 1
+    traceback.print_exc(file=stderr)
+print(json.dumps({"exit_code": exit_code, "stdout": stdout.getvalue()[-256000:], "stderr": stderr.getvalue()[-256000:]}))
+"""
+        async with asyncio.timeout(timeout_seconds + 10):
+            completed = await self._python_runtime.run(
+                [
+                    "timeout",
+                    "-k",
+                    "1s",
+                    f"{timeout_seconds + 2}s",
+                    "python",
+                    "-I",
+                    "-c",
+                    runner,
+                    ".mazebench/source.py",
+                    str(timeout_seconds + 1),
+                ],
+                {},
             )
         try:
             result = json.loads(completed.stdout)
         except json.JSONDecodeError as error:
+            detail = (completed.stderr or completed.stdout).strip()[-500:]
             raise RuntimeError(
-                "Isolated Python scratchpad returned invalid output."
+                f"Isolated Python scratchpad failed: {detail}"
             ) from error
         if not isinstance(result, dict):
             raise TypeError("Isolated Python scratchpad returned invalid output.")
@@ -1274,6 +1023,8 @@ class MazeBenchToolsetWithPython(MazeBenchToolset):
 
         if not isinstance(code, str) or not code.strip():
             raise ValueError("code must be a non-empty Python source string.")
+        if len(code.encode()) > 256_000:
+            raise ValueError("code must not exceed 256,000 bytes.")
         if (
             not isinstance(timeout_seconds, int)
             or isinstance(timeout_seconds, bool)
@@ -1282,84 +1033,12 @@ class MazeBenchToolsetWithPython(MazeBenchToolset):
         ):
             raise ValueError("timeout_seconds must be an integer between 1 and 60.")
         async with self._python_lock:
-            workspace = Path(self.config.python_workspace_path)
-            before = _workspace_snapshot(workspace)
-            activity_id = str(uuid.uuid4())
-            started_at = time.time()
-            started_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(started_at))
-            code_hash = hashlib.sha256(code.encode()).hexdigest()
-            _append_json_line(
-                self.config.python_activity_path,
-                {
-                    "id": activity_id,
-                    "tool": "python_exec",
-                    "actor": "lead",
-                    "clone_id": "",
-                    "started_at": started_iso,
-                    "status": "running",
-                    "python_code": code,
-                    "python_code_hash": code_hash,
-                    "timeout_seconds": timeout_seconds,
-                },
-            )
-            try:
-                result = await run_blocking(
-                    self._python_request, "run", code, timeout_seconds
-                )
-            except Exception as error:
-                completed_at = time.time()
-                after = _workspace_snapshot(workspace)
-                _append_json_line(
-                    self.config.python_activity_path,
-                    {
-                        "id": activity_id,
-                        "tool": "python_exec",
-                        "actor": "lead",
-                        "clone_id": "",
-                        "started_at": started_iso,
-                        "completed_at": time.strftime(
-                            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(completed_at)
-                        ),
-                        "duration_ms": round((completed_at - started_at) * 1_000),
-                        "status": "failed",
-                        "python_code_hash": code_hash,
-                        "timeout_seconds": timeout_seconds,
-                        "error": str(error)[:500],
-                        "workspace_changes": _workspace_changes(before, after),
-                    },
-                )
-                raise
-            completed_at = time.time()
-            after = _workspace_snapshot(workspace)
-            _append_json_line(
-                self.config.python_activity_path,
-                {
-                    "id": activity_id,
-                    "tool": "python_exec",
-                    "actor": "lead",
-                    "clone_id": "",
-                    "started_at": started_iso,
-                    "completed_at": time.strftime(
-                        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(completed_at)
-                    ),
-                    "duration_ms": round((completed_at - started_at) * 1_000),
-                    "status": "completed",
-                    "python_code_hash": code_hash,
-                    "timeout_seconds": timeout_seconds,
-                    "python_result": result,
-                    "workspace_changes": _workspace_changes(before, after),
-                },
-            )
-            return result
-
-
-class MazeBenchToolTaskConfig(MazeBenchTaskConfig):
-    tools: MazeBenchToolsetConfig = Field(default_factory=MazeBenchToolsetConfig)
+            return await self._run_python(code, timeout_seconds)
 
 
 class MazeBenchToolTask(
     MazeBenchTaskBehavior,
-    vf.Task[MazeBenchTaskData, MazeBenchToolTraceState, MazeBenchToolTaskConfig],
+    vf.Task[MazeBenchTaskData, MazeBenchState, MazeBenchToolTaskConfig],
 ):
     """A task whose only game access is the evaluator-owned MCP server."""
 
@@ -1367,24 +1046,9 @@ class MazeBenchToolTask(
     user = None
     NEEDS_CONTAINER = True
 
-    async def setup(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
-        del runtime
-        tool_config = self.config.tools.model_copy(
-            update={
-                "artifact_nonce": trace.id,
-                "vision": self.data.observation_mode == "vision",
-            }
-        )
-        _current_rollout_tool_config.set((self, trace.id, tool_config))
-
-    def tool_servers(self) -> list[vf.Toolset]:
-        binding = _current_rollout_tool_config.get()
-        if binding is None or binding[0] is not self:
-            raise RuntimeError(
-                "MazeBench tool servers require an active rollout binding."
-            )
-        server_cls = type(self).tools[0]
-        return [server_cls(binding[2])]
+    @classmethod
+    def toolsets(cls, config: MazeBenchToolTaskConfig) -> list[vf.Toolset]:
+        return [toolset(config.tools) for toolset in cls.tools]
 
     @vf.stop
     async def game_over(self, trace: vf.Trace) -> bool:
@@ -1395,14 +1059,6 @@ class MazeBenchToolTask(
     async def low_state_novelty(self, trace: vf.Trace) -> bool:
         del trace
         return False
-
-    async def finalize(self, trace: vf.Trace, runtime: vf.Runtime) -> None:
-        write_live_actions(list(trace.state.maze_actions))
-        if not trace.state.maze_scorecard:
-            trace.state.game_lost = True
-            if not trace.state.maze_status_error:
-                trace.state.maze_status_error = "trusted game state unavailable"
-        await MazeBenchTaskBehavior.finalize(self, trace, runtime)
 
 
 class MazeBenchToolTaskWithPython(MazeBenchToolTask):
@@ -1425,45 +1081,16 @@ class MazeBenchToolTaskset(vf.Taskset[MazeBenchToolTask, MazeBenchToolConfig]):
             checkpoint = {
                 key: value for key, value in checkpoint.items() if key != "_path"
             }
-        live_actions_path = os.environ.get("MAZEBENCH_LIVE_ACTIONS_PATH", "").strip()
-        if live_actions_path and len(tasks) == 1:
-            base = Path(live_actions_path).resolve().parent
-        else:
-            base = Path(tempfile.mkdtemp(prefix="mazebench-tools-"))
-        base.mkdir(parents=True, exist_ok=True)
 
         sanitized: list[MazeBenchToolTask] = []
-        workspace_key = hashlib.sha256(str(base.resolve()).encode()).hexdigest()[:24]
-        python_workspace = (
-            Path(tempfile.gettempdir())
-            / "mazebench-agent-workspaces"
-            / workspace_key
-            / "workspace"
-        )
         for task in tasks:
             data = task.data
-            tool_config = self.config.tools.model_copy(
+            task_config = task.config.model_copy(
                 update={
-                    "resume_checkpoint": checkpoint,
-                    "python_workspace_path": (
-                        str(python_workspace) if self.config.python_tools else ""
-                    ),
-                    "python_state_path": (
-                        str(base / ".python-sandbox")
-                        if self.config.python_tools
-                        else ""
-                    ),
-                    "python_activity_path": (
-                        str(base / "tool-activity.jsonl")
-                        if self.config.python_tools
-                        else ""
-                    ),
-                    # Never upload this server beside an untrusted harness.
-                    "colocated": False,
+                    "tools": task.config.tools.model_copy(
+                        update={"resume_checkpoint": checkpoint}
+                    )
                 }
-            )
-            task_config = MazeBenchToolTaskConfig.model_validate(
-                {**task.config.model_dump(), "tools": tool_config.model_dump()}
             )
             task_class = (
                 MazeBenchToolTaskWithPython
@@ -1477,6 +1104,7 @@ class MazeBenchToolTaskset(vf.Taskset[MazeBenchToolTask, MazeBenchToolConfig]):
                             # These evaluator paths must not be serialized through the
                             # task channel that the harness can authenticate to.
                             "repo_root": "",
+                            "node_bin": "node",
                             "resume_checkpoint_path": "",
                             "observation": "",
                             "prompt": _tool_prompt_with_resume(

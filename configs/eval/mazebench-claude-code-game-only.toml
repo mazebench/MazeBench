@@ -1,5 +1,5 @@
 # Run with:
-# uv run --project environments/mazebench eval @ configs/eval/mazebench-claude-code-game-only.toml
+# uv run --no-editable --project environments/mazebench eval @ configs/eval/mazebench-claude-code-game-only.toml
 model = "openai/gpt-5.4"
 num_tasks = 1
 num_rollouts = 1

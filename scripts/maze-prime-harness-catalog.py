@@ -12,8 +12,7 @@ from typing import Any
 
 import verifiers.v1 as vf
 import verifiers.v1.harnesses as builtin_harnesses
-from verifiers.v1.loaders import harness_class, harness_config_type
-from verifiers.v1.utils.version import verifiers_commit
+from verifiers.v1.utils.loaders import harness_class, harness_config_type
 
 COMMON_CONFIG_FIELDS = {
     "disabled_tools",
@@ -68,14 +67,20 @@ def adapter_for(harness_id: str, harness_type: type[vf.Harness]) -> dict[str, An
 
 def discover() -> dict[str, Any]:
     harnesses: list[dict[str, Any]] = []
-    harness_ids = sorted(
-        {
-            *(module.name for module in pkgutil.iter_modules(builtin_harnesses.__path__)),
-            *LOCAL_HARNESS_IDS,
-        }
-    )
-    for harness_id in harness_ids:
-        harness_type = harness_class(harness_id)
+    harness_types: dict[str, type[vf.Harness]] = {}
+    candidates = {
+        *(module.name for module in pkgutil.iter_modules(builtin_harnesses.__path__)),
+        *LOCAL_HARNESS_IDS,
+    }
+    for harness_id in sorted(candidates):
+        try:
+            harness_types[harness_id] = harness_class(harness_id)
+        except AttributeError as error:
+            # The harness package also contains shared implementation modules such
+            # as node.py; only modules exporting a harness through __all__ are plugins.
+            if "defines no `__all__`" not in str(error):
+                raise
+    for harness_id, harness_type in harness_types.items():
         config_type = harness_config_type(harness_id)
         config = config_type.model_validate({"id": harness_id})
         schema = config_type.model_json_schema()
@@ -128,15 +133,13 @@ def discover() -> dict[str, Any]:
             }
         )
 
-    commit = verifiers_commit() or "unknown"
     version = importlib.metadata.version("verifiers")
     payload: dict[str, Any] = {
         "schema_version": 1,
-        "source": "pinned-prime-verifiers-and-mazebench-adapters",
+        "source": "verifiers-release-and-mazebench-adapters",
         "verifiers_version": version,
-        "verifiers_revision": commit,
         "policy": (
-            "MazeBench uses pinned Verifiers harnesses plus a pinned Prime Agent adapter "
+            "MazeBench uses the declared Verifiers release plus a pinned Prime Agent adapter "
             "in isolated Prime runtimes. "
             "Each approved route pins its standard harness configuration so the model can "
             "reach the named MazeBench game controls without receiving shell, host filesystem, "
@@ -178,7 +181,7 @@ def main() -> None:
             )
         print(
             f"Prime harness catalog ready: {len(payload['harnesses'])} harnesses, "
-            f"Verifiers {payload['verifiers_revision']}"
+            f"Verifiers {payload['verifiers_version']}"
         )
     else:
         print(json.dumps(payload, indent=2))

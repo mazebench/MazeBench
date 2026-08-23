@@ -7,7 +7,8 @@ license = "MIT"
 requires-python = ">=3.11,<3.14"
 dependencies = [
     "nodejs-wheel==24.16.0",
-    "verifiers @ git+https://github.com/PrimeIntellect-ai/verifiers.git@b3b8f51ed470e3c46c12bb858ad18d257dc50c5e",
+    "playwright==1.60.0",
+    "verifiers==0.3.0",
 ]
 
 [build-system]
@@ -23,8 +24,11 @@ include = [
     "mazebench_prime_agent/**/*.py",
     "mazebench_tools/**/*.py",
     "README.md",
-    "pyproject.toml",
 ]
+
+[tool.hatch.build.targets.wheel.force-include]
+# Verifiers rebuilds non-colocated Toolsets from this wheel-root project.
+"pyproject.toml" = "pyproject.toml"
 
 [tool.hatch.metadata]
 allow-direct-references = true

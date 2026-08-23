@@ -878,7 +878,7 @@ function createPageRenderer({
               <div class="custom-harness-panel__status">
                 <strong id="custom-harness-status">Loading harnesses…</strong>
                 <p id="custom-harness-note" class="muted"></p>
-                <p class="custom-harness-panel__security">The official Prime Agent CLI runs inside a disposable agent sandbox. The framework harness receives only named game controls through standard MCP wiring; the authoritative game server runs in a separate sandbox with source, state, checkpoints, and scoring kept evaluator-only.</p>
+                <p class="custom-harness-panel__security">The official Prime Agent CLI runs inside a disposable agent sandbox. The framework harness receives only named game controls through standard MCP wiring; the evaluator-owned Toolset keeps game source, state, checkpoints, and scoring outside that sandbox.</p>
               </div>
             </div>
             <div id="harness-execution" class="harness-execution" hidden>

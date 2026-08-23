@@ -20,20 +20,15 @@ jobs:
       - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
         with:
           enable-cache: true
-      - name: Advance exact Verifiers pin
-        id: verifiers
-        run: echo "revision=$(python scripts/maze-update-verifiers-pin.py)" >> "$GITHUB_OUTPUT"
       - name: Resolve and install pinned environment
         working-directory: environments/mazebench
-        run: |
-          uv lock --upgrade-package verifiers
-          uv sync --locked
+        run: uv sync --locked --no-editable
       - name: Discover every Prime harness
         run: |
-          uv run --project environments/mazebench python scripts/maze-prime-harness-catalog.py --write environments/mazebench/prime-harness-catalog.json
-          uv run --project environments/mazebench python scripts/maze-verify-prime-tools.py --self-test
-          uv run --locked --project environments/mazebench python3 -m unittest tests/test_game_runtime_isolation.py
-          uv run --project environments/mazebench python scripts/maze-verify-prime-resume.py --self-test
+          uv run --no-editable --project environments/mazebench python scripts/maze-prime-harness-catalog.py --write environments/mazebench/prime-harness-catalog.json
+          uv run --no-editable --project environments/mazebench python scripts/maze-verify-prime-tools.py --self-test
+          uv run --locked --no-editable --project environments/mazebench python3 -m unittest tests/test_game_runtime_isolation.py
+          uv run --no-editable --project environments/mazebench python scripts/maze-verify-prime-resume.py --self-test
           npm run sync-runtime
           node tests/prime-native-harness.test.js
           node tests/prime-harnesses.test.js
@@ -42,13 +37,12 @@ jobs:
         if: ${{ success() }}
         env:
           GH_TOKEN: ${{ github.token }}
-          REVISION: ${{ steps.verifiers.outputs.revision }}
         run: |
           if git diff --quiet; then
             echo "Already current."
             exit 0
           fi
-          branch="automation/prime-harnesses-${REVISION:0:12}"
+          branch="automation/prime-harnesses-0.3.0"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$branch"
@@ -59,4 +53,4 @@ jobs:
             --base main \
             --head "$branch" \
             --title "chore: refresh Prime harness compatibility" \
-            --body "Automated exact-pin update for Prime Verifiers. The generated harness catalog and game-tool boundary checks passed."
+            --body "Automated compatibility refresh for Verifiers 0.3.0. The generated harness catalog and game-tool boundary checks passed."
