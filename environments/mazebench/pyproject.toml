@@ -7,7 +7,7 @@ license = "MIT"
 requires-python = ">=3.11,<3.14"
 dependencies = [
     "nodejs-wheel==24.16.0",
-    "playwright==1.60.0",
+    "playwright==1.62.0",
     "verifiers==0.3.0",
 ]
 
