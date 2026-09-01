@@ -83,6 +83,17 @@ class CliCommandTests(TestCase):
         resolve_root.assert_not_called()
         run_host.assert_called_once_with(["123"], {"level": "HxI"}, [])
 
+    @mock.patch.object(mazebench_cli, "run_host", return_value=41)
+    @mock.patch.object(mazebench_cli, "resolve_root")
+    def test_kill_host_stops_host_without_resolving_site_runtime(
+        self, resolve_root, run_host
+    ):
+        result = mazebench_cli.main(["kill", "host"])
+
+        self.assertEqual(result, 41)
+        resolve_root.assert_not_called()
+        run_host.assert_called_once_with(["stop"], {}, [])
+
     def test_lan_sequence_supports_llm_friendly_move_strings(self):
         self.assertEqual(
             mazebench_cli._lan_sequence_from_tokens(["UURDDL"]),

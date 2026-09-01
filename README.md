@@ -67,8 +67,13 @@ mazebench host 123
 ```
 
 This starts a background server on the local network and advertises it through
-Bonjour. On the benchmark Mac, connect using the same pairing code and choose
-a local record name:
+Bonjour. Each client login name selects a separate host-side directory. For
+example, `lan 123 login fable` uses `~/records/computer/host/fable/`, containing
+`session.json`, `initial-status.json`, `actions.jsonl`, `server.log`, and
+`server.json`. A later `lan 123 login another-run` uses
+`~/records/computer/host/another-run/` with independent game state. The host no
+longer uses `~/.mazebench/lan`. On the benchmark Mac, connect using the same
+pairing code and choose a local record name:
 
 ```bash
 lan 123 login fable
@@ -91,7 +96,8 @@ MAZEBENCH_LAN_HOST=192.168.1.65:7331 lan 123 login fable
 
 Use a longer numeric pairing code on an untrusted LAN. On the host Mac,
 `mazebench host status` shows the server and `mazebench host stop` shuts it
-down.
+down. `mazebench kill host` is an equivalent explicit shutdown command and
+stops every named run.
 
 ## Modes
 

@@ -44,7 +44,10 @@ For an isolated two-Mac setup, run `mazebench host 123` on the game Mac and
 benchmark Mac stores only `~/records/fable/`; the endpoint remains in memory
 and no `computer` control directory is created. The remote prompt accepts the same
 action-only commands as `computer login`. Use `mazebench host stop` on the game
-Mac when finished.
+Mac when finished. Each login gets matching host state under
+`~/records/computer/host/<run-name>/`; hosting does not use
+`~/.mazebench/lan`. `mazebench kill host` stops the supervisor and every named
+run.
 
 Play interactively with the same controls while showing the structured JSON
 observation a model receives, with literal object names and every room object

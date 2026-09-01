@@ -6,6 +6,7 @@ import os
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -114,6 +115,17 @@ def _discover_host(code: str) -> tuple[str, int]:
 
 def _endpoint(code: str) -> str:
     host, port = _discover_host(code)
+    try:
+        addresses = socket.getaddrinfo(
+            host,
+            port,
+            family=socket.AF_INET,
+            type=socket.SOCK_STREAM,
+        )
+    except OSError:
+        addresses = []
+    if addresses:
+        host = str(addresses[0][4][0])
     return f"http://{host}:{port}/{code}/lead"
 
 
@@ -138,7 +150,11 @@ def _call(
         "method": "tools/call",
         "params": {"name": tool_name, "arguments": arguments or {}},
     }
-    payload = _lan_rpc(url, request)
+    payload = _lan_rpc(
+        url,
+        request,
+        headers={"X-MazeBench-Run": run_name},
+    )
     error = _tool_error(payload)
     if error:
         raise CliError(error)

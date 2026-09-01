@@ -43,11 +43,33 @@ class RemoteModeTests(TestCase):
             ("Other-Mac.local", 7331),
         )
 
+    @mock.patch.object(remote, "_discover_host", return_value=("Zeno.local", 7331))
+    @mock.patch.object(
+        remote.socket,
+        "getaddrinfo",
+        return_value=[
+            (
+                remote.socket.AF_INET,
+                remote.socket.SOCK_STREAM,
+                6,
+                "",
+                ("192.168.1.65", 7331),
+            )
+        ],
+    )
+    def test_endpoint_prefers_ipv4_for_bonjour_hosts(self, _getaddrinfo, _discover):
+        self.assertEqual(
+            remote._endpoint("123"),
+            "http://192.168.1.65:7331/123/lead",
+        )
+
     @mock.patch.object(remote, "_endpoint", return_value="http://other:7331/123/lead")
     @mock.patch.object(remote, "_lan_rpc")
     def test_remote_login_writes_only_public_records(self, lan_rpc, endpoint):
         boards = iter(["START", "UP", "DOWN", "LEFT", "ROOM"])
-        lan_rpc.side_effect = lambda _url, _request: observation(next(boards))
+        lan_rpc.side_effect = lambda _url, _request, **_kwargs: observation(
+            next(boards)
+        )
         inputs = [
             "pwd",
             "action up",
@@ -106,6 +128,12 @@ class RemoteModeTests(TestCase):
         self.assertTrue(
             all(call.args[0] == "http://other:7331/123/lead" for call in lan_rpc.call_args_list)
         )
+        self.assertTrue(
+            all(
+                call.kwargs["headers"] == {"X-MazeBench-Run": "fable"}
+                for call in lan_rpc.call_args_list
+            )
+        )
         print_output.assert_any_call(
             "lan: only `action <move>` is available", file=sys.stderr
         )
@@ -123,6 +151,38 @@ class RemoteModeTests(TestCase):
 
 
 class HostCommandTests(TestCase):
+    def test_host_state_directory_is_visible_under_records(self):
+        with TemporaryDirectory() as tmpdir:
+            environment = {
+                **os.environ,
+                "MAZEBENCH_RECORDS_ROOT": str(Path(tmpdir) / "records"),
+            }
+            environment.pop("MAZEBENCH_LAN_STATE_ROOT", None)
+            with mock.patch.dict(os.environ, environment, clear=True):
+                self.assertEqual(
+                    mazebench_cli._lan_dir(),
+                    Path(tmpdir) / "records" / "computer" / "host",
+                )
+
+    def test_legacy_hidden_host_directory_migrates_to_records(self):
+        with TemporaryDirectory() as tmpdir:
+            legacy_dir = Path(tmpdir) / "hidden" / "lan"
+            legacy_dir.mkdir(parents=True)
+            (legacy_dir / "session.json").write_text("{}\n")
+            environment = {
+                **os.environ,
+                "MAZEBENCH_HOME": str(Path(tmpdir) / "hidden"),
+                "MAZEBENCH_RECORDS_ROOT": str(Path(tmpdir) / "records"),
+            }
+            environment.pop("MAZEBENCH_LAN_STATE_ROOT", None)
+
+            with mock.patch.dict(os.environ, environment, clear=True):
+                self.assertEqual(mazebench_cli._migrate_legacy_host_dir(), "")
+
+            visible_dir = Path(tmpdir) / "records" / "computer" / "host"
+            self.assertEqual((visible_dir / "session.json").read_text(), "{}\n")
+            self.assertFalse(legacy_dir.exists())
+
     @mock.patch.object(mazebench_cli, "run_lan_serve", return_value=0)
     @mock.patch.object(mazebench_cli, "_read_lan_state", return_value=None)
     def test_host_starts_text_only_restricted_bridge(self, _read_state, serve):
@@ -137,6 +197,7 @@ class HostCommandTests(TestCase):
                 "name": mazebench_cli._host_service_name("123"),
                 "mode": "text",
                 "advertise": "true",
+                "multi_run": "true",
             },
             [],
         )

@@ -69,6 +69,7 @@ Local-network JSON game bridge (game controls only):
 Restricted two-Mac host:
   mazebench host <pairing-code> [level=HxI]
   mazebench host status | stop
+  mazebench kill host
 
 Interactive command REPL:
   mazebench play [level=HxI view=top-diagonal]
@@ -583,7 +584,39 @@ game_observe, game_action, and game_action_sequence only.
 
 
 def _lan_dir() -> Path:
+    configured = os.environ.get("MAZEBENCH_LAN_STATE_ROOT")
+    if configured:
+        return Path(configured).expanduser()
+    records_root = Path(
+        os.environ.get("MAZEBENCH_RECORDS_ROOT", "~/records")
+    ).expanduser()
+    return records_root / "computer" / "host"
+
+
+def _legacy_lan_dir() -> Path:
     return _mazebench_home() / "lan"
+
+
+def _migrate_legacy_host_dir() -> str:
+    legacy_dir = _legacy_lan_dir()
+    visible_dir = _lan_dir()
+    if legacy_dir == visible_dir or not legacy_dir.exists():
+        return ""
+
+    legacy_state = _read_json_file(legacy_dir / "server.json") or {}
+    legacy_url = str(legacy_state.get("url") or "")
+    _terminate_pid(int(legacy_state.get("advertiser_pid", 0) or 0), timeout=0.5)
+    _terminate_pid(int(legacy_state.get("pid", 0) or 0))
+    (legacy_dir / "server.json").unlink(missing_ok=True)
+    (legacy_dir / "mcp-http.json").unlink(missing_ok=True)
+
+    visible_dir.parent.mkdir(parents=True, exist_ok=True)
+    if visible_dir.exists():
+        destination = visible_dir / f"legacy-lan-{time.time_ns()}"
+    else:
+        destination = visible_dir
+    legacy_dir.rename(destination)
+    return legacy_url
 
 
 def _lan_state_file() -> Path:
@@ -740,7 +773,12 @@ def _default_lan_url(state: dict) -> str:
     return str(state.get("url") or next(iter(state.get("urls", [])), ""))
 
 
-def _start_lan_advertiser(service_name: str, port: int, enabled: bool) -> int | None:
+def _start_lan_advertiser(
+    service_name: str,
+    port: int,
+    enabled: bool,
+    mode: str = "json",
+) -> int | None:
     if not enabled or not shutil.which("dns-sd"):
         return None
     log_path = _lan_advertise_log()
@@ -755,7 +793,7 @@ def _start_lan_advertiser(service_name: str, port: int, enabled: bool) -> int | 
                 "local",
                 str(port),
                 "txtvers=1",
-                "mode=json",
+                f"mode={mode}",
                 "tools=game-only",
                 "protocol=mcp-jsonrpc",
             ],
@@ -836,22 +874,36 @@ def run_lan_serve(words: list[str], pairs: dict[str, str], flags: list[str]) -> 
     port_file.unlink(missing_ok=True)
     log_path = _lan_log()
     service_name = pairs.get("name") or f"MazeBench JSON on {_local_hostname().removesuffix('.local')}"
-    cmd = [
-        _node_bin(),
-        str(root / "scripts" / "maze-mcp-server.js"),
-        "--http",
-        "--host",
-        host,
-        "--port",
-        str(port),
-        "--port-file",
-        str(port_file),
-    ]
+    multi_run = _is_on(pairs.get("multi_run", ""))
+    environment = _lan_server_env(root, run_dir, token, pairs, flags)
+    if multi_run:
+        environment.update(
+            {
+                "MAZEBENCH_HOST_BASE_DIR": str(run_dir),
+                "MAZEBENCH_HOST_BIND": host,
+                "MAZEBENCH_HOST_PORT": str(port),
+                "MAZEBENCH_HOST_PORT_FILE": str(port_file),
+                "MAZEBENCH_NODE_BIN": _node_bin(),
+            }
+        )
+        cmd = [sys.executable, "-m", "mazebench_cli.host"]
+    else:
+        cmd = [
+            _node_bin(),
+            str(root / "scripts" / "maze-mcp-server.js"),
+            "--http",
+            "--host",
+            host,
+            "--port",
+            str(port),
+            "--port-file",
+            str(port_file),
+        ]
     with open(log_path, "ab") as log:
         proc = subprocess.Popen(
             cmd,
             cwd=str(root),
-            env=_lan_server_env(root, run_dir, token, pairs, flags),
+            env=environment,
             stdout=log,
             stderr=log,
             start_new_session=True,
@@ -865,7 +917,12 @@ def run_lan_serve(words: list[str], pairs: dict[str, str], flags: list[str]) -> 
     bound_port = int(server.get("port", port))
     urls = _lan_urls(host, bound_port, token)
     advertise = pairs.get("advertise", "true").lower() not in ("off", "false", "0", "no")
-    advertiser_pid = _start_lan_advertiser(service_name, bound_port, advertise)
+    advertiser_pid = _start_lan_advertiser(
+        service_name,
+        bound_port,
+        advertise,
+        mode=pairs.get("mode", "json").strip().lower(),
+    )
     state = {
         "pid": proc.pid,
         "advertiser_pid": advertiser_pid,
@@ -879,6 +936,7 @@ def run_lan_serve(words: list[str], pairs: dict[str, str], flags: list[str]) -> 
         "repo_root": str(root),
         "run_dir": str(run_dir),
         "mode": pairs.get("mode", "json").strip().lower(),
+        "multi_run": multi_run,
         "tools": list(LAN_TOOL_NAMES),
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
     }
@@ -923,17 +981,32 @@ def run_host(words: list[str], pairs: dict[str, str], flags: list[str]) -> int:
         print(
             "mazebench host <pairing-code> [level=HxI]\n"
             "mazebench host status\n"
-            "mazebench host stop"
+            "mazebench host stop\n"
+            "mazebench kill host"
         )
         return 0
     if action in ("stop", "shutdown", "kill") and len(words) == 1:
+        legacy_url = _migrate_legacy_host_dir()
+        if _read_lan_state():
+            return run_lan_stop()
+        if legacy_url:
+            print(f"mazebench: stopped and migrated legacy host at {legacy_url}.")
+            return 0
         return run_lan_stop()
     if action in ("status", "ps") and len(words) == 1:
+        legacy_state = _read_json_file(_legacy_lan_dir() / "server.json") or {}
+        if legacy_state and _pid_alive(int(legacy_state.get("pid", 0) or 0)):
+            print(
+                "mazebench: legacy host is running from ~/.mazebench/lan; "
+                "rerun `mazebench host <pairing-code>` to migrate it into ~/records."
+            )
+            return 0
         return run_lan_status()
     if len(words) != 1:
         raise CliError("use `mazebench host <pairing-code>`")
 
     code = _validate_host_code(words[0])
+    _migrate_legacy_host_dir()
     existing = _read_lan_state()
     if existing and str(existing.get("token") or "") != code:
         raise CliError(
@@ -945,6 +1018,7 @@ def run_host(words: list[str], pairs: dict[str, str], flags: list[str]) -> int:
         "name": _host_service_name(code),
         "mode": "text",
         "advertise": "true",
+        "multi_run": "true",
     }
     return run_lan_serve([], options, flags)
 
@@ -976,12 +1050,17 @@ def _lan_endpoint(pairs: dict[str, str]) -> str:
     )
 
 
-def _lan_rpc(url: str, request: dict) -> dict:
+def _lan_rpc(
+    url: str,
+    request: dict,
+    *,
+    headers: dict[str, str] | None = None,
+) -> dict:
     body = json.dumps(request).encode("utf-8")
     http_request = urllib.request.Request(
         url,
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", **(headers or {})},
         method="POST",
     )
     try:
@@ -1287,6 +1366,8 @@ def main(argv: list[str] | None = None) -> int:
             return run_lan(words[1:], pairs, flags)
         if command == "host":
             return run_host(words[1:], pairs, flags)
+        if command == "kill" and words[1:] == ["host"] and not pairs and not flags:
+            return run_host(["stop"], {}, [])
 
         root = resolve_root()
 
