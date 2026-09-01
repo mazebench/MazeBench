@@ -45,6 +45,7 @@ prime = [
 
 [project.scripts]
 mazebench = "mazebench_cli:main"
+computer = "mazebench_cli.computer:main"
 
 [build-system]
 requires = ["hatchling"]

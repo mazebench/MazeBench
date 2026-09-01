@@ -21,6 +21,42 @@ npm run dev
 
 The site opens at `http://localhost:3000`.
 
+## Silent local computer controls
+
+Install the checkout as an editable tool, then enter a named run:
+
+```bash
+uv tool install --editable . --force
+computer login 09_01_fable_5_1
+```
+
+This opens a narrow, venv-like prompt. It is not a shell: only `action` is
+accepted.
+
+```text
+(09_01_fable_5_1) action up
+(09_01_fable_5_1) action down
+(09_01_fable_5_1) action sequence UDLRDLLDLDR
+(09_01_fable_5_1) action room HxI
+(09_01_fable_5_1) action undo
+(09_01_fable_5_1) action rotate up
+(09_01_fable_5_1) action quit
+```
+
+Successful actions are silent. Each action appends one normalized line to
+`~/records/<run>/moves.txt` and writes its resulting observation to
+`move_history/move_<number>_<action>.txt`. Each move file contains only the
+ASCII board—no JSON or metadata. The starting board is saved once as
+`move_history/move_0.txt` without adding a line to `moves.txt`.
+`current_board.txt` always holds the latest
+ASCII board, while `current_state.json` contains only `died`, `gems`, and
+`rooms_available`. Private server bookkeeping stays under the hidden
+`~/records/.computer/` directory. `action quit` stops the local server and
+leaves the mode without recording a quit move. A compact `action sequence`
+accepts only `U`, `D`, `L`, and `R`, and records every step separately.
+Previously visited rooms use compact names such as `HxI`; enter one with
+`action room HxI`.
+
 ## Modes
 
 - **Play** — explore the main world or a local world.

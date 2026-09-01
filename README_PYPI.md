@@ -24,6 +24,21 @@ mazebench ascii --level CxD
 
 Both `CxD` and the full `level_CxD` level ID are accepted.
 
+For silent, restricted local control, enter a run with the separate `computer`
+command:
+
+```bash
+computer login 09_01_fable_5_1
+```
+
+The resulting prompt accepts only `action <move>`, `action sequence <UDLR...>`,
+and `action quit`; it is not a shell. Successful actions produce no output. Each run directory under
+`~/records` contains `moves.txt`, `move_history/`, `current_board.txt`, and
+`current_state.json`. Every numbered move-history file contains only the ASCII
+board; `move_history/move_0.txt` is the initial board before the first action.
+Room names use compact `HxI` formatting and `action room HxI` returns to a
+previously visited room.
+
 Play interactively with the same controls while showing the structured JSON
 observation a model receives, with literal object names and every room object
 included:
