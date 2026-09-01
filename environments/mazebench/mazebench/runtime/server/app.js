@@ -4,6 +4,12 @@ const crypto = require("crypto");
 const { execFile, spawnSync } = require("child_process");
 const { promisify } = require("util");
 const { createAgentRunService, enrichedPathEnv } = require("./agent-runs");
+const {
+  chairNativeAccount,
+  localAgentImageReadiness,
+  stripCredentialBrokerCapability,
+  trustedHostAccountEnvironment
+} = require("./agent-auth");
 const { createTrainingService } = require("./training");
 const { createLocalBuildWorldService } = require("./build-worlds-local");
 const { createRemoteService } = require("./remote");
@@ -230,6 +236,8 @@ const buildWorlds = createLocalBuildWorldService({
 const agentRuns = createAgentRunService({
   agentEnvironment,
   agentEnvironmentAsync,
+  claudeLaunchCredentials: chairClaudeLaunchCredentials,
+  providerHostEnvironment,
   syncPrimeEvaluations: true,
   buildWorlds,
   ensureDirectory,
@@ -266,7 +274,7 @@ let agentEnvironmentPromise = null;
 const LOCAL_AGENT_IMAGE = "docker.io/library/mazebench-agent:latest";
 const LOCAL_AGENT_VERSIONS = Object.freeze({
   codex: "0.146.0",
-  claude: "2.1.220",
+  claude: "2.1.257",
   kimi: "0.29.1"
 });
 const LOCAL_AGENT_IMAGE_LABELS = Object.freeze({
@@ -282,7 +290,13 @@ function dockerState() {
     spawnSync("sh", ["-c", "command -v docker"], { encoding: "utf8", env: enrichedPathEnv() }).status === 0;
 
   if (!installed) {
-    return { installed: false, running: false, image: false, imageVersions: {} };
+    return {
+      installed: false,
+      running: false,
+      image: false,
+      imageReadyByProvider: {},
+      imageVersions: {}
+    };
   }
 
   // `docker info` fails fast when the daemon is down; the format keeps it tiny.
@@ -294,7 +308,15 @@ function dockerState() {
   const version = String(info.stdout || "").trim();
   const running = info.status === 0 && version.length > 0 && version !== "<no value>";
 
-  if (!running) return { installed: true, running: false, image: false, imageVersions: {} };
+  if (!running) {
+    return {
+      installed: true,
+      running: false,
+      image: false,
+      imageReadyByProvider: {},
+      imageVersions: {}
+    };
+  }
   const image = spawnSync(
     "docker",
     ["image", "inspect", LOCAL_AGENT_IMAGE, "--format", "{{json .Config.Labels}}"],
@@ -309,11 +331,15 @@ function dockerState() {
   const imageVersions = Object.fromEntries(
     Object.entries(LOCAL_AGENT_IMAGE_LABELS).map(([provider, label]) => [provider, String(labels[label] || "")])
   );
+  const imageReadyByProvider = image.status === 0
+    ? localAgentImageReadiness(imageVersions, LOCAL_AGENT_VERSIONS)
+    : {};
   return {
     installed: true,
     running: true,
-    image: image.status === 0 && Object.entries(LOCAL_AGENT_VERSIONS)
-      .every(([provider, version]) => imageVersions[provider] === version),
+    image: Object.values(imageReadyByProvider).length === Object.keys(LOCAL_AGENT_VERSIONS).length &&
+      Object.values(imageReadyByProvider).every(Boolean),
+    imageReadyByProvider,
     imageVersions
   };
 }
@@ -328,7 +354,58 @@ function codexSubscriptionStatus(result) {
   };
 }
 
-function claudeSubscriptionStatus(result) {
+function chairClaudeOAuthToken() {
+  const helper = String(process.env.CHAIR_CLAUDE_TOKEN_HELPER || "").trim();
+  if (!helper || !path.isAbsolute(helper)) return "";
+
+  try {
+    if (!fs.statSync(helper).isFile()) return "";
+    const result = spawnSync(helper, ["read"], {
+      encoding: "utf8",
+      env: {
+        ...enrichedPathEnv(),
+        HOME: String(process.env.CHAIR_CLAUDE_TOKEN_HELPER_HOME || process.env.HOME || "")
+      },
+      timeout: 10000,
+      maxBuffer: 64 * 1024
+    });
+    const token = String(result.stdout || "").trim();
+    return result.status === 0 && /^sk-ant-oat[A-Za-z0-9_-]{20,}$/.test(token) ? token : "";
+  } catch (_error) {
+    return "";
+  }
+}
+
+function chairClaudeLaunchCredentials() {
+  const nativeAccount = chairNativeAccount();
+  if (nativeAccount) {
+    return {
+      HOME: nativeAccount.home,
+      ...(nativeAccount.user ? { USER: nativeAccount.user } : {})
+    };
+  }
+  const token = chairClaudeOAuthToken();
+  return token ? { CLAUDE_CODE_OAUTH_TOKEN: token } : {};
+}
+
+function providerHostEnvironment() {
+  return stripCredentialBrokerCapability(
+    trustedHostAccountEnvironment(enrichedPathEnv())
+  );
+}
+
+function claudeSubscriptionEnvironment() {
+  const environment = providerHostEnvironment();
+  for (const key of ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"]) delete environment[key];
+  const credentials = chairClaudeLaunchCredentials();
+  Object.assign(environment, credentials);
+  return {
+    environment,
+    chairOAuth: Boolean(credentials.CLAUDE_CODE_OAUTH_TOKEN)
+  };
+}
+
+function claudeSubscriptionStatus(result, options = {}) {
   let payload = {};
   try {
     payload = JSON.parse(String(result?.stdout || "{}"));
@@ -337,11 +414,13 @@ function claudeSubscriptionStatus(result) {
   }
   const authenticated = result?.status === 0 && payload.loggedIn === true;
   const subscriptionType = String(payload.subscriptionType || "").trim();
+  const nativeSubscription = authenticated && payload.authMethod === "claude.ai" && Boolean(subscriptionType);
+  const chairSubscription = authenticated && options.chairOAuth === true && payload.authMethod === "oauth_token";
   return {
     authenticated,
-    subscription: authenticated && payload.authMethod === "claude.ai" && Boolean(subscriptionType),
-    method: String(payload.authMethod || ""),
-    subscriptionType
+    subscription: nativeSubscription || chairSubscription,
+    method: chairSubscription ? "chair-oauth" : String(payload.authMethod || ""),
+    subscriptionType: subscriptionType || (chairSubscription ? "subscription" : "")
   };
 }
 
@@ -378,12 +457,12 @@ function agentEnvironment(options = {}) {
   const probe = (bin) =>
     spawnSync("sh", ["-c", `command -v ${JSON.stringify(bin)}`], {
       encoding: "utf8",
-      env: enrichedPathEnv()
+      env: providerHostEnvironment()
     }).status === 0;
-  const probeCommand = (bin, args, timeout = 5000) =>
+  const probeCommand = (bin, args, timeout = 5000, environment = providerHostEnvironment()) =>
     spawnSync(bin, args, {
       encoding: "utf8",
-      env: enrichedPathEnv(),
+      env: environment,
       timeout,
       maxBuffer: 2 * 1024 * 1024
     });
@@ -391,11 +470,15 @@ function agentEnvironment(options = {}) {
   const claudeInstalled = probe("claude");
   const kimiInstalled = probe("kimi");
   const primeInstalled = probe("prime");
+  const claudeCredentials = claudeSubscriptionEnvironment();
   const codexAuth = codexSubscriptionStatus(
     codexInstalled ? probeCommand("codex", ["login", "status"]) : null
   );
   const claudeAuth = claudeSubscriptionStatus(
-    claudeInstalled ? probeCommand("claude", ["auth", "status", "--json"]) : null
+    claudeInstalled
+      ? probeCommand("claude", ["auth", "status", "--json"], 5000, claudeCredentials.environment)
+      : null,
+    { chairOAuth: claudeCredentials.chairOAuth }
   );
   const kimiAuth = kimiAccountStatus(
     kimiInstalled ? probeCommand("kimi", ["provider", "list", "--json"]) : null
@@ -407,18 +490,18 @@ function agentEnvironment(options = {}) {
   const docker = dockerState();
   const value = {
     checking: false,
-    codex: codexInstalled && codexAuth.subscription && docker.running && docker.image,
+    codex: codexInstalled && codexAuth.subscription && docker.running && docker.imageReadyByProvider.codex,
     codex_installed: codexInstalled,
     codex_authenticated: codexAuth.authenticated,
     codex_subscription: codexAuth.subscription,
     codex_auth_method: codexAuth.method,
-    claude: claudeInstalled && claudeAuth.subscription && docker.running && docker.image,
+    claude: claudeInstalled && claudeAuth.subscription && docker.running && docker.imageReadyByProvider.claude,
     claude_installed: claudeInstalled,
     claude_authenticated: claudeAuth.authenticated,
     claude_subscription: claudeAuth.subscription,
     claude_auth_method: claudeAuth.method,
     claude_subscription_type: claudeAuth.subscriptionType,
-    kimi: kimiInstalled && kimiAuth.subscription && docker.running && docker.image,
+    kimi: kimiInstalled && kimiAuth.subscription && docker.running && docker.imageReadyByProvider.kimi,
     kimi_installed: kimiInstalled,
     kimi_authenticated: kimiAuth.authenticated,
     kimi_subscription: kimiAuth.subscription,
@@ -428,10 +511,11 @@ function agentEnvironment(options = {}) {
     docker_installed: docker.installed,
     docker_running: docker.running,
     local_agent_image: docker.image,
+    local_agent_image_ready: docker.imageReadyByProvider,
     local_agent_image_versions: docker.imageVersions,
     local_agent_required_versions: LOCAL_AGENT_VERSIONS,
     // Compatibility keys retained for older Agent pages.
-    local_codex_image: docker.image,
+    local_codex_image: Boolean(docker.imageReadyByProvider.codex),
     local_codex_image_version: docker.imageVersions.codex || "",
     local_codex_required_version: LOCAL_AGENT_VERSIONS.codex,
     // Prime v1 evals run via `uv run eval`; the `prime` CLI is only needed for
@@ -456,7 +540,7 @@ async function agentEnvironmentAsync(options = {}) {
     try {
       await execFileAsync("sh", ["-c", "command -v \"$1\"", "sh", bin], {
         encoding: "utf8",
-        env: enrichedPathEnv(),
+        env: providerHostEnvironment(),
         timeout: 3000
       });
       return true;
@@ -464,11 +548,11 @@ async function agentEnvironmentAsync(options = {}) {
       return false;
     }
   };
-  const runCommand = async (bin, args, timeout = 5000) => {
+  const runCommand = async (bin, args, timeout = 5000, environment = providerHostEnvironment()) => {
     try {
       return await execFileAsync(bin, args, {
         encoding: "utf8",
-        env: enrichedPathEnv(),
+        env: environment,
         timeout,
         maxBuffer: 2 * 1024 * 1024
       });
@@ -486,15 +570,21 @@ async function agentEnvironmentAsync(options = {}) {
       commandExists("uv"),
       commandExists("docker")
     ]);
+    const claudeCredentials = claudeSubscriptionEnvironment();
     const [codexResult, claudeResult, kimiResult, primeResult, dockerResult] = await Promise.all([
       codexInstalled ? runCommand("codex", ["login", "status"]) : null,
-      claudeInstalled ? runCommand("claude", ["auth", "status", "--json"]) : null,
+      claudeInstalled
+        ? runCommand("claude", ["auth", "status", "--json"], 5000, claudeCredentials.environment)
+        : null,
       kimiInstalled ? runCommand("kimi", ["provider", "list", "--json"]) : null,
       primeInstalled ? runCommand("prime", ["whoami"], 8000) : null,
       dockerInstalled ? runCommand("docker", ["info", "--format", "{{.ServerVersion}}"], 8000) : null
     ]);
     const codexAuth = codexSubscriptionStatus(codexResult ? { ...codexResult, status: 0 } : null);
-    const claudeAuth = claudeSubscriptionStatus(claudeResult ? { ...claudeResult, status: 0 } : null);
+    const claudeAuth = claudeSubscriptionStatus(
+      claudeResult ? { ...claudeResult, status: 0 } : null,
+      { chairOAuth: claudeCredentials.chairOAuth }
+    );
     const kimiAuth = kimiAccountStatus(kimiResult ? { ...kimiResult, status: 0 } : null);
     const primeAuthenticated = Boolean(primeResult);
     const dockerRunning = Boolean(dockerResult && String(dockerResult.stdout || "").trim());
@@ -514,22 +604,25 @@ async function agentEnvironmentAsync(options = {}) {
     const imageVersions = Object.fromEntries(
       Object.entries(LOCAL_AGENT_IMAGE_LABELS).map(([provider, label]) => [provider, String(imageLabels[label] || "")])
     );
-    const localAgentImage = Boolean(imageResult && Object.entries(LOCAL_AGENT_VERSIONS)
-      .every(([provider, version]) => imageVersions[provider] === version));
+    const imageReadyByProvider = imageResult
+      ? localAgentImageReadiness(imageVersions, LOCAL_AGENT_VERSIONS)
+      : {};
+    const localAgentImage = Object.values(imageReadyByProvider).length === Object.keys(LOCAL_AGENT_VERSIONS).length &&
+      Object.values(imageReadyByProvider).every(Boolean);
     const value = {
       checking: false,
-      codex: codexInstalled && codexAuth.subscription && dockerRunning && localAgentImage,
+      codex: codexInstalled && codexAuth.subscription && dockerRunning && imageReadyByProvider.codex,
       codex_installed: codexInstalled,
       codex_authenticated: codexAuth.authenticated,
       codex_subscription: codexAuth.subscription,
       codex_auth_method: codexAuth.method,
-      claude: claudeInstalled && claudeAuth.subscription && dockerRunning && localAgentImage,
+      claude: claudeInstalled && claudeAuth.subscription && dockerRunning && imageReadyByProvider.claude,
       claude_installed: claudeInstalled,
       claude_authenticated: claudeAuth.authenticated,
       claude_subscription: claudeAuth.subscription,
       claude_auth_method: claudeAuth.method,
       claude_subscription_type: claudeAuth.subscriptionType,
-      kimi: kimiInstalled && kimiAuth.subscription && dockerRunning && localAgentImage,
+      kimi: kimiInstalled && kimiAuth.subscription && dockerRunning && imageReadyByProvider.kimi,
       kimi_installed: kimiInstalled,
       kimi_authenticated: kimiAuth.authenticated,
       kimi_subscription: kimiAuth.subscription,
@@ -538,9 +631,10 @@ async function agentEnvironmentAsync(options = {}) {
       docker_installed: dockerInstalled,
       docker_running: Boolean(dockerRunning),
       local_agent_image: localAgentImage,
+      local_agent_image_ready: imageReadyByProvider,
       local_agent_image_versions: imageVersions,
       local_agent_required_versions: LOCAL_AGENT_VERSIONS,
-      local_codex_image: localAgentImage,
+      local_codex_image: Boolean(imageReadyByProvider.codex),
       local_codex_image_version: imageVersions.codex || "",
       local_codex_required_version: LOCAL_AGENT_VERSIONS.codex,
       prime: primeInstalled && primeAuthenticated,

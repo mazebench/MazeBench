@@ -4,12 +4,39 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const {
+  claudeCatalogModelsFromMetadata,
   createAgentRunService,
   replayMessageForCommandText,
   resolveAgentRunsDir
 } = require("../server/agent-runs");
 const { BOARD_STATE_HASH_VERSION } = require("../shared/board-state");
 const primeHarnessCatalog = require("../environments/mazebench/prime-harness-catalog.json");
+
+assert.deepEqual(
+  claudeCatalogModelsFromMetadata([
+    "Custom Fable model",
+    "Fable 5",
+    "Fable 5.1 - most capable for your hardest and longest-running tasks",
+    "Custom Opus model",
+    "Opus 5 - best for everyday, complex tasks",
+    "Custom Sonnet model",
+    "Sonnet 5 - efficient for routine tasks",
+    "Custom Haiku model",
+    "Haiku 4.5 - fastest for quick answers"
+  ], ["fable", "opus", "sonnet"]).map(({ id, label, resolved_model_id: resolved }) => ({
+    id,
+    label,
+    resolved
+  })),
+  [
+    { id: "claude-fable-5-1", label: "Fable 5.1", resolved: "claude-fable-5-1" },
+    { id: "claude-fable-5", label: "Fable 5", resolved: "claude-fable-5" },
+    { id: "claude-opus-5", label: "Opus 5", resolved: "claude-opus-5" },
+    { id: "claude-sonnet-5", label: "Sonnet 5", resolved: "claude-sonnet-5" },
+    { id: "claude-haiku-4-5", label: "Haiku 4.5", resolved: "claude-haiku-4-5" }
+  ],
+  "Fable 5.1 and Fable 5 must be separate exact launch choices"
+);
 
 const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "mazebench-agent-queue-"));
 assert.equal(
@@ -127,8 +154,8 @@ let agentEnvironmentState = {
   docker_installed: true,
   docker_running: true,
   local_agent_image: true,
-  local_agent_versions: { codex: "0.146.0", claude: "2.1.220", kimi: "0.29.1" },
-  local_agent_image_versions: { codex: "0.146.0", claude: "2.1.220", kimi: "0.29.1" },
+  local_agent_versions: { codex: "0.146.0", claude: "2.1.257", kimi: "0.29.1" },
+  local_agent_image_versions: { codex: "0.146.0", claude: "2.1.257", kimi: "0.29.1" },
   local_codex_image: true,
   local_codex_image_version: "0.146.0",
   local_codex_required_version: "0.146.0"
@@ -150,6 +177,40 @@ const launchedIds = [];
 
 (async () => {
 try {
+  const historicalRunId = "historical-fable-provider-identity";
+  const historicalRunDir = path.join(rootDir, "outputs", "maze-local", "site", historicalRunId);
+  fs.mkdirSync(historicalRunDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(historicalRunDir, "run.json"),
+    `${JSON.stringify({
+      id: historicalRunId,
+      kind: "local",
+      created_at: new Date().toISOString(),
+      status: "paused",
+      model: "claude",
+      model_name: "claude-fable-5-1",
+      model_alias: "fable",
+      launch_params: { model: "claude", model_name: "fable" },
+      game_id: "maze",
+      level_id: "level_HxI"
+    }, null, 2)}\n`,
+    "utf8"
+  );
+  fs.writeFileSync(
+    path.join(historicalRunDir, "agent-events.jsonl"),
+    [
+      { type: "system", subtype: "init", model: "claude-fable-5" },
+      { type: "stream_event", event: { type: "message_start", message: { model: "claude-fable-5" } } },
+      { type: "system", subtype: "init", model: "claude-fable-5-1" }
+    ].map((event) => JSON.stringify(event)).join("\n") + "\n",
+    "utf8"
+  );
+  assert.equal(
+    service.summarizeRun(historicalRunId).model_name,
+    "claude-fable-5",
+    "saved provider events must correct a historical Fable 5.1 mislabel"
+  );
+
   agentEnvironmentState = { ...agentEnvironmentState, uv: false };
   assert.throws(
     () => service.launchRuns({ kind: "prime", model_name: "preflight-test", max_turns: 1 }),
@@ -749,15 +810,56 @@ try {
   );
   agentEnvironmentState = { ...agentEnvironmentState, local_agent_image: true, local_codex_image: true };
 
+  agentEnvironmentState = {
+    ...agentEnvironmentState,
+    local_agent_image: false,
+    local_codex_image: true,
+    local_agent_image_ready: { codex: true, claude: true, kimi: false }
+  };
+  const [providerReadyClaude] = service.launchRuns({
+    kind: "local",
+    subscription: true,
+    model: "claude",
+    container: true,
+    tools: false,
+    tool_use: "read-only",
+    moves: 1,
+    video: false
+  });
+  launchedIds.push(providerReadyClaude.id);
+  assert.equal(providerReadyClaude.status, "running");
+  assert.throws(
+    () => service.launchRuns({
+      kind: "local",
+      subscription: true,
+      model: "kimi",
+      container: true,
+      tools: false,
+      tool_use: "read-only",
+      moves: 1,
+      video: false
+    }),
+    /certified local-agent image is missing or stale/
+  );
+  service.stopRun(providerReadyClaude.id);
+  service.deleteRun(providerReadyClaude.id);
+  agentEnvironmentState = {
+    ...agentEnvironmentState,
+    local_agent_image: true,
+    local_agent_image_ready: { codex: true, claude: true, kimi: true }
+  };
+
   for (const [model, harness, version] of [
     ["codex", "codex", "0.146.0"],
-    ["claude", "claude_code", "2.1.220"],
+    ["claude", "claude_code", "2.1.257"],
     ["kimi", "kimi_code", "0.29.1"]
   ]) {
+    const modelName = model === "claude" ? "claude-fable-5-1" : "";
     const [isolatedLocal] = service.launchRuns({
       kind: "local",
       subscription: true,
       model,
+      ...(modelName ? { model_name: modelName } : {}),
       container: true,
       tools: false,
       tool_use: "read-only",
@@ -773,6 +875,11 @@ try {
     assert.equal(isolatedLocal.tools, false);
     assert.equal(isolatedLocal.tool_use, "read-only");
     assert.match(isolatedLocal.command, new RegExp(`model=${model}`));
+    if (modelName) {
+      assert.equal(isolatedLocal.model_name, modelName);
+      assert.equal(isolatedLocal.launch_params.model_name, modelName);
+      assert.match(isolatedLocal.command, /model_name=claude-fable-5-1/);
+    }
     assert.match(isolatedLocal.command, /container=true/);
     assert.match(isolatedLocal.note, /game controls only/);
     service.stopRun(isolatedLocal.id);

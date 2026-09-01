@@ -96,6 +96,7 @@
   const visibilityAnimations = new WeakMap();
   const selectionTargets = new WeakMap();
   let pendingLaunches = 0;
+  let launchRequestPending = false;
   let launchStatusHideTimer = null;
 
   const state = {
@@ -690,6 +691,7 @@
     const authenticated = env[`${provider}_authenticated`] ?? Boolean(env[provider]);
     const subscription = env[`${provider}_subscription`] ?? Boolean(env[provider]);
     const imageVersions = env.local_agent_image_versions || {};
+    const imageReadyByProvider = env.local_agent_image_ready || {};
     const requiredVersions = env.local_agent_required_versions || {};
     return {
       checking: false,
@@ -700,7 +702,9 @@
       authMethod: env[`${provider}_auth_method`] || "",
       dockerInstalled: Boolean(env.docker_installed),
       dockerRunning: Boolean(env.docker_running),
-      imageReady: Boolean(env.local_agent_image ?? env.local_codex_image),
+      imageReady: Boolean(
+        imageReadyByProvider[provider] ?? env.local_agent_image ?? env.local_codex_image
+      ),
       imageVersion: String(imageVersions[provider] || env.local_codex_image_version || ""),
       requiredVersion: String(requiredVersions[provider] || env.local_codex_required_version || "")
     };
@@ -1785,7 +1789,7 @@
   }
 
   document.getElementById("launch-run")?.addEventListener("click", async () => {
-    if (!runReady()) return;
+    if (launchRequestPending || !runReady()) return;
     if (state.modelId === "__custom__" && !resolvedModelName() && (state.catalogs[catalogKey()]?.models || []).length) {
       setStatus("Type a model id or pick one from the list.", true);
       return;
@@ -1846,6 +1850,7 @@
         };
 
     body.count = 1;
+    launchRequestPending = true;
     beginLaunch();
     setStatus("");
     resetComposerForNextRun();
@@ -1874,6 +1879,7 @@
     } catch (error) {
       setStatus(error.message, true);
     } finally {
+      launchRequestPending = false;
       finishLaunch();
     }
   });

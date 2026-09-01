@@ -15,7 +15,7 @@ const {
   withActionCostTimeline,
   withApiCostEstimate
 } = require("../server/token-usage");
-const { apiPricingForRun } = require("../server/agent-runs");
+const { apiPricingForRun, preferredClaudeRunModelId } = require("../server/agent-runs");
 const {
   actionsFromShellCommand,
   actionsFromToolCall,
@@ -34,6 +34,17 @@ assert.deepEqual(containerRuntimeMountArgs("/tmp/maze-current"), [
 ]);
 
 const lines = (...events) => events.map((event) => JSON.stringify(event)).join("\n");
+
+assert.equal(
+  preferredClaudeRunModelId("claude-fable-5", "claude-fable-5", "claude-fable-5-1"),
+  "claude-fable-5",
+  "a current alias must not relabel a historical Fable 5 run"
+);
+assert.equal(
+  preferredClaudeRunModelId("claude-fable-5-1", "claude-fable-5", "claude-fable-5-1"),
+  "claude-fable-5",
+  "the provider-reported model must override an incorrectly labeled Fable 5.1 launch"
+);
 
 {
   const catalog = [
@@ -409,6 +420,25 @@ const codexCall = (verb) => ({
   assert.equal(usage.cache_creation_input_tokens, 110);
   assert.equal(usage.api_cost_estimate_usd, 0.00318);
   assert.equal(usage.api_pricing.model, "claude-fable-5");
+}
+
+{
+  const usage = parseClaudeEvents(
+    lines(
+      { type: "system", subtype: "init", model: "claude-fable-5" },
+      { type: "stream_event", event: { type: "message_delta", usage: {
+        input_tokens: 10,
+        cache_read_input_tokens: 100,
+        cache_creation_input_tokens: 200,
+        cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 200 },
+        output_tokens: 20
+      } } }
+    ),
+    "claude-fable-5-1"
+  );
+  assert.equal(usage.api_pricing.model, "claude-fable-5");
+  assert.equal(usage.api_pricing.cache_read, 1);
+  assert.equal(usage.api_cost_estimate_usd, 0.0052);
 }
 
 {

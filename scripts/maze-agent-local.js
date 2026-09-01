@@ -21,7 +21,7 @@ const {
 } = require("./maze-python-sandbox");
 const DEFAULT_MAX_SWARM_WORKERS = 8;
 const SUPPORTED_LOCAL_CODEX_VERSION = "0.146.0";
-const SUPPORTED_LOCAL_CLAUDE_VERSION = "2.1.220";
+const SUPPORTED_LOCAL_CLAUDE_VERSION = "2.1.257";
 const SUPPORTED_LOCAL_KIMI_VERSION = "0.29.1";
 const SUPPORTED_LOCAL_AGENT_VERSIONS = Object.freeze({
   codex: SUPPORTED_LOCAL_CODEX_VERSION,
@@ -798,7 +798,7 @@ function claudeMcpConfig(config) {
   return JSON.stringify({
     mcpServers: {
       [serverName]: config.mcpUrl
-        ? { type: "http", url: config.mcpUrl }
+        ? { type: "http", url: config.mcpUrl, alwaysLoad: true }
         : { command: process.execPath, args: [MAZE_MCP_SERVER], env: mcpEnvironment(config) }
     }
   });
@@ -1257,7 +1257,10 @@ function isolatedDockerAgentCommand(config, command) {
       "--setenv", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1",
       "--setenv", "DISABLE_TELEMETRY", "1",
       "--setenv", "DISABLE_ERROR_REPORTING", "1",
-      "--setenv", "DISABLE_AUTOUPDATER", "1"
+      "--setenv", "DISABLE_AUTOUPDATER", "1",
+      "--setenv", "ENABLE_TOOL_SEARCH", "false",
+      "--setenv", "MCP_CONNECTION_NONBLOCKING", "false",
+      "--setenv", "MCP_TIMEOUT", "30000"
     );
     chownTree(projectsDir);
   } else if (config.model === "kimi") {
@@ -1548,7 +1551,17 @@ function agentCommand(config, prompt) {
     if (["low", "medium", "high", "xhigh", "max"].includes(config.reasoning)) {
       argv.push("--effort", config.reasoning);
     }
-    return { bin: config.claudeBin, argv };
+    return {
+      bin: config.claudeBin,
+      argv,
+      env: config.mcpEnabled
+        ? {
+            ENABLE_TOOL_SEARCH: "false",
+            MCP_CONNECTION_NONBLOCKING: "false",
+            MCP_TIMEOUT: "30000"
+          }
+        : {}
+    };
   }
 
   if (config.model === "kimi") {
@@ -1763,7 +1776,8 @@ function assertLocalClaudeCommandIsolation(config, command) {
   const serverName = offline ? "mazebench" : "game";
   const server = servers[0]?.[1];
   if (servers.length !== 1 || servers[0][0] !== serverName || server?.type !== "http" ||
-      server?.url !== config.mcpUrl || Object.keys(server).some((key) => !["type", "url"].includes(key))) {
+      server?.url !== config.mcpUrl || server?.alwaysLoad !== true ||
+      Object.keys(server).some((key) => !["type", "url", "alwaysLoad"].includes(key))) {
     throw new Error("Local Claude Code must use exactly one private HTTP MCP endpoint.");
   }
   const settings = JSON.parse(valueAfter("--settings"));
@@ -2735,10 +2749,10 @@ function extractClaudeKeychainCredential() {
 
 // Read the Codex model catalog (with per-model reasoning levels + fast-tier
 // availability) that the Codex app caches on the host.
-function loadCodexModels() {
+function loadCodexModels(homeDir = process.env.HOME || "") {
   try {
     const cache = JSON.parse(
-      fs.readFileSync(path.join(process.env.HOME || "", ".codex", "models_cache.json"), "utf8")
+      fs.readFileSync(path.join(homeDir, ".codex", "models_cache.json"), "utf8")
     );
     return (Array.isArray(cache.models) ? cache.models : [])
       .filter((m) => m && (m.slug || m.id))

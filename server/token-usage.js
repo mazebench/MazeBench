@@ -596,6 +596,13 @@ function claudeUsageShape(usage = {}) {
 // these API-equivalent rates; cache writes retain the TTL-specific multipliers
 // exposed in each streamed usage record.
 const CLAUDE_API_PRICING = Object.freeze({
+  "claude-fable-5-1": Object.freeze({
+    input: 10,
+    cache_read: 0.25,
+    cache_write_5m: 12.5,
+    cache_write_1h: 20,
+    output: 50
+  }),
   "claude-fable-5": Object.freeze({
     input: 10,
     cache_read: 1,
@@ -649,7 +656,7 @@ function claudeApiCost(details, pricing) {
   ) / 1_000_000;
 }
 
-function parseClaudeEvents(raw) {
+function parseClaudeEvents(raw, modelHint = "") {
   const points = [];
   const costEvents = [];
   const pending = new Map();
@@ -670,13 +677,23 @@ function parseClaudeEvents(raw) {
   const reportedDetails = { ...streamedDetails };
   let streamedResponses = 0;
   let reportedCost = 0;
-  let selectedModelId = "";
+  let selectedModelId = String(modelHint || "").trim();
   let latest = null;
   let contextWindow = 0;
   let selectedModelWeight = -1;
   let sawAgentTools = false;
 
   for (const [eventIndex, event] of jsonLines(raw).entries()) {
+    const liveModelId = String(
+      event?.model || event?.message?.model || event?.event?.message?.model || event?.event?.model || ""
+    ).trim();
+    if (/^claude-[a-z0-9.-]+$/i.test(liveModelId)) {
+      // The provider event identifies what actually handled the request. Do
+      // not treat claude-fable-5-1 as a suffix variant of claude-fable-5:
+      // those are distinct products with different usage pools and pricing.
+      selectedModelId = liveModelId;
+    }
+
     if (event.type === "stream_event" && event.event?.type === "message_delta" && event.event.usage) {
       latest = claudeUsageShape(event.event.usage);
       streamedResponses += 1;

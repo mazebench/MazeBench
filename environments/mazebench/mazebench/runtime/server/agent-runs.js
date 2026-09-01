@@ -4,6 +4,7 @@ const os = require("os");
 const path = require("path");
 const { isDeepStrictEqual } = require("node:util");
 const { spawn, spawnSync } = require("child_process");
+const { stripCredentialBrokerCapability } = require("./agent-auth");
 const {
   RETIRED_LOCAL_AGENT_MESSAGE,
   SUPPORTED_LOCAL_AGENT_VERSIONS,
@@ -97,6 +98,19 @@ function normalizeEventTimestamp(value) {
   return Number.isFinite(date.getTime()) ? date.toISOString() : null;
 }
 
+function preferredClaudeRunModelId(storedModel, observedModel, catalogModel) {
+  const stored = String(storedModel || "").trim();
+  const observed = String(observedModel || "").trim();
+  const catalog = String(catalogModel || "").trim();
+  const storedExact = /^claude-[a-z0-9.-]+$/i.test(stored) ? stored : "";
+
+  // Provider events are the authority for what actually ran. In particular,
+  // claude-fable-5 and claude-fable-5-1 are distinct models; never reinterpret
+  // the former as a shortened spelling of the latter. Fall back to the exact
+  // launch id only when the provider emitted no model identity at all.
+  return observed || storedExact || catalog || stored;
+}
+
 // Agent Mode backend: launches the isolated Prime runner and reads both current
 // and historical run artifacts under outputs/maze-local/site/.
 
@@ -134,6 +148,72 @@ function claudeReasoningLevels(modelId) {
     ...(supportsXhigh ? ["xhigh"] : []),
     ...(supportsMax ? ["max"] : [])
   ];
+}
+
+function compareClaudeModelVersions(left, right) {
+  const leftParts = String(left).split(".").map(Number);
+  const rightParts = String(right).split(".").map(Number);
+  const length = Math.max(leftParts.length, rightParts.length);
+
+  for (let index = 0; index < length; index += 1) {
+    const difference = (rightParts[index] || 0) - (leftParts[index] || 0);
+    if (difference) return difference;
+  }
+  return 0;
+}
+
+function claudeCatalogModelsFromMetadata(metadataLines, detectedAliases = []) {
+  const lines = Array.isArray(metadataLines)
+    ? metadataLines.map((line) => String(line || "").trim()).filter(Boolean)
+    : [];
+  const pickerFamilies = lines.flatMap((line) => {
+    const match = line.match(/^Custom ([a-z][a-z0-9-]*) model$/i);
+    return match ? [match[1].toLowerCase()] : [];
+  });
+  const aliases = [...new Set([...detectedAliases, ...pickerFamilies]
+    .map((alias) => String(alias || "").trim().toLowerCase())
+    .filter((alias) => /^[a-z][a-z0-9-]*$/.test(alias)))];
+  const descriptions = {
+    fable: "highest capability",
+    opus: "deep reasoning",
+    sonnet: "balanced speed and capability",
+    haiku: "fastest responses"
+  };
+
+  return aliases.flatMap((alias) => {
+    const escapedAlias = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const versionPattern = new RegExp(`^${escapedAlias}\\s+(\\d+(?:\\.\\d+)*)\\s*(?:-|$)`, "i");
+    const versions = [...new Set(lines.flatMap((line) => {
+      const match = line.match(versionPattern);
+      return match ? [match[1]] : [];
+    }))].sort(compareClaudeModelVersions);
+    const title = `${alias.charAt(0).toUpperCase()}${alias.slice(1)}`;
+
+    if (!versions.length) {
+      return [{
+        id: alias,
+        label: `${title} (latest alias)`,
+        description: `Dynamic Claude ${title} alias; Claude Code chooses the exact version at launch`,
+        resolved_model_id: "",
+        reasoning_levels: claudeReasoningLevels(alias)
+      }];
+    }
+
+    // Fable 5.1 and Fable 5 have separate usage pools and materially different
+    // behavior, so both must remain independently selectable. Other families
+    // keep the newest exact picker entry to avoid flooding the launch screen.
+    const exposedVersions = alias === "fable" ? versions : versions.slice(0, 1);
+    return exposedVersions.map((version, index) => {
+      const id = `claude-${alias}-${version.replace(/\./g, "-")}`;
+      return {
+        id,
+        label: `${title} ${version}`,
+        description: `Exact Claude ${title} ${version} model${index ? " (previous release)" : descriptions[alias] ? ` — ${descriptions[alias]}` : ""}`,
+        resolved_model_id: id,
+        reasoning_levels: claudeReasoningLevels(id)
+      };
+    });
+  });
 }
 
 // Keep Prime's runner contract provider-neutral. Provider-specific extensions
@@ -367,6 +447,12 @@ const MAX_RUN_NOTES_LENGTH = 50_000;
 const MAX_PROGRESS_LOG_BYTES = 256 * 1024;
 const TOOL_WORKSPACE_MAX_ENTRIES = 2000;
 const TOOL_WORKSPACE_READ_BYTES = 512 * 1024;
+const LEGACY_RESUMABLE_LOCAL_AGENT_VERSIONS = Object.freeze({
+  // These runs were created by the immediately preceding certified Claude
+  // image. They may be continued through the current image after their exact
+  // provider-reported model id has been recovered from the saved transcript.
+  claude: Object.freeze(["2.1.220"])
+});
 const RUN_ID_PATTERN = /^[a-z0-9][a-z0-9-]{4,80}$/i;
 const SERVABLE_RUN_FILES = new Set([
   "run.json",
@@ -487,6 +573,8 @@ function primeEvaluationReward(sample, scorecard = null) {
 function createAgentRunService({
   agentEnvironment,
   agentEnvironmentAsync,
+  claudeLaunchCredentials,
+  providerHostEnvironment,
   primeEvaluationCreator = {},
   syncPrimeEvaluations = false,
   ensureDirectory,
@@ -539,6 +627,10 @@ function createAgentRunService({
 
   function requireIsolatedLocalAgentMeta(meta) {
     const provider = String(meta?.model || "").trim().toLowerCase();
+    const resumableHarnessVersions = new Set([
+      SUPPORTED_LOCAL_AGENT_VERSIONS[provider],
+      ...(LEGACY_RESUMABLE_LOCAL_AGENT_VERSIONS[provider] || [])
+    ]);
     const toolUse = String(meta?.tool_use || meta?.launch_params?.tool_use || "read-only").trim().toLowerCase();
     const boundaryPrefix = isPrimeLocalIsolatedRun(meta)
       ? "prime-inference/disposable-container/"
@@ -547,7 +639,7 @@ function createAgentRunService({
       (toolUse === "offline" && meta?.harness_boundary === `${boundaryPrefix}game-tools+isolated-python`);
     if (
       meta?.harness !== ({ codex: "codex", claude: "claude_code", kimi: "kimi_code" })[provider] ||
-      meta?.harness_version !== SUPPORTED_LOCAL_AGENT_VERSIONS[provider] ||
+      !resumableHarnessVersions.has(meta?.harness_version) ||
       !validBoundary ||
       meta?.container_image !== "mazebench-agent"
     ) {
@@ -577,12 +669,26 @@ function createAgentRunService({
   }
 
   function localLaunchEnvironment(params) {
-    const environment = enrichedPathEnv();
+    const environment = trustedProviderEnvironment();
     if (!(params?.subscription === true || params?.subscription === "true")) return environment;
     for (const key of ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "CODEX_ACCESS_TOKEN"]) {
       delete environment[key];
     }
+    if (
+      String(params?.model || "").toLowerCase() === "claude" &&
+      typeof claudeLaunchCredentials === "function"
+    ) {
+      Object.assign(environment, claudeLaunchCredentials());
+    }
     return environment;
+  }
+
+  function trustedProviderEnvironment() {
+    return stripCredentialBrokerCapability(
+      typeof providerHostEnvironment === "function"
+        ? providerHostEnvironment()
+        : enrichedPathEnv()
+    );
   }
   const primeResultsPaths = new Map();
   const actionCache = new Map();
@@ -639,10 +745,14 @@ function createAgentRunService({
     return spawnSync("sh", ["-c", "command -v docker"], { encoding: "utf8", env: enrichedPathEnv() }).status === 0;
   }
 
-  function localAgentImageAvailable() {
+  function localAgentImageAvailable(provider = "") {
     if (!dockerAvailable()) return false;
     if (typeof agentEnvironment === "function") {
       const environment = agentEnvironment();
+      const providerReadiness = environment.local_agent_image_ready || {};
+      if (provider && Object.prototype.hasOwnProperty.call(providerReadiness, provider)) {
+        return Boolean(providerReadiness[provider]);
+      }
       return Boolean(environment.local_agent_image ?? environment.local_codex_image);
     }
     const result = spawnSync(
@@ -653,6 +763,14 @@ function createAgentRunService({
     if (result.status !== 0) return false;
     try {
       const labels = JSON.parse(String(result.stdout || "{}"));
+      if (provider && SUPPORTED_LOCAL_AGENT_VERSIONS[provider]) {
+        const label = {
+          codex: "org.mazebench.local-codex.version",
+          claude: "org.mazebench.local-claude.version",
+          kimi: "org.mazebench.local-kimi.version"
+        }[provider];
+        return labels[label] === SUPPORTED_LOCAL_AGENT_VERSIONS[provider];
+      }
       return labels["org.mazebench.local-codex.version"] === SUPPORTED_LOCAL_AGENT_VERSIONS.codex &&
         labels["org.mazebench.local-claude.version"] === SUPPORTED_LOCAL_AGENT_VERSIONS.claude &&
         labels["org.mazebench.local-kimi.version"] === SUPPORTED_LOCAL_AGENT_VERSIONS.kimi;
@@ -1287,7 +1405,7 @@ function createAgentRunService({
           "--output", "json",
           "--plain"
         ],
-        { cwd: rootDir, env: enrichedPathEnv(), stdio: ["ignore", "pipe", "pipe"] }
+        { cwd: rootDir, env: trustedProviderEnvironment(), stdio: ["ignore", "pipe", "pipe"] }
       );
       child.unref();
       primeSyncChildren.set(runId, child);
@@ -1340,7 +1458,7 @@ function createAgentRunService({
     const creator = spawn(
       String(primeEvaluationCreator.bin || process.execPath),
       creatorArgs,
-      { cwd: rootDir, env: enrichedPathEnv(), stdio: ["ignore", "pipe", "pipe"] }
+      { cwd: rootDir, env: trustedProviderEnvironment(), stdio: ["ignore", "pipe", "pipe"] }
     );
     creator.unref();
     primeSyncChildren.set(runId, creator);
@@ -2340,7 +2458,9 @@ function createAgentRunService({
   function resolveClaudeCatalogModelId(modelName) {
     const requested = String(modelName || "").trim();
 
-    if (!requested || !/^[a-z][a-z0-9-]*$/i.test(requested)) {
+    // A full provider id is already immutable. Only a short Claude Code alias
+    // should ever be looked up in the dynamically discovered catalog.
+    if (!requested || /^claude-/i.test(requested) || !/^[a-z][a-z0-9-]*$/i.test(requested)) {
       return requested;
     }
 
@@ -2365,34 +2485,55 @@ function createAgentRunService({
     }
 
     const family = String(requestedModel || "").toLowerCase().match(/(?:^|claude-)(fable|opus|sonnet|haiku)(?:-|$)/)?.[1] || "";
-    const lines = fs.readFileSync(eventsPath, "utf8").split(/\r?\n/).reverse();
-
-    for (const line of lines) {
-      if (!line.trim()) continue;
-
-      try {
-        const event = JSON.parse(line);
-        const usage = event && event.modelUsage;
-        if (!usage || typeof usage !== "object") continue;
-
-        const candidates = Object.entries(usage)
-          .filter(([id]) => /^claude-[a-z0-9.-]+$/i.test(id))
-          .map(([id, stats]) => ({
-            id,
-            tokens: Number(stats?.outputTokens || 0) + Number(stats?.inputTokens || 0)
-          }));
-        const familyMatches = family
-          ? candidates.filter((candidate) => candidate.id.toLowerCase().includes(`claude-${family}-`))
-          : [];
-        const selected = (familyMatches.length ? familyMatches : candidates)
-          .sort((left, right) => right.tokens - left.tokens)[0];
-
-        if (selected) {
-          resolvedRunModels.set(runId, selected.id);
-          return selected.id;
+    const events = fs.readFileSync(eventsPath, "utf8")
+      .split(/\r?\n/)
+      .filter((line) => line.trim())
+      .flatMap((line) => {
+        try {
+          return [JSON.parse(line)];
+        } catch (_error) {
+          return [];
         }
-      } catch (_error) {
-        /* skip partial/non-JSON stream lines */
+      })
+      .reverse();
+    const remember = (id) => {
+      const value = String(id || "");
+      resolvedRunModels.set(runId, value);
+      return value;
+    };
+
+    // A provider message proves that the model actually produced output. This
+    // must outrank a later system/init record: failed resume attempts can emit
+    // an init for the requested model without generating a single response.
+    for (const event of events) {
+      const observed = [event?.event?.message?.model, event?.message?.model]
+        .find((id) => /^claude-[a-z0-9.-]+$/i.test(String(id || "")));
+      if (observed) return remember(observed);
+    }
+
+    for (const event of events) {
+      const usage = event?.modelUsage;
+      if (!usage || typeof usage !== "object") continue;
+      const candidates = Object.entries(usage)
+        .filter(([id]) => /^claude-[a-z0-9.-]+$/i.test(id))
+        .map(([id, stats]) => ({
+          id,
+          tokens: Number(stats?.outputTokens || 0) + Number(stats?.inputTokens || 0)
+        }));
+      const familyMatches = family
+        ? candidates.filter((candidate) => candidate.id.toLowerCase().includes(`claude-${family}-`))
+        : [];
+      const selected = (familyMatches.length ? familyMatches : candidates)
+        .sort((left, right) => right.tokens - left.tokens)[0];
+      if (selected) return remember(selected.id);
+    }
+
+    for (const event of events) {
+      const initialized = event?.type === "system" && event?.subtype === "init"
+        ? event.model
+        : "";
+      if (/^claude-[a-z0-9.-]+$/i.test(String(initialized || ""))) {
+        return remember(initialized);
       }
     }
 
@@ -2407,7 +2548,9 @@ function createAgentRunService({
     }
 
     const requested = meta.model_alias || meta.launch_params?.model_name || modelName;
-    return readClaudeRunModelId(runId, requested) || resolveClaudeCatalogModelId(requested) || modelName;
+    const observed = readClaudeRunModelId(runId, requested);
+    const catalog = resolveClaudeCatalogModelId(requested);
+    return preferredClaudeRunModelId(modelName, observed, catalog);
   }
 
   function summarizeRun(runId) {
@@ -3641,7 +3784,10 @@ function createAgentRunService({
             : parseCodexEvents(fs.existsSync(eventsPath) ? fs.readFileSync(eventsPath, "utf8") : "");
         }
       } else if (summary.provider === "claude") {
-        value = parseClaudeEvents(fs.existsSync(eventsPath) ? fs.readFileSync(eventsPath, "utf8") : "");
+        value = parseClaudeEvents(
+          fs.existsSync(eventsPath) ? fs.readFileSync(eventsPath, "utf8") : "",
+          summary.model_name
+        );
       } else if (summary.provider === "kimi") {
         value = kimiWirePath
           ? parseKimiWire(fs.readFileSync(kimiWirePath, "utf8"))
@@ -4554,7 +4700,8 @@ function createAgentRunService({
   }
 
   function codexModelCatalog() {
-    const models = loadCodexModels().map((model) => ({
+    const providerEnvironment = trustedProviderEnvironment();
+    const models = loadCodexModels(providerEnvironment.HOME).map((model) => ({
       id: model.slug,
       label: model.displayName,
       description: model.description,
@@ -4566,7 +4713,7 @@ function createAgentRunService({
 
     try {
       const cache = JSON.parse(
-        fs.readFileSync(path.join(process.env.HOME || "", ".codex", "models_cache.json"), "utf8")
+        fs.readFileSync(path.join(providerEnvironment.HOME || "", ".codex", "models_cache.json"), "utf8")
       );
       updatedAt = String(cache.fetched_at || "");
     } catch (_error) {
@@ -4601,7 +4748,7 @@ function createAgentRunService({
     // installed CLI instead of maintaining a stale model list here.
     const help = spawnSync("claude", ["--help"], {
       encoding: "utf8",
-      env: enrichedPathEnv(),
+      env: trustedProviderEnvironment(),
       timeout: 5000,
       maxBuffer: 2 * 1024 * 1024
     });
@@ -4611,11 +4758,10 @@ function createAgentRunService({
       ? [...aliasExample[1].matchAll(/['"]([a-z][a-z0-9-]*)['"]/gi)].map((match) => match[1].toLowerCase())
       : [];
 
-    const pickerLabels = new Map();
-    const pickerModelIds = new Map();
+    let metadataLines = [];
     const executable = spawnSync("sh", ["-c", "command -v claude"], {
       encoding: "utf8",
-      env: enrichedPathEnv(),
+      env: trustedProviderEnvironment(),
       timeout: 2000
     });
     const executablePath = String(executable.stdout || "").trim();
@@ -4634,82 +4780,39 @@ function createAgentRunService({
         ],
         {
           encoding: "utf8",
-          env: enrichedPathEnv(),
+          env: trustedProviderEnvironment(),
           timeout: 5000,
           maxBuffer: 2 * 1024 * 1024
         }
       );
-      const metadataLines = String(pickerMetadata.stdout || "")
+      metadataLines = String(pickerMetadata.stdout || "")
         .split(/\r?\n/)
         .map((line) => line.trim())
         .filter(Boolean);
-      const pickerFamilies = [...new Set(metadataLines.flatMap((line) => {
-        const match = line.match(/^Custom ([a-z][a-z0-9-]*) model$/i);
-        return match ? [match[1]] : [];
-      }))];
-
-      for (const family of pickerFamilies) {
-        const escapedFamily = family.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-        const versionPattern = new RegExp(`^${escapedFamily}\\s+(\\d+(?:\\.\\d+)*)\\s*(?:-|$)`, "i");
-        const versions = metadataLines.flatMap((line) => {
-          const match = line.match(versionPattern);
-          return match ? [match[1]] : [];
-        });
-        versions.sort((left, right) => {
-          const leftParts = left.split(".").map(Number);
-          const rightParts = right.split(".").map(Number);
-          const length = Math.max(leftParts.length, rightParts.length);
-          for (let index = 0; index < length; index += 1) {
-            const difference = (rightParts[index] || 0) - (leftParts[index] || 0);
-            if (difference) return difference;
-          }
-          return 0;
-        });
-
-        const alias = family.toLowerCase();
-        const version = versions[0];
-        if (version) {
-          pickerLabels.set(alias, `${family.charAt(0).toUpperCase()}${family.slice(1)} ${version}`);
-          pickerModelIds.set(alias, `claude-${alias}-${version.replace(/\./g, "-")}`);
-        }
-      }
     }
 
-    const aliases = [...new Set([...detectedAliases, ...pickerLabels.keys()])]
-      .filter((alias) => /^[a-z][a-z0-9-]*$/.test(alias));
-    const descriptions = {
-      fable: "Latest Fable tier — highest capability",
-      opus: "Latest Opus tier — deep reasoning",
-      sonnet: "Latest Sonnet tier — balanced speed and capability",
-      haiku: "Latest Haiku tier — fastest responses"
-    };
+    const models = claudeCatalogModelsFromMetadata(metadataLines, detectedAliases);
     const version = spawnSync("claude", ["--version"], {
       encoding: "utf8",
-      env: enrichedPathEnv(),
+      env: trustedProviderEnvironment(),
       timeout: 5000
     });
     const versionText = String(version.stdout || "").trim().replace(/\s*\(Claude Code\)\s*$/i, "");
 
     return {
-      models: aliases.map((alias) => ({
-        id: alias,
-        label: pickerLabels.get(alias) || `${alias.charAt(0).toUpperCase()}${alias.slice(1)} (latest)`,
-        description: descriptions[alias] || `Latest model behind the ${alias} alias`,
-        resolved_model_id: pickerModelIds.get(alias) || "",
-        reasoning_levels: claudeReasoningLevels(pickerModelIds.get(alias) || "")
-      })),
+      models,
       source: versionText ? `Claude Code ${versionText}` : "Installed Claude Code CLI",
       checked_at: modelCatalogCheckedAt(),
-      default_model_id: aliases[0] || "",
+      default_model_id: models[0]?.id || "",
       // The CLI accepts this complete syntax set, but each model above carries
       // its own supported subset. Versioned Claude family ids deliberately use
       // a family-level rule so newly released aliases keep their effort control.
       reasoning_levels: ["low", "medium", "high", "xhigh", "max"],
       reasoning_default: "",
-      note: pickerLabels.size
-        ? "Models and display versions detected from this installed Claude Code build. Aliases stay dynamic when Claude rolls them forward."
+      note: metadataLines.length
+        ? "Exact model versions detected from this installed Claude Code build. Fable releases remain separately selectable and launch by full model id."
         : detectedAliases.length
-          ? "Aliases detected from the installed CLI; this build did not expose exact picker labels."
+          ? "Only dynamic aliases were detected from the installed CLI; exact picker labels were unavailable."
           : "Claude Code did not expose a model list. Use Custom… for a full model id."
     };
   }
@@ -4717,13 +4820,13 @@ function createAgentRunService({
   function kimiModelCatalog() {
     const result = spawnSync("kimi", ["provider", "list", "--json"], {
       encoding: "utf8",
-      env: enrichedPathEnv(),
+      env: trustedProviderEnvironment(),
       timeout: 5000,
       maxBuffer: 2 * 1024 * 1024
     });
     const version = spawnSync("kimi", ["--version"], {
       encoding: "utf8",
-      env: enrichedPathEnv(),
+      env: trustedProviderEnvironment(),
       timeout: 3000
     });
     const versionText = String(version.stdout || "").trim();
@@ -4834,7 +4937,7 @@ function createAgentRunService({
   function primeModelCatalog() {
     const result = spawnSync("prime", ["--plain", "inference", "models", "--output", "json"], {
       encoding: "utf8",
-      env: enrichedPathEnv(),
+      env: trustedProviderEnvironment(),
       timeout: 15000,
       maxBuffer: 16 * 1024 * 1024
     });
@@ -5008,7 +5111,7 @@ function createAgentRunService({
           : "Isolated local agents need Docker, which is not installed."
       );
     }
-    if (!localAgentImageAvailable()) {
+    if (!localAgentImageAvailable(model)) {
       throw new Error(
         "The certified local-agent image is missing or stale. Run `npm run maze:build-local-agents` " +
         `(required Codex ${SUPPORTED_LOCAL_AGENT_VERSIONS.codex}, Claude Code ${SUPPORTED_LOCAL_AGENT_VERSIONS.claude}, ` +
@@ -5436,7 +5539,7 @@ function createAgentRunService({
         child = spawn(command.bin, command.argv, {
           cwd: rootDir,
           detached: true,
-          env: enrichedPathEnv(),
+          env: trustedProviderEnvironment(),
           stdio: ["ignore", logFd, logFd]
         });
         meta = {
@@ -5769,6 +5872,15 @@ function createAgentRunService({
     }
 
     if (meta.status === "paused") {
+      if (meta.pause_reason === "manual") return summarizeRun(runId);
+      const {
+        retry_at: _retryAt,
+        provider_retry_attempt: _providerRetryAttempt,
+        ...rest
+      } = meta;
+      writeRunMeta(runId, coldPausedRunMeta(rest, {
+        pause_message: "Paused by user; automatic provider retries are disabled."
+      }));
       return summarizeRun(runId);
     }
 
@@ -6224,10 +6336,16 @@ function createAgentRunService({
     clearColdPauseCapability(runId);
     const segmentStartTurns = readActions(runId).length;
     const storedParams = meta.launch_params || reconstructParams(meta);
+    const observedClaudeModel = meta.model === "claude"
+      ? readClaudeRunModelId(
+          runId,
+          meta.model_alias || storedParams.model_name || meta.model_name
+        )
+      : "";
     const params = {
       ...storedParams,
       model: meta.model || storedParams.model,
-      model_name: meta.model_name || storedParams.model_name,
+      model_name: observedClaudeModel || meta.model_name || storedParams.model_name,
       inference: isPrimeLocalIsolatedRun(meta)
         ? "prime"
         : storedParams.inference || meta.inference_provider || "subscription",
@@ -6259,6 +6377,7 @@ function createAgentRunService({
     }
     const nextMeta = {
       ...meta,
+      harness_version: SUPPORTED_LOCAL_AGENT_VERSIONS[params.model],
       moves: meta.unlimited
         ? null
         : options.preserveMoveTarget
@@ -6447,7 +6566,21 @@ function createAgentRunService({
     if (!Number.isFinite(turn) || turn < 0 || turn > total) {
       throw new Error(`Choose an action from 0 through ${total}.`);
     }
-    const base = branchLaunchParams(meta, meta.launch_params || reconstructParams(meta), runId, turn);
+    const sourceParams = meta.launch_params || reconstructParams(meta);
+    const observedClaudeModel = meta.model === "claude"
+      ? readClaudeRunModelId(
+          runId,
+          meta.model_alias || sourceParams.model_name || meta.model_name
+        )
+      : "";
+    const base = branchLaunchParams(
+      meta,
+      observedClaudeModel
+        ? { ...sourceParams, model_name: observedClaudeModel }
+        : sourceParams,
+      runId,
+      turn
+    );
     return launchRun(base);
   }
 
@@ -6699,7 +6832,7 @@ function createAgentRunService({
     const result = spawnSync("prime", ["eval", "stop", evaluationId, "--plain"], {
       cwd: rootDir,
       encoding: "utf8",
-      env: enrichedPathEnv(),
+      env: trustedProviderEnvironment(),
       timeout: 30_000,
       maxBuffer: 2 * 1024 * 1024
     });
@@ -6741,7 +6874,7 @@ function createAgentRunService({
       {
         cwd: rootDir,
         encoding: "utf8",
-        env: enrichedPathEnv(),
+        env: trustedProviderEnvironment(),
         timeout: 30_000,
         maxBuffer: 2 * 1024 * 1024
       }
@@ -6984,12 +7117,14 @@ function createAgentRunService({
 module.exports = {
   apiPricingForRun,
   branchLaunchParams,
+  claudeCatalogModelsFromMetadata,
   claudeReasoningLevels,
   collectedAllWorldGems,
   createAgentRunService,
   enrichedPathEnv,
   filterPrimeCatalogForHarness,
   normalizePrimeHarnessConfig,
+  preferredClaudeRunModelId,
   primeReasoningLevels,
   primeHarnessModelCompatible,
   primeEvaluationReward,

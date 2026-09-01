@@ -326,11 +326,11 @@ for (const unsafeCommand of [
   );
 }
 assert.equal(SUPPORTED_LOCAL_CODEX_VERSION, "0.146.0");
-assert.equal(SUPPORTED_LOCAL_CLAUDE_VERSION, "2.1.220");
+assert.equal(SUPPORTED_LOCAL_CLAUDE_VERSION, "2.1.257");
 assert.equal(SUPPORTED_LOCAL_KIMI_VERSION, "0.29.1");
 assert.deepEqual(SUPPORTED_LOCAL_AGENT_VERSIONS, {
   codex: "0.146.0",
-  claude: "2.1.220",
+  claude: "2.1.257",
   kimi: "0.29.1"
 });
 assert.match(localAgentDockerfile, /FROM mcr\.microsoft\.com\/playwright:v1\.60\.0-noble/);
@@ -380,6 +380,20 @@ const claudeConfig = { ...baseConfig, model: "claude", modelName: "claude-test" 
 const claude = agentCommand(claudeConfig, buildMcpPrompt(claudeConfig));
 const valueAfter = (flag) => claude.argv[claude.argv.indexOf(flag) + 1];
 assert.equal(valueAfter("--tools"), "default", "Claude needs its default registry enabled to discover MCP tools");
+assert.deepEqual(claude.env, {
+  ENABLE_TOOL_SEARCH: "false",
+  MCP_CONNECTION_NONBLOCKING: "false",
+  MCP_TIMEOUT: "30000"
+}, "Claude must wait for its private MCP tools before beginning inference");
+assert.deepEqual(JSON.parse(valueAfter("--mcp-config")), {
+  mcpServers: {
+    game: {
+      type: "http",
+      url: claudeConfig.mcpUrl,
+      alwaysLoad: true
+    }
+  }
+});
 assert.equal(claude.argv.includes("--setting-sources"), false, "overriding setting sources races Claude MCP startup");
 assert.equal(claude.argv.includes("--system-prompt"), false, "replacing Claude's base prompt races MCP startup");
 assert.equal(valueAfter("--append-system-prompt").includes("only the explicitly configured game controls"), true);

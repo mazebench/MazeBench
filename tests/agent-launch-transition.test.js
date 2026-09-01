@@ -16,6 +16,8 @@ assert.match(siteTheme, /\.agent-launch-status \{[\s\S]*?grid-column: 2;/);
 assert.match(siteTheme, /\.agent-launch-status \{[\s\S]*?position: fixed;[\s\S]*?top: calc\(var\(--topbar-height/);
 assert.match(siteTheme, /\.agent-launch-status__spinner \{[\s\S]*?animation: loading-spin/);
 assert.match(agentScript, /function resetComposerForNextRun\(\)/);
+assert.match(agentScript, /if \(launchRequestPending \|\| !runReady\(\)\) return;/);
+assert.match(agentScript, /launchRequestPending = true;[\s\S]*finally \{\s*launchRequestPending = false;/);
 assert.match(pages, /id="auto-run-tools-option"[\s\S]*id="run-auto-run-tools"[\s\S]*Auto-run tools/);
 assert.match(pages, /id="prime-auto-run-tools-option"[\s\S]*id="run-prime-auto-run-tools"[\s\S]*Auto-run tools/);
 assert.match(pages, /Lets solvers submit full action sequences, observe the final frame, and inspect intermediate frames\./);
@@ -36,7 +38,7 @@ assert.match(siteTheme, /\.tool-use-suboption\[hidden\][\s\S]*display: none/);
 assert.match(agentScript, /state\.harness && state\.harness !== "none" && state\.execution === "prime"/);
 assert.match(agentScript, /beginLaunch\(\);\s*setStatus\(""\);\s*resetComposerForNextRun\(\);\s*\n\s*try \{/);
 assert.match(agentScript, /runsView\.page = 1;\s*void refreshRuns\(\);/);
-assert.match(agentScript, /finally \{\s*finishLaunch\(\);\s*\}/);
+assert.match(agentScript, /finally \{\s*launchRequestPending = false;\s*finishLaunch\(\);\s*\}/);
 const launchHandler = agentScript.slice(
   agentScript.indexOf('document.getElementById("launch-run")'),
   agentScript.indexOf("// ---- runs list")

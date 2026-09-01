@@ -8,7 +8,7 @@
 FROM mcr.microsoft.com/playwright:v1.60.0-noble
 
 ARG CODEX_VERSION=0.146.0
-ARG CLAUDE_CODE_VERSION=2.1.220
+ARG CLAUDE_CODE_VERSION=2.1.257
 ARG KIMI_CODE_VERSION=0.29.1
 
 LABEL org.mazebench.local-codex.version="${CODEX_VERSION}"
