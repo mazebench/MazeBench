@@ -43,6 +43,39 @@ class RemoteModeTests(TestCase):
             ("Other-Mac.local", 7331),
         )
 
+    def test_parses_newest_matching_bonjour_collision_first(self):
+        name = mazebench_cli._host_service_name("123")
+        output = (
+            f"12:00:00 Add 3 15 local. _mazebench._tcp. {name}\n"
+            f"12:00:00 Add 3 15 local. _mazebench._tcp. Unrelated\n"
+            f"12:00:00 Add 2 15 local. _mazebench._tcp. {name} (2)\n"
+        )
+        self.assertEqual(
+            remote._parse_matching_service_names(output, name),
+            [f"{name} (2)", name],
+        )
+
+    @mock.patch.object(remote.shutil, "which", return_value="/usr/bin/dns-sd")
+    @mock.patch.object(remote, "_command_output")
+    def test_discovery_prefers_newest_bonjour_collision(self, command_output, _which):
+        name = mazebench_cli._host_service_name("123")
+        command_output.side_effect = [
+            (
+                f"12:00:00 Add 3 15 local. _mazebench._tcp. {name}\n"
+                f"12:00:00 Add 2 15 local. _mazebench._tcp. {name} (2)\n"
+            ),
+            (
+                f"{name} (2)._mazebench._tcp.local. can be reached at "
+                "Zeno.local.:7332 (interface 15)\n"
+            ),
+        ]
+
+        self.assertEqual(remote._discover_host("123"), ("Zeno.local", 7332))
+        self.assertEqual(
+            command_output.call_args_list[1].args[0],
+            ["dns-sd", "-L", f"{name} (2)", "_mazebench._tcp", "local"],
+        )
+
     @mock.patch.object(remote, "_discover_host", return_value=("Zeno.local", 7331))
     @mock.patch.object(
         remote.socket,

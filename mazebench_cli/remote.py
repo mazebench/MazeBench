@@ -80,6 +80,25 @@ def _parse_service_endpoint(output: str) -> tuple[str, int] | None:
     return match.group(1).rstrip("."), int(match.group(2))
 
 
+def _parse_matching_service_names(output: str, service_name: str) -> list[str]:
+    pattern = re.compile(
+        rf"^{re.escape(service_name)}(?: \(([0-9]+)\))?$"
+    )
+    matches: dict[str, int] = {}
+    marker = f"{LAN_SERVICE_TYPE}."
+    for line in output.splitlines():
+        if " Add " not in f" {line} " or marker not in line:
+            continue
+        candidate = line.split(marker, 1)[1].strip()
+        match = pattern.fullmatch(candidate)
+        if match:
+            generation = int(match.group(1) or 1)
+            if generation == 1 and match.group(1):
+                continue
+            matches[candidate] = generation
+    return sorted(matches, key=lambda name: matches[name], reverse=True)
+
+
 def _host_override() -> tuple[str, int] | None:
     value = os.environ.get("MAZEBENCH_LAN_HOST", "").strip()
     if not value:
@@ -101,16 +120,24 @@ def _discover_host(code: str) -> tuple[str, int]:
             "Bonjour discovery is unavailable; set MAZEBENCH_LAN_HOST=host:port"
         )
     service_name = _host_service_name(code)
-    output = _command_output(
-        ["dns-sd", "-L", service_name, LAN_SERVICE_TYPE, "local"],
-        timeout=5.0,
+    browse_output = _command_output(
+        ["dns-sd", "-B", LAN_SERVICE_TYPE, "local"],
+        timeout=1.0,
     )
-    endpoint = _parse_service_endpoint(output)
-    if endpoint is None:
-        raise CliError(
-            f"could not find {service_name}; start `mazebench host {code}` on the other Mac"
+    candidates = _parse_matching_service_names(browse_output, service_name)
+    if service_name not in candidates:
+        candidates.append(service_name)
+    for candidate in candidates:
+        output = _command_output(
+            ["dns-sd", "-L", candidate, LAN_SERVICE_TYPE, "local"],
+            timeout=2.0,
         )
-    return endpoint
+        endpoint = _parse_service_endpoint(output)
+        if endpoint is not None:
+            return endpoint
+    raise CliError(
+        f"could not find {service_name}; start `mazebench host {code}` on the other Mac"
+    )
 
 
 def _endpoint(code: str) -> str:
