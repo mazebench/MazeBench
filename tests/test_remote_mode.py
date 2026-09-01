@@ -76,6 +76,27 @@ class RemoteModeTests(TestCase):
             ["dns-sd", "-L", f"{name} (2)", "_mazebench._tcp", "local"],
         )
 
+    @mock.patch.object(remote.shutil, "which", return_value="/usr/bin/dns-sd")
+    @mock.patch.object(remote, "_command_output")
+    def test_discovery_retries_when_bonjour_collision_is_delayed(
+        self, command_output, _which
+    ):
+        name = mazebench_cli._host_service_name("123")
+        command_output.side_effect = [
+            f"12:00:00 Add 2 15 local. _mazebench._tcp. {name}\n",
+            (
+                f"12:00:01 Add 3 15 local. _mazebench._tcp. {name}\n"
+                f"12:00:01 Add 2 15 local. _mazebench._tcp. {name} (2)\n"
+            ),
+            (
+                f"{name} (2)._mazebench._tcp.local. can be reached at "
+                "Zeno.local.:7332 (interface 15)\n"
+            ),
+        ]
+
+        self.assertEqual(remote._discover_host("123"), ("Zeno.local", 7332))
+        self.assertEqual(command_output.call_args_list[1].kwargs["timeout"], 2.0)
+
     @mock.patch.object(remote, "_discover_host", return_value=("Zeno.local", 7331))
     @mock.patch.object(
         remote.socket,
@@ -250,3 +271,81 @@ class HostCommandTests(TestCase):
         self.assertEqual(environment["MAZEBENCH_RESTRICTED_MODE"], "1")
         self.assertEqual(environment["MAZEBENCH_MODE"], "text")
         self.assertEqual(environment["MAZEBENCH_AUTO_RUN_TOOLS"], "1")
+
+    def test_host_process_detection_excludes_local_computer_servers(self):
+        with TemporaryDirectory() as tmpdir:
+            host_root = Path(tmpdir) / "records" / "computer" / "host"
+            with mock.patch.object(mazebench_cli, "_lan_dir", return_value=host_root):
+                self.assertTrue(
+                    mazebench_cli._is_lan_host_process(
+                        [
+                            "node",
+                            "/maze/scripts/maze-mcp-server.js",
+                            "--http",
+                            "--host",
+                            "0.0.0.0",
+                            "--port-file",
+                            "/lost/state.json",
+                        ]
+                    )
+                )
+                self.assertTrue(
+                    mazebench_cli._is_lan_host_process(
+                        [
+                            "node",
+                            "/maze/scripts/maze-mcp-server.js",
+                            "--http",
+                            "--host",
+                            "127.0.0.1",
+                            "--port-file",
+                            str(host_root / "fable" / "mcp-http.json"),
+                        ]
+                    )
+                )
+                self.assertFalse(
+                    mazebench_cli._is_lan_host_process(
+                        [
+                            "node",
+                            "/maze/scripts/maze-mcp-server.js",
+                            "--http",
+                            "--host",
+                            "127.0.0.1",
+                            "--port-file",
+                            str(Path(tmpdir) / "records" / "computer" / "runs" / "mcp-http.json"),
+                        ]
+                    )
+                )
+                self.assertTrue(
+                    mazebench_cli._is_lan_host_process(
+                        [
+                            "/usr/bin/dns-sd",
+                            "-R",
+                            "MazeBench-a665a4592042",
+                            "_mazebench._tcp",
+                            "local",
+                            "7331",
+                        ]
+                    )
+                )
+
+    @mock.patch.object(mazebench_cli, "_clear_lan_state")
+    @mock.patch.object(mazebench_cli, "_terminate_pid")
+    @mock.patch.object(mazebench_cli, "_lan_host_process_pids", return_value=[11, 22, 33])
+    @mock.patch.object(
+        mazebench_cli,
+        "_read_json_file",
+        return_value={"url": "http://host:7332/123/lead"},
+    )
+    def test_stop_terminates_every_discovered_host_process(
+        self, _read_json, _process_pids, terminate, clear_state
+    ):
+        self.assertEqual(mazebench_cli.run_lan_stop(), 0)
+        self.assertEqual(
+            terminate.call_args_list,
+            [
+                mock.call(11, timeout=1.0),
+                mock.call(22, timeout=1.0),
+                mock.call(33, timeout=1.0),
+            ],
+        )
+        clear_state.assert_called_once_with()

@@ -20,6 +20,7 @@ import json
 import hashlib
 import os
 import secrets
+import shlex
 import shutil
 import signal
 import socket
@@ -674,6 +675,93 @@ def _terminate_pid(pid: int, timeout: float = 5.0) -> None:
         pass
 
 
+def _argument_after(arguments: list[str], option: str) -> str:
+    try:
+        return arguments[arguments.index(option) + 1]
+    except (ValueError, IndexError):
+        return ""
+
+
+def _path_is_inside(path: str, directory: Path) -> bool:
+    if not path:
+        return False
+    try:
+        candidate = Path(path).expanduser().resolve()
+        root = directory.expanduser().resolve()
+        return candidate == root or root in candidate.parents
+    except OSError:
+        return False
+
+
+def _is_lan_host_process(arguments: list[str]) -> bool:
+    if not arguments:
+        return False
+    executable = Path(arguments[0]).name.lower()
+    if executable == "dns-sd":
+        return (
+            "-R" in arguments
+            and LAN_SERVICE_TYPE in arguments
+            and any(argument.startswith("MazeBench") for argument in arguments)
+        )
+
+    if "python" in executable:
+        return any(
+            argument == "mazebench_cli.host"
+            or argument.endswith("/mazebench_cli/host.py")
+            for argument in arguments[1:]
+        )
+
+    if executable not in ("node", "nodejs"):
+        return False
+    if "--http" not in arguments or not any(
+        Path(argument).name == "maze-mcp-server.js" for argument in arguments[1:]
+    ):
+        return False
+
+    bind_host = _argument_after(arguments, "--host")
+    if bind_host and bind_host not in ("127.0.0.1", "localhost", "::1"):
+        return True
+    port_file = _argument_after(arguments, "--port-file")
+    return any(
+        _path_is_inside(port_file, directory)
+        for directory in (_lan_dir(), _legacy_lan_dir())
+    )
+
+
+def _lan_host_process_pids() -> list[int]:
+    try:
+        result = subprocess.run(
+            ["ps", "-axo", "pid=,uid=,command="],
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return []
+    if result.returncode != 0:
+        return []
+
+    current_uid = os.getuid() if hasattr(os, "getuid") else None
+    matches: list[int] = []
+    for line in result.stdout.splitlines():
+        fields = line.strip().split(None, 2)
+        if len(fields) != 3:
+            continue
+        try:
+            pid = int(fields[0])
+            uid = int(fields[1])
+        except ValueError:
+            continue
+        if pid == os.getpid() or (current_uid is not None and uid != current_uid):
+            continue
+        try:
+            arguments = shlex.split(fields[2])
+        except ValueError:
+            continue
+        if _is_lan_host_process(arguments):
+            matches.append(pid)
+    return matches
+
+
 def _read_lan_state() -> dict | None:
     state = _read_json_file(_lan_state_file())
     if not state:
@@ -952,14 +1040,22 @@ def run_lan_serve(words: list[str], pairs: dict[str, str], flags: list[str]) -> 
 
 
 def run_lan_stop() -> int:
-    state = _read_lan_state()
-    if not state:
+    state = _read_json_file(_lan_state_file()) or {}
+    url = _default_lan_url(state)
+    pids = _lan_host_process_pids()
+    if not pids:
+        _clear_lan_state()
         print("mazebench: no running LAN JSON bridge found.")
         return 0
-    _terminate_pid(int(state.get("advertiser_pid", 0) or 0), timeout=0.5)
-    _terminate_pid(int(state.get("pid", 0) or 0))
+    for pid in pids:
+        _terminate_pid(pid, timeout=1.0)
     _clear_lan_state()
-    print(f"mazebench: stopped LAN JSON bridge at {_default_lan_url(state)}.")
+    if url:
+        print(
+            f"mazebench: stopped {len(pids)} LAN host process(es) at {url}."
+        )
+    else:
+        print(f"mazebench: stopped {len(pids)} LAN host process(es).")
     return 0
 
 

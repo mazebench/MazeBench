@@ -120,11 +120,19 @@ def _discover_host(code: str) -> tuple[str, int]:
             "Bonjour discovery is unavailable; set MAZEBENCH_LAN_HOST=host:port"
         )
     service_name = _host_service_name(code)
-    browse_output = _command_output(
-        ["dns-sd", "-B", LAN_SERVICE_TYPE, "local"],
-        timeout=1.0,
-    )
+    browse_command = ["dns-sd", "-B", LAN_SERVICE_TYPE, "local"]
+    browse_output = _command_output(browse_command, timeout=1.0)
     candidates = _parse_matching_service_names(browse_output, service_name)
+    if len(candidates) <= 1:
+        # Bonjour can report the first registration just before it reports a
+        # collision-renamed replacement such as "(2)". Give that replacement
+        # one more discovery window so a stale host cannot win by timing.
+        retry_output = _command_output(browse_command, timeout=2.0)
+        retry_candidates = _parse_matching_service_names(
+            retry_output, service_name
+        )
+        if retry_candidates:
+            candidates = retry_candidates
     if service_name not in candidates:
         candidates.append(service_name)
     for candidate in candidates:
