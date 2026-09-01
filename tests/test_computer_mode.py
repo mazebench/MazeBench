@@ -16,6 +16,19 @@ class ComputerModeTests(TestCase):
             "MAZEBENCH_COMPUTER_STATE_ROOT": str(Path(root) / "state"),
         }
 
+    def test_default_control_directory_is_visible(self):
+        with TemporaryDirectory() as tmpdir:
+            environment = {
+                **os.environ,
+                "MAZEBENCH_RECORDS_ROOT": str(Path(tmpdir) / "records"),
+            }
+            environment.pop("MAZEBENCH_COMPUTER_STATE_ROOT", None)
+            with mock.patch.dict(os.environ, environment, clear=True):
+                self.assertEqual(
+                    computer._control_root(),
+                    Path(tmpdir) / "records" / "computer",
+                )
+
     def test_record_layout_has_no_agent_directory(self):
         with TemporaryDirectory() as tmpdir:
             with mock.patch.dict(os.environ, self._environment(tmpdir), clear=True):

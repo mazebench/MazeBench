@@ -17,6 +17,7 @@ Examples
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import secrets
 import shutil
@@ -64,6 +65,10 @@ Local-network JSON game bridge (game controls only):
   mazebench lan serve bg [port=7331 host=0.0.0.0 level=HxI moves=unlimited]
   mazebench lan status | stop | restart | discover
   mazebench lan start | observe | action <move> | sequence <moves...>
+
+Restricted two-Mac host:
+  mazebench host <pairing-code> [level=HxI]
+  mazebench host status | stop
 
 Interactive command REPL:
   mazebench play [level=HxI view=top-diagonal]
@@ -541,6 +546,7 @@ def run_restart(
 # ---- local-network JSON game bridge ---------------------------------------
 
 LAN_SERVICE_TYPE = "_mazebench._tcp"
+LAN_HOST_SERVICE_PREFIX = "MazeBench-"
 LAN_TOOL_NAMES = (
     "game_start",
     "game_observe",
@@ -770,6 +776,9 @@ def _lan_server_env(root: Path, run_dir: Path, token: str, pairs: dict[str, str]
         or _flag_value(flags, "--max-turns")
         or "unlimited"
     )
+    mode = pairs.get("mode", "json").strip().lower()
+    if mode not in ("json", "text"):
+        raise CliError("LAN observation mode must be 'json' or 'text'.")
     return {
         **os.environ,
         "MAZEBENCH_REPO_ROOT": str(root),
@@ -777,7 +786,7 @@ def _lan_server_env(root: Path, run_dir: Path, token: str, pairs: dict[str, str]
         "MAZEBENCH_SESSION_FILE": str(run_dir / "session.json"),
         "MAZEBENCH_MCP_HTTP_TOKEN": token,
         "MAZEBENCH_RESTRICTED_MODE": "1",
-        "MAZEBENCH_MODE": "json",
+        "MAZEBENCH_MODE": mode,
         "MAZEBENCH_AUTO_RUN_TOOLS": "1",
         "MAZEBENCH_LEVEL_ID": level,
         "MAZEBENCH_VIEW": view,
@@ -869,7 +878,7 @@ def run_lan_serve(words: list[str], pairs: dict[str, str], flags: list[str]) -> 
         "service_type": LAN_SERVICE_TYPE,
         "repo_root": str(root),
         "run_dir": str(run_dir),
-        "mode": "json",
+        "mode": pairs.get("mode", "json").strip().lower(),
         "tools": list(LAN_TOOL_NAMES),
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
     }
@@ -894,6 +903,50 @@ def run_lan_stop() -> int:
     _clear_lan_state()
     print(f"mazebench: stopped LAN JSON bridge at {_default_lan_url(state)}.")
     return 0
+
+
+def _validate_host_code(value: str) -> str:
+    code = str(value).strip()
+    if not code.isdigit() or not 3 <= len(code) <= 12:
+        raise CliError("pairing code must contain 3 to 12 digits")
+    return code
+
+
+def _host_service_name(code: str) -> str:
+    fingerprint = hashlib.sha256(code.encode("ascii")).hexdigest()[:12]
+    return f"{LAN_HOST_SERVICE_PREFIX}{fingerprint}"
+
+
+def run_host(words: list[str], pairs: dict[str, str], flags: list[str]) -> int:
+    action = (words[0] if words else "help").lower()
+    if action in ("help", "-h", "--help"):
+        print(
+            "mazebench host <pairing-code> [level=HxI]\n"
+            "mazebench host status\n"
+            "mazebench host stop"
+        )
+        return 0
+    if action in ("stop", "shutdown", "kill") and len(words) == 1:
+        return run_lan_stop()
+    if action in ("status", "ps") and len(words) == 1:
+        return run_lan_status()
+    if len(words) != 1:
+        raise CliError("use `mazebench host <pairing-code>`")
+
+    code = _validate_host_code(words[0])
+    existing = _read_lan_state()
+    if existing and str(existing.get("token") or "") != code:
+        raise CliError(
+            "a different MazeBench host is already running; use `mazebench host stop` first"
+        )
+    options = {
+        **pairs,
+        "token": code,
+        "name": _host_service_name(code),
+        "mode": "text",
+        "advertise": "true",
+    }
+    return run_lan_serve([], options, flags)
 
 
 def run_lan_status() -> int:
@@ -1232,6 +1285,8 @@ def main(argv: list[str] | None = None) -> int:
 
         if command == "lan":
             return run_lan(words[1:], pairs, flags)
+        if command == "host":
+            return run_host(words[1:], pairs, flags)
 
         root = resolve_root()
 

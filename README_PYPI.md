@@ -39,6 +39,13 @@ board; `move_history/move_0.txt` is the initial board before the first action.
 Room names use compact `HxI` formatting and `action room HxI` returns to a
 previously visited room.
 
+For an isolated two-Mac setup, run `mazebench host 123` on the game Mac and
+`lan 123 login fable` on the benchmark Mac. Bonjour discovers the host. The
+benchmark Mac stores only `~/records/fable/`; the endpoint remains in memory
+and no `computer` control directory is created. The remote prompt accepts the same
+action-only commands as `computer login`. Use `mazebench host stop` on the game
+Mac when finished.
+
 Play interactively with the same controls while showing the structured JSON
 observation a model receives, with literal object names and every room object
 included:

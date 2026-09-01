@@ -55,7 +55,7 @@ def _control_root() -> Path:
     configured = os.environ.get("MAZEBENCH_COMPUTER_STATE_ROOT")
     if configured:
         return Path(configured).expanduser()
-    return _records_root() / ".computer"
+    return _records_root() / "computer"
 
 
 def _validate_run_name(name: str) -> str:

@@ -72,6 +72,17 @@ class CliCommandTests(TestCase):
             ["observe"], {"url": "http://bench.local/secret/lead"}, []
         )
 
+    @mock.patch.object(mazebench_cli, "run_host", return_value=37)
+    @mock.patch.object(mazebench_cli, "resolve_root")
+    def test_main_routes_host_without_resolving_a_local_runtime(
+        self, resolve_root, run_host
+    ):
+        result = mazebench_cli.main(["host", "123", "level=HxI"])
+
+        self.assertEqual(result, 37)
+        resolve_root.assert_not_called()
+        run_host.assert_called_once_with(["123"], {"level": "HxI"}, [])
+
     def test_lan_sequence_supports_llm_friendly_move_strings(self):
         self.assertEqual(
             mazebench_cli._lan_sequence_from_tokens(["UURDDL"]),

@@ -50,12 +50,48 @@ ASCII board—no JSON or metadata. The starting board is saved once as
 `move_history/move_0.txt` without adding a line to `moves.txt`.
 `current_board.txt` always holds the latest
 ASCII board, while `current_state.json` contains only `died`, `gems`, and
-`rooms_available`. Private server bookkeeping stays under the hidden
-`~/records/.computer/` directory. `action quit` stops the local server and
+`rooms_available`. Local server bookkeeping stays in the visible
+`~/records/computer/` directory. `action quit` stops the local server and
 leaves the mode without recording a quit move. A compact `action sequence`
 accepts only `U`, `D`, `L`, and `R`, and records every step separately.
 Previously visited rooms use compact names such as `HxI`; enter one with
 `action room HxI`.
+
+## Restricted two-Mac hosting
+
+Install the `several-fixes` checkout on both Macs with
+`uv tool install --editable . --force`. On the Mac that will run the game:
+
+```bash
+mazebench host 123
+```
+
+This starts a background server on the local network and advertises it through
+Bonjour. On the benchmark Mac, connect using the same pairing code and choose
+a local record name:
+
+```bash
+lan 123 login fable
+```
+
+The resulting `(fable)` prompt accepts the same action-only language as
+`computer login`, including `action sequence UDLR`, `action room HxI`, and
+`action quit`. The remote endpoint stays only in process memory. This client
+creates only `~/records/fable/`; it does not create `computer`, save a URL,
+or run a local game server. The host exposes only `game_start`, `game_observe`,
+`game_action`, and `game_action_sequence`; restricted mode disables Python and
+filesystem tools.
+
+Both Macs must be on a network where Bonjour traffic is allowed. If discovery
+is unavailable, provide the host address for that invocation only:
+
+```bash
+MAZEBENCH_LAN_HOST=192.168.1.65:7331 lan 123 login fable
+```
+
+Use a longer numeric pairing code on an untrusted LAN. On the host Mac,
+`mazebench host status` shows the server and `mazebench host stop` shuts it
+down.
 
 ## Modes
 
