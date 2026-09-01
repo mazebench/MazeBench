@@ -1737,14 +1737,21 @@ async function handle(
 function parseHttpMode(argv) {
   if (!argv.includes("--http")) return null;
   const portIndex = argv.indexOf("--port-file");
+  const hostIndex = argv.indexOf("--host");
+  const listenPortIndex = argv.indexOf("--port");
+  const requestedPort = listenPortIndex >= 0 ? Number(argv[listenPortIndex + 1]) : 0;
   return {
+    host: hostIndex >= 0 && argv[hostIndex + 1] ? String(argv[hostIndex + 1]) : "127.0.0.1",
+    port: Number.isInteger(requestedPort) && requestedPort >= 0 && requestedPort < 65536
+      ? requestedPort
+      : 0,
     portFile: portIndex >= 0
       ? path.resolve(argv[portIndex + 1] || "")
       : path.join(RUN_DIR, "mcp-http.json")
   };
 }
 
-function startHttpServer({ portFile }) {
+function startHttpServer({ host, port, portFile }) {
   if (!HTTP_TOKEN) throw new Error("MAZEBENCH_MCP_HTTP_TOKEN is required in HTTP mode.");
   const leadContext = createRequestContext({ workerOnly: false, workerKey: "lead" });
   const workerSessions = new Map();
@@ -1818,11 +1825,16 @@ function startHttpServer({ portFile }) {
       }
     });
   });
-  server.listen(0, "127.0.0.1", () => {
+  server.listen(port, host, () => {
     const address = server.address();
     fs.writeFileSync(
       portFile,
-      `${JSON.stringify({ port: address.port, token: HTTP_TOKEN, pid: process.pid })}\n`,
+      `${JSON.stringify({
+        host,
+        port: address.port,
+        token: HTTP_TOKEN,
+        pid: process.pid
+      })}\n`,
       "utf8"
     );
   });

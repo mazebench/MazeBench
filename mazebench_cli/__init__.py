@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import shutil
 import signal
 import socket
@@ -25,6 +26,8 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 import webbrowser
 from pathlib import Path
 
@@ -56,6 +59,11 @@ Interactive ASCII game (arrow-key controls):
 
 Model-facing JSON observation (literal names by default):
   mazebench json [--level CxD] [--omniscient] [--hide-names]
+
+Local-network JSON game bridge (game controls only):
+  mazebench lan serve bg [port=7331 host=0.0.0.0 level=HxI moves=unlimited]
+  mazebench lan status | stop | restart | discover
+  mazebench lan start | observe | action <move> | sequence <moves...>
 
 Interactive command REPL:
   mazebench play [level=HxI view=top-diagonal]
@@ -530,6 +538,597 @@ def run_restart(
     return run_launch(root, words, pairs, flags)
 
 
+# ---- local-network JSON game bridge ---------------------------------------
+
+LAN_SERVICE_TYPE = "_mazebench._tcp"
+LAN_TOOL_NAMES = (
+    "game_start",
+    "game_observe",
+    "game_action",
+    "game_action_sequence",
+)
+LAN_MOVE_ALIASES = {
+    "U": "up",
+    "D": "down",
+    "L": "left",
+    "R": "right",
+}
+
+LAN_USAGE = """mazebench lan — expose or use MazeBench JSON game controls on your LAN
+
+Serve from this Mac:
+  mazebench lan serve bg [port=7331 host=0.0.0.0 level=HxI moves=unlimited]
+  mazebench lan status
+  mazebench lan stop
+  mazebench lan restart
+
+Use from this Mac or another Mac:
+  mazebench lan start   [url=http://host:port/token/lead]
+  mazebench lan observe [url=http://host:port/token/lead]
+  mazebench lan action up
+  mazebench lan sequence up right down
+  mazebench lan sequence UURDDL
+  mazebench lan tools
+  mazebench lan discover
+
+The LAN server always runs the restricted JSON MCP profile: game_start,
+game_observe, game_action, and game_action_sequence only.
+"""
+
+
+def _lan_dir() -> Path:
+    return _mazebench_home() / "lan"
+
+
+def _lan_state_file() -> Path:
+    return _lan_dir() / "server.json"
+
+
+def _lan_port_file() -> Path:
+    return _lan_dir() / "mcp-http.json"
+
+
+def _lan_log() -> Path:
+    return _lan_dir() / "server.log"
+
+
+def _lan_advertise_log() -> Path:
+    return _lan_dir() / "dns-sd.log"
+
+
+def _read_json_file(path: Path) -> dict | None:
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def _write_json_file(path: Path, value: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(f"{json.dumps(value, indent=2)}\n")
+    temporary.replace(path)
+
+
+def _clear_lan_state() -> None:
+    _lan_state_file().unlink(missing_ok=True)
+    _lan_port_file().unlink(missing_ok=True)
+
+
+def _terminate_pid(pid: int, timeout: float = 5.0) -> None:
+    if not _pid_alive(pid):
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        return
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _pid_alive(pid):
+            return
+        time.sleep(0.1)
+
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except OSError:
+        pass
+
+
+def _read_lan_state() -> dict | None:
+    state = _read_json_file(_lan_state_file())
+    if not state:
+        return None
+    if not _pid_alive(int(state.get("pid", 0) or 0)):
+        _terminate_pid(int(state.get("advertiser_pid", 0) or 0), timeout=0.5)
+        _clear_lan_state()
+        return None
+    return state
+
+
+def _wait_for_lan_port_file(pid: int, port_file: Path, timeout: float = 6.0) -> dict | None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        state = _read_json_file(port_file)
+        if state and int(state.get("pid", 0) or 0) == pid and state.get("port"):
+            return state
+        if not _pid_alive(pid):
+            return None
+        time.sleep(0.1)
+    return None
+
+
+def _flag_value(flags: list[str], *names: str) -> str | None:
+    for index, token in enumerate(flags):
+        if token in names and index + 1 < len(flags):
+            return flags[index + 1]
+    return None
+
+
+def _pair_or_flag(
+    pairs: dict[str, str],
+    flags: list[str],
+    key: str,
+    *flag_names: str,
+    default: str = "",
+) -> str:
+    return pairs.get(key) or _flag_value(flags, *flag_names) or default
+
+
+def _local_hostname() -> str:
+    if shutil.which("scutil"):
+        result = subprocess.run(
+            ["scutil", "--get", "LocalHostName"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return f"{result.stdout.strip()}.local"
+    hostname = socket.gethostname().strip().rstrip(".")
+    if hostname:
+        return hostname if hostname.endswith(".local") else f"{hostname}.local"
+    return "localhost"
+
+
+def _lan_ipv4_addresses() -> list[str]:
+    addresses: set[str] = set()
+
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        try:
+            sock.connect(("8.8.8.8", 80))
+            addresses.add(sock.getsockname()[0])
+        except OSError:
+            pass
+
+    if shutil.which("ifconfig"):
+        result = subprocess.run(["ifconfig"], capture_output=True, text=True)
+        for line in result.stdout.splitlines():
+            parts = line.strip().split()
+            if len(parts) >= 2 and parts[0] == "inet":
+                addresses.add(parts[1])
+
+    return sorted(
+        address
+        for address in addresses
+        if not address.startswith(("127.", "169.254."))
+    )
+
+
+def _lan_urls(host: str, port: int, token: str) -> list[str]:
+    candidates: list[str] = []
+    if host in ("0.0.0.0", "", "*"):
+        candidates.extend(f"http://{address}:{port}/{token}/lead" for address in _lan_ipv4_addresses())
+        candidates.append(f"http://{_local_hostname()}:{port}/{token}/lead")
+        candidates.append(f"http://127.0.0.1:{port}/{token}/lead")
+    else:
+        candidates.append(f"http://{host}:{port}/{token}/lead")
+
+    unique: list[str] = []
+    for url in candidates:
+        if url not in unique:
+            unique.append(url)
+    return unique
+
+
+def _default_lan_url(state: dict) -> str:
+    return str(state.get("url") or next(iter(state.get("urls", [])), ""))
+
+
+def _start_lan_advertiser(service_name: str, port: int, enabled: bool) -> int | None:
+    if not enabled or not shutil.which("dns-sd"):
+        return None
+    log_path = _lan_advertise_log()
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_path, "ab") as log:
+        proc = subprocess.Popen(
+            [
+                "dns-sd",
+                "-R",
+                service_name,
+                LAN_SERVICE_TYPE,
+                "local",
+                str(port),
+                "txtvers=1",
+                "mode=json",
+                "tools=game-only",
+                "protocol=mcp-jsonrpc",
+            ],
+            stdout=log,
+            stderr=log,
+            start_new_session=True,
+        )
+    return proc.pid
+
+
+def _lan_server_env(root: Path, run_dir: Path, token: str, pairs: dict[str, str], flags: list[str]) -> dict[str, str]:
+    level = _pair_or_flag(pairs, flags, "level", "--level", default="HxI")
+    view = _pair_or_flag(pairs, flags, "view", "--view", default="top-diagonal")
+    yaw = _pair_or_flag(pairs, flags, "yaw", "--yaw", default="0")
+    moves = (
+        pairs.get("moves")
+        or pairs.get("max_turns")
+        or _flag_value(flags, "--max-turns")
+        or "unlimited"
+    )
+    return {
+        **os.environ,
+        "MAZEBENCH_REPO_ROOT": str(root),
+        "MAZEBENCH_RUN_DIR": str(run_dir),
+        "MAZEBENCH_SESSION_FILE": str(run_dir / "session.json"),
+        "MAZEBENCH_MCP_HTTP_TOKEN": token,
+        "MAZEBENCH_RESTRICTED_MODE": "1",
+        "MAZEBENCH_MODE": "json",
+        "MAZEBENCH_AUTO_RUN_TOOLS": "1",
+        "MAZEBENCH_LEVEL_ID": level,
+        "MAZEBENCH_VIEW": view,
+        "MAZEBENCH_YAW": yaw,
+        "MAZEBENCH_MOVE_BUDGET": str(moves),
+    }
+
+
+def run_lan_serve(words: list[str], pairs: dict[str, str], flags: list[str]) -> int:
+    _require(_node_bin(), "Install Node.js (the LAN bridge runs on Node).")
+    existing = _read_lan_state()
+    if existing:
+        print(
+            f"mazebench: LAN JSON bridge already running at {_default_lan_url(existing)} "
+            f"(pid {existing.get('pid')}).",
+            file=sys.stderr,
+        )
+        return 0
+
+    root = resolve_root()
+    host = _pair_or_flag(pairs, flags, "host", "--host", default="0.0.0.0")
+    try:
+        preferred = int(_pair_or_flag(pairs, flags, "port", "--port", default="7331"))
+    except ValueError:
+        preferred = 7331
+    port = _find_free_port(host, preferred)
+    if port != preferred:
+        print(f"mazebench: port {preferred} is busy — using {port} instead.", file=sys.stderr)
+
+    token = pairs.get("token") or secrets.token_urlsafe(18)
+    if any(char in token for char in "/?#"):
+        raise CliError("token may not contain '/', '?', or '#'.")
+
+    run_dir = _lan_dir()
+    run_dir.mkdir(parents=True, exist_ok=True)
+    if _is_on(pairs.get("fresh", "")):
+        for name in (
+            "session.json",
+            "actions.jsonl",
+            "initial-status.json",
+            "tool-activity.jsonl",
+            "maze-instance-events.jsonl",
+        ):
+            (run_dir / name).unlink(missing_ok=True)
+
+    port_file = _lan_port_file()
+    port_file.unlink(missing_ok=True)
+    log_path = _lan_log()
+    service_name = pairs.get("name") or f"MazeBench JSON on {_local_hostname().removesuffix('.local')}"
+    cmd = [
+        _node_bin(),
+        str(root / "scripts" / "maze-mcp-server.js"),
+        "--http",
+        "--host",
+        host,
+        "--port",
+        str(port),
+        "--port-file",
+        str(port_file),
+    ]
+    with open(log_path, "ab") as log:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(root),
+            env=_lan_server_env(root, run_dir, token, pairs, flags),
+            stdout=log,
+            stderr=log,
+            start_new_session=True,
+        )
+
+    server = _wait_for_lan_port_file(proc.pid, port_file)
+    if not server:
+        print(f"mazebench: LAN bridge did not come up — see {log_path}", file=sys.stderr)
+        return 1
+
+    bound_port = int(server.get("port", port))
+    urls = _lan_urls(host, bound_port, token)
+    advertise = pairs.get("advertise", "true").lower() not in ("off", "false", "0", "no")
+    advertiser_pid = _start_lan_advertiser(service_name, bound_port, advertise)
+    state = {
+        "pid": proc.pid,
+        "advertiser_pid": advertiser_pid,
+        "host": host,
+        "port": bound_port,
+        "token": token,
+        "url": urls[0],
+        "urls": urls,
+        "service_name": service_name,
+        "service_type": LAN_SERVICE_TYPE,
+        "repo_root": str(root),
+        "run_dir": str(run_dir),
+        "mode": "json",
+        "tools": list(LAN_TOOL_NAMES),
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    _write_json_file(_lan_state_file(), state)
+
+    print(f"mazebench: LAN JSON bridge running at {state['url']} (pid {proc.pid}).")
+    if advertiser_pid:
+        print(f"mazebench: advertised as {service_name}.{LAN_SERVICE_TYPE}.local.")
+    elif advertise:
+        print("mazebench: dns-sd was not found, so Bonjour advertising is unavailable.")
+    print("mazebench: exposed tools: " + ", ".join(LAN_TOOL_NAMES))
+    return 0
+
+
+def run_lan_stop() -> int:
+    state = _read_lan_state()
+    if not state:
+        print("mazebench: no running LAN JSON bridge found.")
+        return 0
+    _terminate_pid(int(state.get("advertiser_pid", 0) or 0), timeout=0.5)
+    _terminate_pid(int(state.get("pid", 0) or 0))
+    _clear_lan_state()
+    print(f"mazebench: stopped LAN JSON bridge at {_default_lan_url(state)}.")
+    return 0
+
+
+def run_lan_status() -> int:
+    state = _read_lan_state()
+    if not state:
+        print("mazebench: LAN JSON bridge is not running. Start it with `mazebench lan serve bg`.")
+        return 0
+    print(f"mazebench: LAN JSON bridge running at {_default_lan_url(state)}")
+    print(f"  pid: {state.get('pid')}")
+    print(f"  Bonjour: {state.get('service_name')}.{state.get('service_type')}.local")
+    print(f"  tools: {', '.join(state.get('tools') or LAN_TOOL_NAMES)}")
+    for url in state.get("urls", [])[1:]:
+        print(f"  alternate: {url}")
+    return 0
+
+
+def _lan_endpoint(pairs: dict[str, str]) -> str:
+    url = pairs.get("url") or os.environ.get("MAZEBENCH_LAN_URL", "")
+    if url:
+        return url
+    state = _read_lan_state()
+    if state and _default_lan_url(state):
+        return _default_lan_url(state)
+    raise CliError(
+        "No LAN URL configured. On the server Mac, run `mazebench lan status`, "
+        "then pass url=... or set MAZEBENCH_LAN_URL."
+    )
+
+
+def _lan_rpc(url: str, request: dict) -> dict:
+    body = json.dumps(request).encode("utf-8")
+    http_request = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(http_request, timeout=240) as response:
+            text = response.read().decode("utf-8")
+    except urllib.error.HTTPError as error:
+        text = error.read().decode("utf-8", errors="replace")
+        try:
+            payload = json.loads(text)
+        except ValueError as parse_error:
+            raise CliError(f"LAN request failed with HTTP {error.code}: {text}") from parse_error
+        raise CliError(f"LAN request failed with HTTP {error.code}: {payload}") from error
+    except OSError as error:
+        raise CliError(f"LAN request failed: {error}") from error
+
+    try:
+        return json.loads(text)
+    except ValueError as error:
+        raise CliError(f"LAN bridge returned non-JSON data: {text[:200]}") from error
+
+
+def _lan_tool_call(url: str, name: str, arguments: dict | None = None) -> dict:
+    return _lan_rpc(
+        url,
+        {
+            "jsonrpc": "2.0",
+            "id": int(time.time() * 1000) % 1_000_000_000,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": arguments or {}},
+        },
+    )
+
+
+def _print_lan_payload(payload: dict) -> int:
+    if payload.get("error"):
+        print(json.dumps(payload, indent=2))
+        return 1
+    result = payload.get("result")
+    if isinstance(result, dict) and "structuredContent" in result:
+        printable = result["structuredContent"]
+    elif isinstance(result, dict) and result.get("content"):
+        text = str(result["content"][0].get("text", ""))
+        try:
+            printable = json.loads(text)
+        except ValueError:
+            printable = text
+    else:
+        printable = payload
+    print(json.dumps(printable, indent=2) if not isinstance(printable, str) else printable)
+    return 1 if isinstance(result, dict) and result.get("isError") else 0
+
+
+def _normalize_lan_action(value: str) -> str:
+    text = str(value).strip()
+    return LAN_MOVE_ALIASES.get(text.upper(), text)
+
+
+def _lan_action_from_tokens(tokens: list[str]) -> str:
+    action = " ".join(tokens).strip()
+    if not action:
+        raise CliError("LAN action needs a move, for example `mazebench lan action up`.")
+    return _normalize_lan_action(action)
+
+
+def _lan_sequence_from_tokens(tokens: list[str]) -> list[str]:
+    if not tokens:
+        raise CliError("LAN sequence needs moves, for example `mazebench lan sequence up right down`.")
+    if len(tokens) == 1:
+        text = tokens[0].strip()
+        if text.startswith("["):
+            parsed = json.loads(text)
+            if not isinstance(parsed, list):
+                raise CliError("LAN sequence JSON must be an array of action strings.")
+            return [_normalize_lan_action(str(action)) for action in parsed]
+        if text and all(char.upper() in LAN_MOVE_ALIASES for char in text):
+            return [LAN_MOVE_ALIASES[char.upper()] for char in text]
+        if "," in text:
+            return [_normalize_lan_action(part) for part in text.split(",") if part.strip()]
+    return [_normalize_lan_action(token) for token in tokens if str(token).strip()]
+
+
+def run_lan_discover(pairs: dict[str, str]) -> int:
+    if not shutil.which("dns-sd"):
+        raise CliError("dns-sd was not found; Bonjour discovery is unavailable on this machine.")
+    try:
+        seconds = max(1.0, min(10.0, float(pairs.get("seconds", "3"))))
+    except ValueError:
+        seconds = 3.0
+    try:
+        result = subprocess.run(
+            ["dns-sd", "-B", LAN_SERVICE_TYPE, "local"],
+            capture_output=True,
+            text=True,
+            timeout=seconds,
+        )
+        output = result.stdout + result.stderr
+    except subprocess.TimeoutExpired as error:
+        stdout = error.stdout.decode("utf-8", errors="replace") if isinstance(error.stdout, bytes) else (error.stdout or "")
+        stderr = error.stderr.decode("utf-8", errors="replace") if isinstance(error.stderr, bytes) else (error.stderr or "")
+        output = stdout + stderr
+
+    services: list[str] = []
+    marker = f"{LAN_SERVICE_TYPE}."
+    for line in output.splitlines():
+        if " Add " not in f" {line} " or marker not in line:
+            continue
+        service = line.split(marker, 1)[1].strip()
+        if service and service not in services:
+            services.append(service)
+
+    if not services:
+        print("mazebench: no MazeBench LAN services found.")
+        return 0
+    print("mazebench: discovered MazeBench LAN services:")
+    for service in services:
+        print(f"  {service}.{LAN_SERVICE_TYPE}.local")
+    print("mazebench: use the tokenized URL from `mazebench lan status` on the server Mac.")
+    return 0
+
+
+def run_lan_repl(pairs: dict[str, str]) -> int:
+    url = _lan_endpoint(pairs)
+    print(f"mazebench: connected to {url}")
+    _print_lan_payload(_lan_tool_call(url, "game_start"))
+    while True:
+        try:
+            line = input("mazebench> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+        if not line:
+            continue
+        if line.lower() in ("q", "quit", "exit"):
+            return 0
+        if line.lower().startswith("sequence "):
+            payload = _lan_tool_call(
+                url,
+                "game_action_sequence",
+                {"actions": _lan_sequence_from_tokens([line[9:].strip()])},
+            )
+        else:
+            payload = _lan_tool_call(url, "game_action", {"action": _normalize_lan_action(line)})
+        _print_lan_payload(payload)
+
+
+def run_lan(words: list[str], pairs: dict[str, str], flags: list[str]) -> int:
+    action = (words[0] if words else "help").lower()
+    if action in ("help", "-h", "--help"):
+        print(LAN_USAGE)
+        return 0
+    if action in ("serve", "launch", "start-server"):
+        return run_lan_serve(words[1:], pairs, flags)
+    if action == "restart":
+        run_lan_stop()
+        time.sleep(0.4)
+        return run_lan_serve(words[1:], pairs, flags)
+    if action in ("stop", "shutdown", "kill"):
+        return run_lan_stop()
+    if action in ("status", "ps"):
+        return run_lan_status()
+    if action == "discover":
+        return run_lan_discover(pairs)
+    if action == "url":
+        print(_lan_endpoint(pairs))
+        return 0
+    if action in ("repl", "play"):
+        return run_lan_repl(pairs)
+
+    url = _lan_endpoint(pairs)
+    if action == "tools":
+        return _print_lan_payload(
+            _lan_rpc(
+                url,
+                {
+                    "jsonrpc": "2.0",
+                    "id": int(time.time() * 1000) % 1_000_000_000,
+                    "method": "tools/list",
+                    "params": {},
+                },
+            )
+        )
+    if action == "start":
+        return _print_lan_payload(_lan_tool_call(url, "game_start"))
+    if action == "observe":
+        return _print_lan_payload(_lan_tool_call(url, "game_observe"))
+    if action in ("action", "move"):
+        return _print_lan_payload(
+            _lan_tool_call(url, "game_action", {"action": _lan_action_from_tokens(words[1:] + flags)})
+        )
+    if action in ("sequence", "moves"):
+        return _print_lan_payload(
+            _lan_tool_call(
+                url,
+                "game_action_sequence",
+                {"actions": _lan_sequence_from_tokens(words[1:] + flags)},
+            )
+        )
+    raise CliError(f"Unknown LAN command: {action!r}. Run `mazebench lan help`.")
+
+
 def run_wizard(root: Path) -> int:
     raise CliError(RETIRED_LOCAL_AGENT_MESSAGE)
 
@@ -629,8 +1228,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     try:
-        root = resolve_root()
         command = words[0].lower() if words else ""
+
+        if command == "lan":
+            return run_lan(words[1:], pairs, flags)
+
+        root = resolve_root()
 
         if command in ("launch", "serve", "site", "web"):
             return run_launch(root, words[1:], pairs, flags)

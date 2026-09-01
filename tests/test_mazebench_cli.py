@@ -1,4 +1,5 @@
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest import TestCase, mock
 
 import mazebench_cli
@@ -60,6 +61,27 @@ class CliCommandTests(TestCase):
             Path("/maze"), {}, ["--level", "CxD", "--omniscient"]
         )
 
+    @mock.patch.object(mazebench_cli, "run_lan", return_value=31)
+    @mock.patch.object(mazebench_cli, "resolve_root")
+    def test_main_routes_lan_without_requiring_a_runtime(self, resolve_root, run_lan):
+        result = mazebench_cli.main(["lan", "observe", "url=http://bench.local/secret/lead"])
+
+        self.assertEqual(result, 31)
+        resolve_root.assert_not_called()
+        run_lan.assert_called_once_with(
+            ["observe"], {"url": "http://bench.local/secret/lead"}, []
+        )
+
+    def test_lan_sequence_supports_llm_friendly_move_strings(self):
+        self.assertEqual(
+            mazebench_cli._lan_sequence_from_tokens(["UURDDL"]),
+            ["up", "up", "right", "down", "down", "left"],
+        )
+        self.assertEqual(
+            mazebench_cli._lan_sequence_from_tokens(['["U", "rotate camera left"]']),
+            ["up", "rotate camera left"],
+        )
+
     @mock.patch.object(mazebench_cli, "_run", return_value=0)
     @mock.patch.object(mazebench_cli, "_require")
     @mock.patch.object(mazebench_cli, "_node_bin", return_value="node")
@@ -88,6 +110,48 @@ class CliCommandTests(TestCase):
             ],
             root,
         )
+
+    @mock.patch.object(mazebench_cli, "_start_lan_advertiser", return_value=456)
+    @mock.patch.object(mazebench_cli, "_wait_for_lan_port_file", return_value={"pid": 123, "port": 7331})
+    @mock.patch.object(mazebench_cli, "_find_free_port", return_value=7331)
+    @mock.patch.object(mazebench_cli, "_local_hostname", return_value="Bench-Mac.local")
+    @mock.patch.object(mazebench_cli, "_lan_ipv4_addresses", return_value=["192.168.1.50"])
+    @mock.patch.object(mazebench_cli, "_read_lan_state", return_value=None)
+    @mock.patch.object(mazebench_cli, "resolve_root", return_value=Path("/maze"))
+    @mock.patch.object(mazebench_cli, "_node_bin", return_value="node")
+    @mock.patch.object(mazebench_cli, "_require")
+    @mock.patch.object(mazebench_cli.subprocess, "Popen")
+    def test_lan_serve_starts_restricted_json_http_bridge(
+        self,
+        popen,
+        _require,
+        _node_bin,
+        _resolve_root,
+        _read_lan_state,
+        _lan_ipv4_addresses,
+        _local_hostname,
+        _find_free_port,
+        _wait_for_lan_port_file,
+        _start_lan_advertiser,
+    ):
+        proc = mock.Mock()
+        proc.pid = 123
+        popen.return_value = proc
+
+        with TemporaryDirectory() as tmpdir:
+            with mock.patch.object(mazebench_cli, "_lan_dir", return_value=Path(tmpdir)):
+                result = mazebench_cli.run_lan_serve([], {"token": "secret"}, [])
+
+        self.assertEqual(result, 0)
+        command = popen.call_args.args[0]
+        self.assertIn("--http", command)
+        self.assertEqual(command[command.index("--host") + 1], "0.0.0.0")
+        self.assertEqual(command[command.index("--port") + 1], "7331")
+        env = popen.call_args.kwargs["env"]
+        self.assertEqual(env["MAZEBENCH_RESTRICTED_MODE"], "1")
+        self.assertEqual(env["MAZEBENCH_MODE"], "json")
+        self.assertEqual(env["MAZEBENCH_AUTO_RUN_TOOLS"], "1")
+        self.assertEqual(env["MAZEBENCH_MOVE_BUDGET"], "unlimited")
 
     @mock.patch.object(mazebench_cli, "_run", return_value=0)
     @mock.patch.object(mazebench_cli, "_require")

@@ -4,15 +4,23 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 async function main() {
-  const [urlValue, requestPath, ...extra] = process.argv.slice(2);
+  const args = process.argv.slice(2);
+  const allowLanIndex = args.indexOf("--allow-lan");
+  const allowLan = allowLanIndex >= 0;
+  if (allowLan) args.splice(allowLanIndex, 1);
+  const [urlValue, requestPath, ...extra] = args;
   if (!urlValue || !requestPath || extra.length) {
-    throw new Error("Usage: node scripts/maze-mcp-client.js <mcp-http-url> <request.json>");
+    throw new Error("Usage: node scripts/maze-mcp-client.js [--allow-lan] <mcp-http-url> <request.json>");
   }
 
   const url = new URL(urlValue);
   const localHosts = new Set(["127.0.0.1", "localhost", "[::1]"]);
-  if (url.protocol !== "http:" || !localHosts.has(url.hostname)) {
-    throw new Error("MCP URL must use container-local HTTP.");
+  if (url.protocol !== "http:" || (!allowLan && !localHosts.has(url.hostname))) {
+    throw new Error(
+      allowLan
+        ? "MCP URL must use HTTP."
+        : "MCP URL must use container-local HTTP."
+    );
   }
   const request = JSON.parse(fs.readFileSync(path.resolve(requestPath), "utf8"));
   const response = await fetch(url, {
