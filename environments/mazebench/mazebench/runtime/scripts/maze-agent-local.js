@@ -19,10 +19,14 @@ const {
   inlinePermissionTable,
   preflightPythonSandbox
 } = require("./maze-python-sandbox");
+const { DEFAULT_LOCAL_AGENT_VERSIONS } = require("./local-agent-image");
 const DEFAULT_MAX_SWARM_WORKERS = 8;
-const SUPPORTED_LOCAL_CODEX_VERSION = "0.146.0";
-const SUPPORTED_LOCAL_CLAUDE_VERSION = "2.1.220";
-const SUPPORTED_LOCAL_KIMI_VERSION = "0.29.1";
+const SUPPORTED_LOCAL_CODEX_VERSION =
+  process.env.MAZEBENCH_LOCAL_CODEX_VERSION || DEFAULT_LOCAL_AGENT_VERSIONS.codex;
+const SUPPORTED_LOCAL_CLAUDE_VERSION =
+  process.env.MAZEBENCH_LOCAL_CLAUDE_VERSION || DEFAULT_LOCAL_AGENT_VERSIONS.claude;
+const SUPPORTED_LOCAL_KIMI_VERSION =
+  process.env.MAZEBENCH_LOCAL_KIMI_VERSION || DEFAULT_LOCAL_AGENT_VERSIONS.kimi;
 const SUPPORTED_LOCAL_AGENT_VERSIONS = Object.freeze({
   codex: SUPPORTED_LOCAL_CODEX_VERSION,
   claude: SUPPORTED_LOCAL_CLAUDE_VERSION,
@@ -337,8 +341,12 @@ code to a relative .py script_path chosen by you, then executes that file in a
 fresh Python process. The writable working directory persists for this entire
 run. You may create, reuse, modify, and organize as many relative-path .py,
 .json, and scratch files as useful. Python is optional; decide naturally when
-and how to use it. There is no separate editor or shell; create, revise, and
-execute files through python_exec.
+and how to use it. It would actually be wise to try to world model the env in
+python, and use A* like solver algorithms to inform your moves. It is ultimately
+up to you how you decide to play the env and learn how it works. You have
+absolute freedom to explore and solve, but remember the aim is to collect every
+gem. There is no separate editor or shell; create, revise, and execute files
+through python_exec.
 It cannot read MazeBench source, repositories, run artifacts, host files,
 credentials, or prior runs, and it has no network access. Shell, file-browser,
 editor, web, app, and connector tools are disabled.

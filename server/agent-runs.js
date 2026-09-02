@@ -13,6 +13,10 @@ const {
   loadCodexModels
 } = require("../scripts/maze-agent-local");
 const {
+  LOCAL_AGENT_IMAGE,
+  imageLabelsAreCertified
+} = require("../scripts/local-agent-image");
+const {
   findClaudeSessionFile,
   findCodexSessionFile,
   findCodexSessionFiles,
@@ -134,6 +138,78 @@ function claudeReasoningLevels(modelId) {
     ...(supportsXhigh ? ["xhigh"] : []),
     ...(supportsMax ? ["max"] : [])
   ];
+}
+
+function compareClaudeModelVersions(left, right) {
+  const leftParts = String(left).split(".").map(Number);
+  const rightParts = String(right).split(".").map(Number);
+  const length = Math.max(leftParts.length, rightParts.length);
+
+  for (let index = 0; index < length; index += 1) {
+    const difference = (rightParts[index] || 0) - (leftParts[index] || 0);
+    if (difference) return difference;
+  }
+  return 0;
+}
+
+function claudeCatalogModelsFromMetadata(metadataLines, detectedAliases = []) {
+  const lines = Array.isArray(metadataLines)
+    ? metadataLines.map((line) => String(line || "").trim()).filter(Boolean)
+    : [];
+  const pickerFamilies = lines.flatMap((line) => {
+    const match = line.match(/^Custom ([a-z][a-z0-9-]*) model$/i);
+    return match ? [match[1].toLowerCase()] : [];
+  });
+  const aliases = [...new Set([...detectedAliases, ...pickerFamilies]
+    .map((alias) => String(alias || "").trim().toLowerCase())
+    .filter((alias) => /^[a-z][a-z0-9-]*$/.test(alias)))];
+  const descriptions = {
+    fable: "Latest Fable tier — highest capability",
+    opus: "Latest Opus tier — deep reasoning",
+    sonnet: "Latest Sonnet tier — balanced speed and capability",
+    haiku: "Latest Haiku tier — fastest responses"
+  };
+
+  return aliases.flatMap((alias) => {
+    const escapedAlias = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const versionPattern = new RegExp(
+      "^" + escapedAlias + "\\s+(\\d+(?:\\.\\d+)*)\\s*(?:-|$)",
+      "i"
+    );
+    const versions = [...new Set(lines.flatMap((line) => {
+      const match = line.match(versionPattern);
+      return match ? [match[1]] : [];
+    }))].sort(compareClaudeModelVersions);
+    const title = alias.charAt(0).toUpperCase() + alias.slice(1);
+
+    // Fable releases are distinct benchmark choices. Their picker entries must
+    // submit the full immutable id instead of the moving fable alias.
+    if (alias === "fable" && versions.length) {
+      return versions.map((version, index) => {
+        const id = "claude-fable-" + version.replace(/\./g, "-");
+        return {
+          id,
+          label: "Fable " + version,
+          description: "Exact Claude Fable " + version + " model" +
+            (index ? " (previous release)" : " — highest capability"),
+          resolved_model_id: id,
+          reasoning_levels: claudeReasoningLevels(id)
+        };
+      });
+    }
+
+    const version = versions[0];
+    const resolvedModelId = version
+      ? "claude-" + alias + "-" + version.replace(/\./g, "-")
+      : "";
+    return [{
+      id: alias,
+      label: version ? title + " " + version : title + " (latest)",
+      description: descriptions[alias] || "Latest model behind the " + alias + " alias",
+      resolved_model_id: resolvedModelId,
+      reasoning_levels: claudeReasoningLevels(resolvedModelId)
+    }];
+  });
 }
 
 // Keep Prime's runner contract provider-neutral. Provider-specific extensions
@@ -513,6 +589,21 @@ function createAgentRunService({
   const codexSessionPaths = new Map();
   const autoQuitMonitors = new Map();
 
+  function currentLocalAgentVersions(options = {}) {
+    const environment = typeof agentEnvironment === "function"
+      ? agentEnvironment(options)
+      : {};
+    const imageVersions = environment?.local_agent_image_versions;
+    return {
+      ...SUPPORTED_LOCAL_AGENT_VERSIONS,
+      ...(imageVersions && typeof imageVersions === "object" ? imageVersions : {})
+    };
+  }
+
+  function currentLocalAgentVersion(provider, options = {}) {
+    return currentLocalAgentVersions(options)[provider] || "";
+  }
+
   function requireIsolatedLocalAgentLaunch(params) {
     const model = String(params?.model || "").trim().toLowerCase();
     const container = !(params?.container === false || params?.container === "false");
@@ -547,7 +638,7 @@ function createAgentRunService({
       (toolUse === "offline" && meta?.harness_boundary === `${boundaryPrefix}game-tools+isolated-python`);
     if (
       meta?.harness !== ({ codex: "codex", claude: "claude_code", kimi: "kimi_code" })[provider] ||
-      meta?.harness_version !== SUPPORTED_LOCAL_AGENT_VERSIONS[provider] ||
+      meta?.harness_version !== currentLocalAgentVersion(provider) ||
       !validBoundary ||
       meta?.container_image !== "mazebench-agent"
     ) {
@@ -647,15 +738,13 @@ function createAgentRunService({
     }
     const result = spawnSync(
       "docker",
-      ["image", "inspect", "docker.io/library/mazebench-agent:latest", "--format", "{{json .Config.Labels}}"],
+      ["image", "inspect", LOCAL_AGENT_IMAGE, "--format", "{{json .Config.Labels}}"],
       { encoding: "utf8", env: enrichedPathEnv(), timeout: 8000, maxBuffer: 128 * 1024 }
     );
     if (result.status !== 0) return false;
     try {
       const labels = JSON.parse(String(result.stdout || "{}"));
-      return labels["org.mazebench.local-codex.version"] === SUPPORTED_LOCAL_AGENT_VERSIONS.codex &&
-        labels["org.mazebench.local-claude.version"] === SUPPORTED_LOCAL_AGENT_VERSIONS.claude &&
-        labels["org.mazebench.local-kimi.version"] === SUPPORTED_LOCAL_AGENT_VERSIONS.kimi;
+      return imageLabelsAreCertified(labels, rootDir);
     } catch (_error) {
       return false;
     }
@@ -4599,28 +4688,58 @@ function createAgentRunService({
     // complete (for example, current builds expose Haiku in /model but omit it
     // from the --model help example). Read both so this catalog follows the
     // installed CLI instead of maintaining a stale model list here.
-    const help = spawnSync("claude", ["--help"], {
-      encoding: "utf8",
-      env: enrichedPathEnv(),
-      timeout: 5000,
-      maxBuffer: 2 * 1024 * 1024
-    });
+    const useLocalImage = localAgentImageAvailable();
+    const runClaudeCatalogCommand = (args, timeout = 5000, maxBuffer = 2 * 1024 * 1024) =>
+      spawnSync(
+        useLocalImage ? "docker" : "claude",
+        useLocalImage
+          ? ["run", "--rm", "--entrypoint", "claude", LOCAL_AGENT_IMAGE, ...args]
+          : args,
+        {
+          encoding: "utf8",
+          env: enrichedPathEnv(),
+          timeout,
+          maxBuffer
+        }
+      );
+    const help = runClaudeCatalogCommand(["--help"]);
     const helpText = String(help.stdout || help.stderr || "");
     const aliasExample = helpText.match(/alias for the latest model[\s\S]{0,180}?\((?:e\.g\.\s*)?([^)]*)\)/i);
     const detectedAliases = aliasExample
       ? [...aliasExample[1].matchAll(/['"]([a-z][a-z0-9-]*)['"]/gi)].map((match) => match[1].toLowerCase())
       : [];
 
+    let metadataLines = [];
     const pickerLabels = new Map();
     const pickerModelIds = new Map();
-    const executable = spawnSync("sh", ["-c", "command -v claude"], {
+    const executable = useLocalImage
+      ? { status: 1, stdout: "" }
+      : spawnSync("sh", ["-c", "command -v claude"], {
       encoding: "utf8",
       env: enrichedPathEnv(),
       timeout: 2000
-    });
+      });
     const executablePath = String(executable.stdout || "").trim();
 
-    if (executable.status === 0 && executablePath) {
+    if (useLocalImage) {
+      const pickerMetadata = spawnSync(
+        "docker",
+        [
+          "run", "--rm", "--entrypoint", "sh", LOCAL_AGENT_IMAGE, "-lc",
+          "LC_ALL=C strings \"$(command -v claude)\" | awk '/^Custom [[:alnum:]-]+ model$/ || /^[[:alnum:]-]+ [0-9]+([.][0-9]+)*([[:space:]]+-|[[:space:]]*$)/'"
+        ],
+        {
+          encoding: "utf8",
+          env: enrichedPathEnv(),
+          timeout: 10_000,
+          maxBuffer: 2 * 1024 * 1024
+        }
+      );
+      metadataLines = String(pickerMetadata.stdout || "")
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+    } else if (executable.status === 0 && executablePath) {
       // `strings` lets us read the same static labels used by /model without
       // opening an interactive session, changing the user's default, or making
       // an API request. The awk filter keeps the 200MB+ executable out of memory.
@@ -4639,7 +4758,7 @@ function createAgentRunService({
           maxBuffer: 2 * 1024 * 1024
         }
       );
-      const metadataLines = String(pickerMetadata.stdout || "")
+      metadataLines = String(pickerMetadata.stdout || "")
         .split(/\r?\n/)
         .map((line) => line.trim())
         .filter(Boolean);
@@ -4683,31 +4802,22 @@ function createAgentRunService({
       sonnet: "Latest Sonnet tier — balanced speed and capability",
       haiku: "Latest Haiku tier — fastest responses"
     };
-    const version = spawnSync("claude", ["--version"], {
-      encoding: "utf8",
-      env: enrichedPathEnv(),
-      timeout: 5000
-    });
+    const models = claudeCatalogModelsFromMetadata(metadataLines, aliases);
+    const version = runClaudeCatalogCommand(["--version"]);
     const versionText = String(version.stdout || "").trim().replace(/\s*\(Claude Code\)\s*$/i, "");
 
     return {
-      models: aliases.map((alias) => ({
-        id: alias,
-        label: pickerLabels.get(alias) || `${alias.charAt(0).toUpperCase()}${alias.slice(1)} (latest)`,
-        description: descriptions[alias] || `Latest model behind the ${alias} alias`,
-        resolved_model_id: pickerModelIds.get(alias) || "",
-        reasoning_levels: claudeReasoningLevels(pickerModelIds.get(alias) || "")
-      })),
+      models,
       source: versionText ? `Claude Code ${versionText}` : "Installed Claude Code CLI",
       checked_at: modelCatalogCheckedAt(),
-      default_model_id: aliases[0] || "",
+      default_model_id: models[0]?.id || "",
       // The CLI accepts this complete syntax set, but each model above carries
       // its own supported subset. Versioned Claude family ids deliberately use
       // a family-level rule so newly released aliases keep their effort control.
       reasoning_levels: ["low", "medium", "high", "xhigh", "max"],
       reasoning_default: "",
       note: pickerLabels.size
-        ? "Models and display versions detected from this installed Claude Code build. Aliases stay dynamic when Claude rolls them forward."
+        ? "Models detected from this installed Claude Code build. Fable releases launch by exact full model id."
         : detectedAliases.length
           ? "Aliases detected from the installed CLI; this build did not expose exact picker labels."
           : "Claude Code did not expose a model list. Use Custom… for a full model id."
@@ -5009,10 +5119,11 @@ function createAgentRunService({
       );
     }
     if (!localAgentImageAvailable()) {
+      const requiredVersions = currentLocalAgentVersions();
       throw new Error(
         "The certified local-agent image is missing or stale. Run `npm run maze:build-local-agents` " +
-        `(required Codex ${SUPPORTED_LOCAL_AGENT_VERSIONS.codex}, Claude Code ${SUPPORTED_LOCAL_AGENT_VERSIONS.claude}, ` +
-        `Kimi Code ${SUPPORTED_LOCAL_AGENT_VERSIONS.kimi}).`
+        `(required Codex ${requiredVersions.codex}, Claude Code ${requiredVersions.claude}, ` +
+        `Kimi Code ${requiredVersions.kimi}).`
       );
     }
     const args = [
@@ -5226,7 +5337,7 @@ function createAgentRunService({
         display,
         harness,
         harnessConfig,
-        harnessVersion: SUPPORTED_LOCAL_AGENT_VERSIONS.codex,
+        harnessVersion: currentLocalAgentVersion("codex"),
         harnessLabel: definition.label,
         harnessBoundary: toolUse === "offline"
           ? "prime-inference/disposable-container/game-tools+isolated-python"
@@ -5571,7 +5682,7 @@ function createAgentRunService({
           model_alias: exactModelName !== requestedModelName ? requestedModelName : "",
           harness: ({ codex: "codex", claude: "claude_code", kimi: "kimi_code" })[model],
           harness_label: ({ codex: "Codex", claude: "Claude Code", kimi: "Kimi Code" })[model],
-          harness_version: SUPPORTED_LOCAL_AGENT_VERSIONS[model],
+          harness_version: currentLocalAgentVersion(model),
           harness_boundary: toolUse === "offline"
             ? "disposable-container/game-tools+isolated-python"
             : "disposable-container/game-tools-only",
@@ -6984,6 +7095,7 @@ function createAgentRunService({
 module.exports = {
   apiPricingForRun,
   branchLaunchParams,
+  claudeCatalogModelsFromMetadata,
   claudeReasoningLevels,
   collectedAllWorldGems,
   createAgentRunService,

@@ -167,10 +167,12 @@ function normalizeSandboxOptions(options = {}) {
   }
   const codexBin = resolvedExecutable(options.codexBin || "codex", "Codex");
   const pythonBin = findPythonExecutable(options.pythonBin || "");
-  const runUid = Number.isInteger(Number(options.runUid)) && Number(options.runUid) >= 0
+  const hasRunUid = options.runUid !== null && options.runUid !== undefined && options.runUid !== "";
+  const hasRunGid = options.runGid !== null && options.runGid !== undefined && options.runGid !== "";
+  const runUid = hasRunUid && Number.isInteger(Number(options.runUid)) && Number(options.runUid) >= 0
     ? Number(options.runUid)
     : null;
-  const runGid = Number.isInteger(Number(options.runGid)) && Number(options.runGid) >= 0
+  const runGid = hasRunGid && Number.isInteger(Number(options.runGid)) && Number(options.runGid) >= 0
     ? Number(options.runGid)
     : null;
   if ((runUid === null) !== (runGid === null)) {
