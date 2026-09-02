@@ -99,7 +99,7 @@ try {
   assert.equal(Object.prototype.hasOwnProperty.call(firstObservation, "player"), false);
   assert.equal(Object.prototype.hasOwnProperty.call(firstObservation, "scorecard"), false);
   const listedTools = responses.find((response) => response.id === 10)?.result?.tools || [];
-  assert.deepEqual(listedTools.map((tool) => tool.name), ["maze_start", "maze_observe", "maze_action", "maze_workers", "python_exec"]);
+  assert.deepEqual(listedTools.map((tool) => tool.name), ["maze_start", "maze_action", "maze_workers", "python_exec"]);
   const listedPython = listedTools.find((tool) => tool.name === "python_exec");
   assert.match(listedPython?.description || "", /writable persistent isolated scratch workspace/);
   assert.match(listedPython?.description || "", /caller-selected relative \.py script_path/);
@@ -410,7 +410,7 @@ try {
   assert.equal(workerResult.status, 0, workerResult.stderr);
   const workerResponses = workerResult.stdout.trim().split("\n").map((line) => JSON.parse(line));
   const workerTools = workerResponses.find((response) => response.id === 101)?.result?.tools || [];
-  assert.deepEqual(workerTools.map((tool) => tool.name), ["maze_start", "maze_observe", "maze_action", "python_exec"]);
+  assert.deepEqual(workerTools.map((tool) => tool.name), ["maze_start", "maze_action", "python_exec"]);
   assert.doesNotMatch(JSON.stringify(workerTools), /clone_id|maze_clone|maze_workers/i);
   assert.match(workerResponses.find((response) => response.id === 102)?.result?.structuredContent?.level || "", /P|p/);
   assert.match(workerResponses.find((response) => response.id === 104)?.result?.structuredContent?.level || "", /P|p/);
@@ -510,7 +510,7 @@ try {
   const restrictedTools = restrictedResponses.find((response) => response.id === 91)?.result?.tools || [];
   assert.deepEqual(
     restrictedTools.map((tool) => tool.name),
-    ["game_start", "game_observe", "game_action", "game_action_sequence"]
+    ["game_start", "game_action", "game_action_sequence"]
   );
   assert.doesNotMatch(JSON.stringify(restrictedTools), /MazeBench|clone_id|worker/i);
   const restrictedSequenceTool = restrictedTools.find((tool) => tool.name === "game_action_sequence");
@@ -567,7 +567,7 @@ try {
     { jsonrpc: "2.0", id: 21, method: "tools/list", params: {} },
     { jsonrpc: "2.0", id: 22, method: "tools/call", params: { name: "maze_start", arguments: {} } },
     { jsonrpc: "2.0", id: 23, method: "tools/call", params: { name: "maze_action", arguments: { action: "quit" } } },
-    { jsonrpc: "2.0", id: 24, method: "tools/call", params: { name: "maze_observe", arguments: {} } }
+    { jsonrpc: "2.0", id: 24, method: "tools/call", params: { name: "maze_start", arguments: {} } }
   ];
   const noQuitResult = spawnSync(process.execPath, [path.join(rootDir, "scripts", "maze-mcp-server.js")], {
     cwd: rootDir,
@@ -590,7 +590,7 @@ try {
     ?.find((tool) => tool.name === "maze_action");
   assert.deepEqual(
     noQuitResponses.find((response) => response.id === 21)?.result?.tools?.map((tool) => tool.name),
-    ["maze_start", "maze_observe", "maze_action", "python_exec"],
+    ["maze_start", "maze_action", "python_exec"],
     "ordinary tools-enabled runs receive game controls and isolated Python, but no worker controls"
   );
   assert.doesNotMatch(noQuitActionTool?.inputSchema?.properties?.action?.description || "", /quit/i);
@@ -626,7 +626,7 @@ try {
     { jsonrpc: "2.0", id: 25, method: "initialize", params: { protocolVersion: "2024-11-05" } },
     { jsonrpc: "2.0", method: "notifications/initialized" },
     { jsonrpc: "2.0", id: 26, method: "tools/call", params: { name: "maze_start", arguments: {} } },
-    { jsonrpc: "2.0", id: 27, method: "tools/call", params: { name: "maze_observe", arguments: {} } }
+    { jsonrpc: "2.0", id: 27, method: "tools/call", params: { name: "maze_start", arguments: {} } }
   ];
   const jsonResult = spawnSync(process.execPath, [path.join(rootDir, "scripts", "maze-mcp-server.js")], {
     cwd: rootDir,
@@ -876,18 +876,15 @@ runpy.run_path("planner.py")`;
   const kimiPayload = (id) => kimiLoopResponses.find((response) => response.id === id)?.result;
   assert.equal(kimiPayload(51)?.structuredContent?.next_required_tool, "maze_action");
   assert.equal(kimiPayload(55)?.structuredContent?.observe_required, undefined);
-  assert.equal(kimiPayload(56)?.structuredContent?.observe_required, undefined, "a different action resets the streak");
-  assert.equal(kimiPayload(60)?.structuredContent?.observe_required, true);
-  assert.equal(kimiPayload(60)?.structuredContent?.next_required_tool, "maze_observe");
-  assert.equal(kimiPayload(61)?.isError, true, "even a different sixth action is blocked until observe");
-  assert.match(kimiPayload(61)?.content?.[0]?.text || "", /Call maze_observe before another maze_action/);
-  assert.equal(kimiPayload(62)?.structuredContent?.observe_required, undefined);
-  assert.equal(kimiPayload(62)?.structuredContent?.next_required_tool, "maze_action");
+  assert.equal(kimiPayload(60)?.structuredContent?.observe_required, undefined);
+  assert.equal(kimiPayload(60)?.structuredContent?.next_required_tool, "maze_action");
+  assert.equal(kimiPayload(61)?.isError, false, "repeated actions no longer require an observe call");
+  assert(kimiLoopResponses.find((response) => response.id === 62)?.error, "maze_observe is not exposed");
   assert.equal(kimiPayload(63)?.isError, false);
   assert.equal(
     JSON.parse(fs.readFileSync(path.join(kimiLoopDir, "session.json"), "utf8")).actions.length,
-    10,
-    "the required observe is free and the blocked sixth action consumes no move"
+    11,
+    "all valid actions execute without an observe gate"
   );
 
   const restrictedKimiLoopDir = path.join(runDir, "restricted-kimi-identical-action-loop");
@@ -931,11 +928,10 @@ runpy.run_path("planner.py")`;
     .split("\n")
     .map((line) => JSON.parse(line));
   const restrictedKimiPayload = (id) => restrictedKimiLoopResponses.find((response) => response.id === id)?.result;
-  assert.equal(restrictedKimiPayload(76)?.structuredContent?.observe_required, true);
-  assert.equal(restrictedKimiPayload(76)?.structuredContent?.next_required_tool, "game_observe");
-  assert.equal(restrictedKimiPayload(77)?.isError, true);
-  assert.match(restrictedKimiPayload(77)?.content?.[0]?.text || "", /Call game_observe before another game_action/);
-  assert.equal(restrictedKimiPayload(78)?.structuredContent?.next_required_tool, "game_action");
+  assert.equal(restrictedKimiPayload(76)?.structuredContent?.observe_required, undefined);
+  assert.equal(restrictedKimiPayload(76)?.structuredContent?.next_required_tool, "game_action");
+  assert.equal(restrictedKimiPayload(77)?.isError, false);
+  assert(restrictedKimiLoopResponses.find((response) => response.id === 78)?.error, "game_observe is not exposed");
   assert.equal(restrictedKimiPayload(79)?.isError, false);
 
   const largeBudgetDir = path.join(runDir, "large-budget");
@@ -1200,7 +1196,7 @@ runpy.run_path("planner.py")`;
   const leadResponse = JSON.parse(leadProbe.stdout);
   assert.deepEqual(
     leadResponse.result.tools.map((tool) => tool.name),
-    ["maze_start", "maze_observe", "maze_action", "maze_workers", "python_exec"]
+    ["maze_start", "maze_action", "maze_workers", "python_exec"]
   );
   assert.doesNotMatch(JSON.stringify(leadResponse.result.tools), /clone_id|maze_clone/i);
   const leadStart = spawnSync(
@@ -1269,7 +1265,7 @@ runpy.run_path("planner.py")`;
   const workerList = callWorker(workerSessionId, 4, "tools/list");
   assert.equal(workerList.status, 0, workerList.stderr);
   const httpWorkerTools = JSON.parse(workerList.stdout).result.tools;
-  assert.deepEqual(httpWorkerTools.map((tool) => tool.name), ["maze_start", "maze_observe", "maze_action", "python_exec"]);
+  assert.deepEqual(httpWorkerTools.map((tool) => tool.name), ["maze_start", "maze_action", "python_exec"]);
   assert.doesNotMatch(JSON.stringify(httpWorkerTools), /clone_id|maze_clone|maze_workers/i);
 
   for (const request of [

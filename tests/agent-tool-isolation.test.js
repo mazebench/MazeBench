@@ -137,8 +137,7 @@ for (const mode of ["text", "json", "vision"]) {
     sessionFile: missingSessionFile
   });
   assert.equal(hasResumableGameSession(missingSessionFile), true);
-  assert.match(warmRetryPrompt, /Call game_observe first/);
-  assert.match(warmRetryPrompt, /do not call game_start/);
+  assert.match(warmRetryPrompt, /Call game_start exactly once to reconnect/);
   assert.match(warmRetryPrompt, /MORE primary game actions/);
   assert.doesNotMatch(warmRetryPrompt, /COLD-START RECOVERY/);
   fs.rmSync(retryDir, { recursive: true, force: true });
@@ -225,15 +224,15 @@ assert.doesNotMatch(swarmPrompt, /maze_clone|clone_id/i);
 
 assert.deepEqual(
   codexMcpConfigArgs(toolsOnConfig).filter((value) => value.includes("enabled_tools")),
-  ['mcp_servers.mazebench.enabled_tools=["maze_start","maze_observe","maze_action","python_exec"]']
+  ['mcp_servers.mazebench.enabled_tools=["maze_start","maze_action","python_exec"]']
 );
 assert.deepEqual(
   codexMcpConfigArgs({ ...toolsOnConfig, swarm: true }).filter((value) => value.includes("enabled_tools")),
-  ['mcp_servers.mazebench.enabled_tools=["maze_start","maze_observe","maze_action","maze_workers","python_exec"]']
+  ['mcp_servers.mazebench.enabled_tools=["maze_start","maze_action","maze_workers","python_exec"]']
 );
 assert.deepEqual(
   codexMcpConfigArgs({ ...toolsOnConfig, autoRunTools: true }).filter((value) => value.includes("enabled_tools")),
-  ['mcp_servers.mazebench.enabled_tools=["maze_start","maze_observe","maze_action","maze_action_sequence","python_exec"]']
+  ['mcp_servers.mazebench.enabled_tools=["maze_start","maze_action","maze_action_sequence","python_exec"]']
 );
 
 const codexConfig = { ...baseConfig, model: "codex" };
@@ -260,7 +259,7 @@ assert.equal(codex.argv.includes("--add-dir"), false, "the repository must never
 assert.doesNotMatch(codexArgs, /sandbox_mode|sandbox_workspace_write/);
 assert.deepEqual(
   codexMcpConfigArgs(codexConfig).filter((value) => value.includes("enabled_tools")),
-  ['mcp_servers.game.enabled_tools=["game_start","game_observe","game_action"]']
+  ['mcp_servers.game.enabled_tools=["game_start","game_action"]']
 );
 assert(codex.argv.includes('model_reasoning_summary="detailed"'));
 
@@ -315,8 +314,8 @@ for (const unsafeCommand of [
   { ...isolatedCodex, argv: [...isolatedCodex.argv, "-c", "permissions.mazebench_agent.network.enabled=true"] },
   {
     ...isolatedCodex,
-    argv: isolatedCodex.argv.map((value) => value === 'mcp_servers.game.enabled_tools=["game_start","game_observe","game_action"]'
-      ? 'mcp_servers.game.enabled_tools=["game_start","game_observe","game_action","exec"]'
+    argv: isolatedCodex.argv.map((value) => value === 'mcp_servers.game.enabled_tools=["game_start","game_action"]'
+      ? 'mcp_servers.game.enabled_tools=["game_start","game_action","exec"]'
       : value)
   }
 ]) {
@@ -401,7 +400,6 @@ assert.deepEqual(
   new Set(valueAfter("--allowedTools").split(",")),
   new Set([
     "mcp__game__game_start",
-    "mcp__game__game_observe",
     "mcp__game__game_action"
   ])
 );
@@ -420,7 +418,6 @@ assert.deepEqual(
   new Set(claudeSettings.permissions.allow),
   new Set([
     "mcp__game__game_start",
-    "mcp__game__game_observe",
     "mcp__game__game_action"
   ])
 );
@@ -468,7 +465,6 @@ const claudeToolsOnAllowed = new Set(
 );
 assert.deepEqual(claudeToolsOnAllowed, new Set([
   "mcp__mazebench__maze_start",
-  "mcp__mazebench__maze_observe",
   "mcp__mazebench__maze_action",
   "mcp__mazebench__python_exec"
 ]));
@@ -500,11 +496,10 @@ const kimiConfig = { ...baseConfig, model: "kimi", modelName: "kimi/k3", reasoni
 assert.match(localAgentSource, /SUPPORTED_KIMI_CODE_VERSIONS = new Set\(\[SUPPORTED_LOCAL_KIMI_VERSION\]\)/);
 assert.match(localAgentSource, /SUPPORTED_LOCAL_AGENT_VERSIONS\[model\]/);
 const kimiPrompt = buildMcpPrompt(kimiConfig);
-assert.match(kimiPrompt, /after five consecutive game_action[\s\S]*same normalized action/i);
-assert.match(kimiPrompt, /A different action resets the repetition[\s\S]*game_observe resets the[\s\S]*count/i);
+assert.doesNotMatch(kimiPrompt, /game_observe|maze_observe|observe_required/i);
 const kimiAutoRunPrompt = buildMcpPrompt({ ...kimiConfig, toolUse: "offline", tools: true, autoRunTools: true });
 assert.match(kimiAutoRunPrompt, /AUTO-RUN TOOLS HARNESS IS ENABLED/);
-assert.match(kimiAutoRunPrompt, /after five consecutive maze_action[\s\S]*maze_observe resets the[\s\S]*count/i);
+assert.doesNotMatch(kimiAutoRunPrompt, /game_observe|maze_observe|observe_required/i);
 const kimi = agentCommand(kimiConfig, kimiPrompt);
 assert.equal(kimi.bin, "kimi");
 assert.equal(kimi.argv[kimi.argv.indexOf("--model") + 1], "kimi/k3");
@@ -523,7 +518,6 @@ const restrictedKimiProfile = kimiAgentProfile(kimiConfig);
 assert.match(restrictedKimiProfile, /subagents: \[\]/);
 for (const tool of [
   "mcp__game__game_start",
-  "mcp__game__game_observe",
   "mcp__game__game_action"
 ]) {
   assert.match(restrictedKimiProfile, new RegExp(`  - ${tool}`));
@@ -590,7 +584,6 @@ assert.doesNotMatch(safeKimiConfig, /search\.invalid|unsafe-hook/);
 assert.doesNotMatch(safeKimiConfig, /decision = "allow"\s+pattern = "Read"/);
 for (const tool of [
   "mcp__game__game_start",
-  "mcp__game__game_observe",
   "mcp__game__game_action"
 ]) {
   assert.match(safeKimiConfig, new RegExp(`decision = "allow"\\s+pattern = "${tool}"`));
@@ -606,12 +599,12 @@ assert.doesNotMatch(safeKimiConfig, /pattern = "\*\*"/);
 const kimiOfflineMcp = JSON.parse(kimiMcpConfig({ ...toolsOnConfig, model: "kimi" }));
 assert.deepEqual(
   kimiOfflineMcp.mcpServers.mazebench.enabledTools,
-  ["maze_start", "maze_observe", "maze_action", "python_exec"]
+  ["maze_start", "maze_action", "python_exec"]
 );
 const kimiAutoRunMcp = JSON.parse(kimiMcpConfig({ ...toolsOnConfig, model: "kimi", autoRunTools: true }));
 assert.deepEqual(
   kimiAutoRunMcp.mcpServers.mazebench.enabledTools,
-  ["maze_start", "maze_observe", "maze_action", "maze_action_sequence", "python_exec"]
+  ["maze_start", "maze_action", "maze_action_sequence", "python_exec"]
 );
 assert.deepEqual(Object.keys(kimiOfflineMcp.mcpServers), ["mazebench"]);
 

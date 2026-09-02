@@ -67,8 +67,6 @@ const MAX_SWARM_WORKERS = Math.min(32, positiveInt(process.env.MAZEBENCH_MAX_SWA
 const RESTRICTED_MODE = process.env.MAZEBENCH_RESTRICTED_MODE === "1";
 const AUTO_RUN_TOOLS = RESTRICTED_MODE || process.env.MAZEBENCH_AUTO_RUN_TOOLS === "1";
 const AUTO_RUN_ALL_FRAMES = AUTO_RUN_TOOLS && process.env.MAZEBENCH_AUTO_RUN_ALL_FRAMES === "1";
-const KIMI_OBSERVE_BREAK_ENABLED = process.env.MAZEBENCH_PROVIDER === "kimi";
-const KIMI_IDENTICAL_ACTION_INTERVAL = 5;
 const HTTP_TOKEN = String(process.env.MAZEBENCH_MCP_HTTP_TOKEN || "");
 const WORKER_ALLOCATION_LOCK = path.join(SWARM_DIR, ".instance-allocation.lock");
 const PYTHON_PREFLIGHTS = new Map();
@@ -822,15 +820,6 @@ const LEAD_TOOLS = [
     inputSchema: { type: "object", properties: {}, additionalProperties: false }
   },
   {
-    name: "maze_observe",
-    description: "Observe the lead agent's primary maze.",
-    inputSchema: {
-      type: "object",
-      properties: {},
-      additionalProperties: false
-    }
-  },
-  {
     name: "maze_action",
     description: "Apply one MazeBench action to the lead agent's primary maze.",
     inputSchema: {
@@ -909,11 +898,6 @@ const WORKER_TOOLS = [
     inputSchema: { type: "object", properties: {}, additionalProperties: false }
   },
   {
-    name: "maze_observe",
-    description: "Observe this swarm worker's assigned private maze instance.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false }
-  },
-  {
     name: "maze_action",
     description: "Apply one action to this swarm worker's assigned private maze instance.",
     inputSchema: {
@@ -977,11 +961,6 @@ const RESTRICTED_TOOLS = [
     inputSchema: { type: "object", properties: {}, additionalProperties: false }
   },
   {
-    name: "game_observe",
-    description: "Return the current game observation without changing state.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: false }
-  },
-  {
     name: "game_action",
     description: "Apply one allowed action to the current game.",
     inputSchema: {
@@ -1027,36 +1006,8 @@ function createRequestContext({ workerOnly = false, workerKey = "" } = {}) {
   return {
     workerOnly: Boolean(workerOnly),
     workerKey: safeWorkerId(workerKey || `swarm-worker-${crypto.randomBytes(6).toString("hex")}`),
-    assignedCloneId: "",
-    lastActionKey: null,
-    identicalActionStreak: 0,
-    observeRequired: false
+    assignedCloneId: ""
   };
-}
-
-function normalizedActionKey(action) {
-  return String(action || "").trim().toLowerCase().replace(/\s+/g, " ");
-}
-
-function resetKimiActionStreak(context) {
-  context.lastActionKey = null;
-  context.identicalActionStreak = 0;
-  context.observeRequired = false;
-}
-
-function noteKimiAction(context, action) {
-  const actionKey = normalizedActionKey(action);
-  if (actionKey === context.lastActionKey) {
-    context.identicalActionStreak += 1;
-  } else {
-    context.lastActionKey = actionKey;
-    context.identicalActionStreak = 1;
-  }
-  context.observeRequired = context.identicalActionStreak >= KIMI_IDENTICAL_ACTION_INTERVAL;
-}
-
-function kimiToolName(kind) {
-  return `${RESTRICTED_MODE ? "game" : "maze"}_${kind}`;
 }
 
 function kimiResultIsTerminal(value, input) {
@@ -1080,16 +1031,15 @@ function kimiResultIsTerminal(value, input) {
 
 function kimiLoopControl(name, value, input, context) {
   if (
-    !KIMI_OBSERVE_BREAK_ENABLED ||
-    !["maze_start", "maze_observe", "maze_action", "maze_action_sequence"].includes(name) ||
+    process.env.MAZEBENCH_PROVIDER !== "kimi" ||
+    !["maze_start", "maze_action", "maze_action_sequence"].includes(name) ||
     kimiResultIsTerminal(value, input)
   ) {
     return null;
   }
   return {
     completion_allowed: false,
-    next_required_tool: kimiToolName(context.observeRequired ? "observe" : "action"),
-    ...(context.observeRequired ? { observe_required: true } : {})
+    next_required_tool: `${RESTRICTED_MODE ? "game" : "maze"}_action`
   };
 }
 
@@ -1263,9 +1213,6 @@ function callTool(name, input = {}, context = createRequestContext({ workerOnly:
       return runHelper(["observe", "--state", PRIMARY_SESSION]);
     }
     return startMaze();
-  }
-  if (name === "maze_observe") {
-    return runHelper(["observe", "--state", sessionFor(effectiveInput.clone_id)]);
   }
   if (name === "maze_action_sequence") {
     return runActionSequence(input, context);
@@ -1548,16 +1495,6 @@ async function handle(
         : {})
     });
     try {
-      if (KIMI_OBSERVE_BREAK_ENABLED && name === "maze_action" && context.observeRequired) {
-        throw new Error(`Call ${kimiToolName("observe")} before another ${kimiToolName("action")}.`);
-      }
-      if (KIMI_OBSERVE_BREAK_ENABLED && name === "maze_observe") {
-        resetKimiActionStreak(context);
-      } else if (KIMI_OBSERVE_BREAK_ENABLED && name === "maze_action") {
-        noteKimiAction(context, input.action);
-      } else if (KIMI_OBSERVE_BREAK_ENABLED && name === "maze_action_sequence") {
-        resetKimiActionStreak(context);
-      }
       const value = callTool(name, input, context);
       const observationWorkspace = RESTRICTED_MODE
         ? null

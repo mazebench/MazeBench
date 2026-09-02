@@ -292,7 +292,6 @@ function buildMcpPrompt(config) {
   const controlPrefix = restricted ? "game" : "maze";
   const controls = {
     start: `${controlPrefix}_start`,
-    observe: `${controlPrefix}_observe`,
     action: `${controlPrefix}_action`
   };
   const observation = config.mode === "vision"
@@ -347,10 +346,10 @@ permanently bound to exactly one instance.`
     : `Do not use any external tools. Do not search the web, do not read any
 files, do not run shell commands, and do not spawn any sub-agents. This is
 TOOLS-OFF mode. Do not access repositories, connectors, resource listings,
-prior-run memory, workers, or private branches. Use only the three game controls
+prior-run memory, workers, or private branches. Use only the two game controls
 named below and your current conversation memory.`;
   const observationWorkspace = config.toolUse === "offline" && config.mode !== "vision"
-    ? `PYTHON WORKSPACE OBSERVATION BRIDGE. After maze_start, maze_observe, maze_action,
+    ? `PYTHON WORKSPACE OBSERVATION BRIDGE. After maze_start, maze_action,
 or maze_action_sequence, the trusted MCP server atomically writes the exact
 sanitized observation you just received to observations/current.json inside
 your Python scratch workspace. It also appends delivered observations to
@@ -367,7 +366,7 @@ state, and every individual move.`
     : "";
   const autoRunTools = autoRunToolsInstructions(config);
   const firstStep = continuingGame
-    ? `Call ${controls.observe} first. This is the same primary game; do not call ${controls.start}.`
+    ? `Call ${controls.start} exactly once to reconnect to the existing primary game and receive its current state.`
     : recoveringColdStart
       ? `COLD-START RECOVERY: the provider conversation is being resumed, but no primary game was ever created. Call ${controls.start} exactly once as your first game-control call, even if earlier conversation context said not to start.`
     : `Call ${controls.start} exactly once as your first game-control call.`;
@@ -385,8 +384,8 @@ effort as you and inherits your tool-use policy. You may spawn at most
 ${maxSwarmWorkers} workers; delegation is optional.
 
 Each worker receives exactly one private maze instance automatically and begins
-by calling maze_start once. It then uses maze_observe and maze_action without an
-instance id, may explore freely, ${workerCapability}, and reports its findings
+by calling maze_start once. It then uses maze_action without an instance id,
+may explore freely, ${workerCapability}, and reports its findings
 to you. Workers must never act on the primary maze. You decide which findings
 to use and make every primary move yourself. No model may create, branch, or
 select additional maze instances.
@@ -405,20 +404,11 @@ game is won or the user stops the run.`
   const validActions = config.allowQuit
     ? "up, down, left, right, rotate camera left/right/up/down, undo, reset, quit, and go to level H I"
     : "up, down, left, right, rotate camera left/right/up/down, undo, reset, and go to level H I";
-  const kimiObservePolicy = config.model === "kimi"
-    ? `Kimi Code compatibility rule: after five consecutive ${controls.action}
-calls with the same normalized action, you must call ${controls.observe} once
-before any further ${controls.action}. A different action resets the repetition
-count. The fifth identical action result reports observe_required=true and
-next_required_tool=${controls.observe}; obey it. ${controls.observe} resets the
-count and does not consume a game action.`
-    : "";
-
   const intro = restricted
-    ? `You are solving a 3D grid game. Control it only through ${controls.start},
-${controls.observe}, and ${controls.action}.`
+    ? `You are solving a 3D grid game. Control it only through ${controls.start}
+and ${controls.action}.`
     : `You are controlling a 3D grid game. Control game state only
-through the configured MCP tools: maze_start, maze_observe, and maze_action.
+through the configured MCP tools: maze_start and maze_action.
 Swarm workers receive one automatically assigned private instance. Never edit
 session JSON directly or create, select, or branch game instances yourself.`;
 
@@ -431,8 +421,6 @@ ${observationWorkspace}
 ${autoRunTools}
 ${swarm}
 ${quitPolicy}
-${kimiObservePolicy}
-
 ${firstStep}
 
 ${budgetInstruction} Do not
@@ -659,10 +647,9 @@ function codexMcpConfigArgs(config) {
   const restricted = config.toolUse === "read-only";
   const prefix = `mcp_servers.${restricted ? "game" : "mazebench"}`;
   const enabledTools = restricted
-    ? JSON.stringify(["game_start", "game_observe", "game_action"])
+    ? JSON.stringify(["game_start", "game_action"])
     : JSON.stringify([
         "maze_start",
-        "maze_observe",
         "maze_action",
         ...(config.autoRunTools ? ["maze_action_sequence"] : []),
         ...(config.swarm ? ["maze_workers"] : []),
@@ -707,7 +694,7 @@ function codexWorkerConfig(config, name) {
     `default_permissions = ${tomlString("mazebench_worker")}`,
     `developer_instructions = ${tomlString(
       "You are a grid-game swarm worker. Use the identical model and reasoning effort inherited from the lead. " +
-      "You have exactly one private maze instance. Call maze_start once, then use maze_observe and maze_action without an instance id. " +
+      "You have exactly one private maze instance. Call maze_start once, then use maze_action without an instance id. " +
       (offline
         ? "Explore only your private maze, use python_exec for isolated local computation when useful, and report findings to the lead. " +
           "Each call executes a caller-named relative .py file in a fresh Python process, while relative-path files persist. You may organize any number of files as useful. " +
@@ -735,7 +722,6 @@ function codexWorkerConfig(config, name) {
     'default_tools_approval_mode = "approve"',
     `enabled_tools = ${JSON.stringify([
       "maze_start",
-      "maze_observe",
       "maze_action",
       ...(offline && config.autoRunTools ? ["maze_action_sequence"] : []),
       ...(offline ? ["python_exec"] : [])
@@ -809,7 +795,6 @@ function claudeSandboxSettings(config) {
   const leadAllow = offline
     ? [
         "mcp__mazebench__maze_start",
-        "mcp__mazebench__maze_observe",
         "mcp__mazebench__maze_action",
         ...(config.autoRunTools ? ["mcp__mazebench__maze_action_sequence"] : []),
         "mcp__mazebench__python_exec",
@@ -817,13 +802,11 @@ function claudeSandboxSettings(config) {
       ]
     : [
         "mcp__game__game_start",
-        "mcp__game__game_observe",
         "mcp__game__game_action"
       ];
   const workerAllow = config.swarm
     ? [
         "mcp__mazebench_worker__maze_start",
-        "mcp__mazebench_worker__maze_observe",
         "mcp__mazebench_worker__maze_action",
         ...(offline && config.autoRunTools ? ["mcp__mazebench_worker__maze_action_sequence"] : []),
         ...(offline ? ["mcp__mazebench_worker__python_exec"] : [])
@@ -886,7 +869,7 @@ function claudeAgents(config) {
       : "Explore a private game clone read-only and report to the lead.",
     prompt:
       "You are a grid-game swarm worker controlled by the superior lead. You have exactly one private maze instance. " +
-      "Call maze_start once, then use maze_observe and maze_action without an instance id. Report findings to the lead. " +
+      "Call maze_start once, then use maze_action without an instance id. Report findings to the lead. " +
       (offline
         ? "You may use python_exec for isolated computation in your private scratch workspace. " +
           "Each call executes a caller-named relative .py file in a fresh Python process, while relative-path files persist. You may organize any number of files as useful. " +
@@ -898,7 +881,6 @@ function claudeAgents(config) {
     background: true,
     tools: [
       "mcp__mazebench_worker__maze_start",
-      "mcp__mazebench_worker__maze_observe",
       "mcp__mazebench_worker__maze_action",
       ...(offline && config.autoRunTools ? ["mcp__mazebench_worker__maze_action_sequence"] : []),
       ...(offline ? ["mcp__mazebench_worker__python_exec"] : [])
@@ -923,12 +905,10 @@ function kimiAllowedTools(config) {
   return restricted
     ? [
         "mcp__game__game_start",
-        "mcp__game__game_observe",
         "mcp__game__game_action"
       ]
     : [
         "mcp__mazebench__maze_start",
-        "mcp__mazebench__maze_observe",
         "mcp__mazebench__maze_action",
         ...(config.autoRunTools ? ["mcp__mazebench__maze_action_sequence"] : []),
         "mcp__mazebench__python_exec"
@@ -1041,10 +1021,9 @@ function kimiMcpConfig(config) {
   const restricted = config.toolUse === "read-only";
   const name = restricted ? "game" : "mazebench";
   const enabledTools = restricted
-    ? ["game_start", "game_observe", "game_action"]
+    ? ["game_start", "game_action"]
     : [
         "maze_start",
-        "maze_observe",
         "maze_action",
         ...(config.autoRunTools ? ["maze_action_sequence"] : []),
         "python_exec"
@@ -1483,12 +1462,10 @@ function agentCommand(config, prompt) {
       const mcpTools = restricted
         ? [
             "mcp__game__game_start",
-            "mcp__game__game_observe",
             "mcp__game__game_action"
           ]
         : [
             "mcp__mazebench__maze_start",
-            "mcp__mazebench__maze_observe",
             "mcp__mazebench__maze_action",
             ...(config.autoRunTools ? ["mcp__mazebench__maze_action_sequence"] : []),
             "mcp__mazebench__python_exec",
@@ -1647,8 +1624,8 @@ function assertLocalCodexCommandIsolation(config, command) {
   const configValues = args.filter((_value, index) => args[index - 1] === "-c");
   const mcpPrefix = offline ? "mazebench" : "game";
   const enabledTools = offline
-    ? ["maze_start", "maze_observe", "maze_action", ...(config.autoRunTools ? ["maze_action_sequence"] : []), "python_exec"]
-    : ["game_start", "game_observe", "game_action"];
+    ? ["maze_start", "maze_action", ...(config.autoRunTools ? ["maze_action_sequence"] : []), "python_exec"]
+    : ["game_start", "game_action"];
   for (const required of [
     'approval_policy="never"',
     'web_search="disabled"',
@@ -1753,14 +1730,12 @@ function assertLocalClaudeCommandIsolation(config, command) {
   const expectedAllowed = offline
     ? [
         "mcp__mazebench__maze_start",
-        "mcp__mazebench__maze_observe",
         "mcp__mazebench__maze_action",
         ...(config.autoRunTools ? ["mcp__mazebench__maze_action_sequence"] : []),
         "mcp__mazebench__python_exec"
       ]
     : [
         "mcp__game__game_start",
-        "mcp__game__game_observe",
         "mcp__game__game_action"
       ];
   const allowed = new Set(valueAfter("--allowedTools").split(",").filter(Boolean));
@@ -1957,8 +1932,8 @@ function localAgentIsolationPreflight(config) {
       apps: false,
       subagents: false,
       mcp_tools: config.toolUse === "offline"
-        ? ["maze_start", "maze_observe", "maze_action", ...(config.autoRunTools ? ["maze_action_sequence"] : []), "python_exec"]
-        : ["game_start", "game_observe", "game_action"]
+        ? ["maze_start", "maze_action", ...(config.autoRunTools ? ["maze_action_sequence"] : []), "python_exec"]
+        : ["game_start", "game_action"]
     },
     namespace: checks
   };

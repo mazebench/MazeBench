@@ -192,6 +192,43 @@ class RemoteModeTests(TestCase):
             "lan: only `action <move>` is available", file=sys.stderr
         )
 
+    @mock.patch.object(remote.time, "sleep")
+    @mock.patch.object(remote, "_lan_rpc")
+    def test_rpc_silently_retries_transient_no_route_errors(self, lan_rpc, sleep):
+        lan_rpc.side_effect = [
+            mazebench_cli.CliError(
+                "LAN request failed: <urlopen error [Errno 65] No route to host>"
+            ),
+            observation("READY"),
+        ]
+
+        result = remote._rpc_with_retry(
+            "http://192.168.1.65:7331/123/lead",
+            {"jsonrpc": "2.0"},
+            {"X-MazeBench-Run": "fable"},
+        )
+
+        self.assertEqual(result, observation("READY"))
+        self.assertEqual(lan_rpc.call_count, 2)
+        sleep.assert_called_once_with(0.25)
+
+    @mock.patch.object(remote.time, "sleep")
+    @mock.patch.object(remote, "_lan_rpc")
+    def test_rpc_does_not_retry_protocol_errors(self, lan_rpc, sleep):
+        lan_rpc.side_effect = mazebench_cli.CliError(
+            "LAN request failed with HTTP 400: bad action"
+        )
+
+        with self.assertRaisesRegex(mazebench_cli.CliError, "HTTP 400"):
+            remote._rpc_with_retry(
+                "http://192.168.1.65:7331/123/lead",
+                {"jsonrpc": "2.0"},
+                {"X-MazeBench-Run": "fable"},
+            )
+
+        lan_rpc.assert_called_once()
+        sleep.assert_not_called()
+
     @mock.patch.object(remote, "login_mode", return_value=0)
     def test_main_exposes_only_code_login_run(self, login_mode):
         self.assertEqual(remote.main(["123", "login", "fable"]), 0)

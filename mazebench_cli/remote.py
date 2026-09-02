@@ -170,6 +170,34 @@ def _record_start(run_name: str, payload: dict) -> None:
         start_path.write_text(_ascii_board(payload))
 
 
+def _is_transient_network_error(error: CliError) -> bool:
+    message = str(error).lower()
+    return any(
+        phrase in message
+        for phrase in (
+            "no route to host",
+            "network is unreachable",
+            "connection refused",
+            "connection reset",
+            "timed out",
+            "temporary failure",
+        )
+    )
+
+
+def _rpc_with_retry(url: str, request: dict, headers: dict[str, str]) -> dict:
+    delays = (0.0, 0.25, 0.75, 1.5)
+    for attempt, delay in enumerate(delays):
+        if delay:
+            time.sleep(delay)
+        try:
+            return _lan_rpc(url, request, headers=headers)
+        except CliError as error:
+            if attempt == len(delays) - 1 or not _is_transient_network_error(error):
+                raise
+    raise AssertionError("unreachable")
+
+
 def _call(
     url: str,
     run_name: str,
@@ -185,10 +213,10 @@ def _call(
         "method": "tools/call",
         "params": {"name": tool_name, "arguments": arguments or {}},
     }
-    payload = _lan_rpc(
+    payload = _rpc_with_retry(
         url,
         request,
-        headers={"X-MazeBench-Run": run_name},
+        {"X-MazeBench-Run": run_name},
     )
     error = _tool_error(payload)
     if error:
