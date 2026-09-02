@@ -1786,11 +1786,11 @@ function assertLocalAntigravityCommandIsolation(config, command) {
     throw new Error("Antigravity settings expose an unreviewed MCP permission.");
   }
   const profile = antigravityAgentProfile(config);
-  if (!/^tools:\s*\n\s*- call_mcp_tool\s*$/m.test(profile) ||
+  if (!/^tools:\s*\[\]\s*$/m.test(profile) ||
       /\n\s*- (?:run_command|view_file|search_web|invoke_subagent)\s*$/m.test(profile)) {
     throw new Error("Antigravity agent profile exposes an unreviewed built-in tool.");
   }
-  if (!new RegExp(`^mcpServers:\\s*\\n\\s+${serverName}:\\s*\\n\\s+serverUrl:`, "m").test(profile) ||
+  if (!new RegExp(`^mcpServers:\\s*\\n\\s+- name: ${serverName}\\s*\\n\\s+serverUrl:`, "m").test(profile) ||
       !profile.includes(JSON.stringify(config.mcpUrl))) {
     throw new Error("Antigravity agent profile is not bound to its private MazeBench MCP endpoint.");
   }
@@ -2472,10 +2472,10 @@ function distillAntigravityEvents(raw) {
       const parameters = info.parameters || {};
       const wrapped = String(info.name || step.tool_name || "") === "call_mcp_tool";
       const toolName = wrapped
-        ? String(parameters.tool_name || parameters.name || "")
+        ? String(parameters.tool_name || parameters.ToolName || parameters.name || "")
         : String(info.name || step.tool_name || "");
       const input = wrapped
-        ? (parameters.arguments || parameters.input || {})
+        ? (parameters.arguments || parameters.Arguments || parameters.input || {})
         : parameters;
       const output = toolResultText(info.output);
       transcript.push(`[tool] ${toolName || info.name || "tool"} ${JSON.stringify(input)}`);

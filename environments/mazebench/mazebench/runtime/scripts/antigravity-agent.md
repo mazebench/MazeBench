@@ -1,10 +1,9 @@
 ---
 name: mazebench
 description: Isolated MazeBench player with only the reviewed MCP dispatcher.
-tools:
-  - call_mcp_tool
+tools: []
 mcpServers:
-  __MAZEBENCH_MCP_SERVER__:
+  - name: __MAZEBENCH_MCP_SERVER__
     serverUrl: __MAZEBENCH_MCP_SERVER_URL__
     disabledTools: []
 mainAgent: true

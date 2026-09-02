@@ -419,8 +419,8 @@ assert.deepEqual(JSON.parse(antigravitySettings(antigravityConfig)).permissions.
   "mcp(game/game_action)"
 ]);
 const antigravityProfile = antigravityAgentProfile(antigravityConfig);
-assert.match(antigravityProfile, /^tools:\s*\n\s*- call_mcp_tool$/m);
-assert.match(antigravityProfile, /^mcpServers:\s*\n\s+game:\s*\n\s+serverUrl:/m);
+assert.match(antigravityProfile, /^tools:\s*\[\]\s*$/m);
+assert.match(antigravityProfile, /^mcpServers:\s*\n\s+- name: game\s*\n\s+serverUrl:/m);
 assert.match(antigravityProfile, new RegExp(antigravityConfig.mcpUrl.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 assert.throws(
   () => assertLocalAntigravityCommandIsolation(antigravityConfig, {
@@ -433,7 +433,7 @@ const antigravityDistilled = distillAntigravityEvents([
   JSON.stringify({ event: "step_update", step_update: { step_type: "agent_response", text_delta: "Trying up." } }),
   JSON.stringify({ event: "step_update", step_update: { step_type: "tool", state: "DONE", tool_info: {
     name: "call_mcp_tool",
-    parameters: { tool_name: "game_action", arguments: { action: "up" } },
+    parameters: { ToolName: "game_action", Arguments: { action: "up" }, ServerName: "game" },
     output: { content: [{ type: "text", text: JSON.stringify({ action: "up", success: true }) }] }
   } } })
 ].join("\n"));
