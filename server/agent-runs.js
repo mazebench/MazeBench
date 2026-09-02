@@ -7,6 +7,7 @@ const { spawn, spawnSync } = require("child_process");
 const {
   RETIRED_LOCAL_AGENT_MESSAGE,
   SUPPORTED_LOCAL_AGENT_VERSIONS,
+  distillAntigravityEvents,
   distillClaudeEvents,
   distillCodexEvents,
   distillKimiEvents,
@@ -565,7 +566,7 @@ function createAgentRunService({
     const validBoundary = meta?.harness_boundary === `${boundaryPrefix}game-tools-only` ||
       (toolUse === "offline" && meta?.harness_boundary === `${boundaryPrefix}game-tools+isolated-python`);
     if (
-      meta?.harness !== ({ codex: "codex", claude: "claude_code", kimi: "kimi_code" })[provider] ||
+      meta?.harness !== ({ antigravity: "antigravity", codex: "codex", claude: "claude_code", kimi: "kimi_code" })[provider] ||
       meta?.harness_version !== currentLocalAgentVersion(provider) ||
       !validBoundary ||
       meta?.container_image !== "mazebench-agent"
@@ -589,8 +590,8 @@ function createAgentRunService({
       ? agentEnvironment({ fresh: true })
       : {};
     if (!environment[provider]) {
-      const label = { claude: "Claude Code", kimi: "Kimi Code", codex: "Codex" }[provider] || provider;
-      const login = { claude: "claude auth login", kimi: "kimi login", codex: "codex login" }[provider] || "";
+      const label = { antigravity: "Google Antigravity", claude: "Claude Code", kimi: "Kimi Code", codex: "Codex" }[provider] || provider;
+      const login = { antigravity: "npm run maze:login-antigravity", claude: "claude auth login", kimi: "kimi login", codex: "codex login" }[provider] || "";
       throw new Error(`${label} needs an active local account. Run \`${login}\`, then refresh the Agent page.`);
     }
   }
@@ -598,7 +599,7 @@ function createAgentRunService({
   function localLaunchEnvironment(params) {
     const environment = enrichedPathEnv();
     if (!(params?.subscription === true || params?.subscription === "true")) return environment;
-    for (const key of ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "CODEX_ACCESS_TOKEN"]) {
+    for (const key of ["GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "CODEX_ACCESS_TOKEN"]) {
       delete environment[key];
     }
     return environment;
@@ -2776,8 +2777,10 @@ function createAgentRunService({
 
     try {
       const raw = fs.readFileSync(eventsPath, "utf8");
-      const distilled = model === "claude"
-        ? distillClaudeEvents(raw)
+      const distilled = model === "antigravity"
+        ? distillAntigravityEvents(raw)
+        : model === "claude"
+          ? distillClaudeEvents(raw)
         : model === "kimi"
           ? distillKimiEvents(raw)
           : distillCodexEvents(raw);
@@ -3657,6 +3660,37 @@ function createAgentRunService({
             ? parseCodexSession(fs.readFileSync(codexSessionPath, "utf8"))
             : parseCodexEvents(fs.existsSync(eventsPath) ? fs.readFileSync(eventsPath, "utf8") : "");
         }
+      } else if (summary.provider === "antigravity") {
+        const events = fs.existsSync(eventsPath)
+          ? fs.readFileSync(eventsPath, "utf8").split(/\r?\n/).flatMap((line) => {
+              try {
+                return line.trim() ? [JSON.parse(line)] : [];
+              } catch (_error) {
+                return [];
+              }
+            })
+          : [];
+        const usage = [...events].reverse().find((event) => event.event === "result" && event.result?.usage)?.result?.usage || {};
+        const inputTokens = Math.max(0, Number(usage.input_tokens) || 0);
+        const outputTokens = Math.max(0, Number(usage.output_tokens) || 0);
+        value = {
+          provider: "antigravity",
+          available: inputTokens + outputTokens > 0,
+          exact: true,
+          note: "Exact usage reported by the Antigravity stream result.",
+          total_tokens: Math.max(0, Number(usage.total_tokens) || inputTokens + outputTokens),
+          input_tokens: inputTokens,
+          cached_input_tokens: Math.max(0, Number(usage.cache_read_tokens) || 0),
+          output_tokens: outputTokens,
+          reasoning_tokens: Math.max(0, Number(usage.thinking_tokens) || 0),
+          current_context_tokens: inputTokens || null,
+          context_window: null,
+          average_tokens_per_action: null,
+          agents_current: null,
+          agents_total: null,
+          compactions: 0,
+          actions: []
+        };
       } else if (summary.provider === "claude") {
         value = parseClaudeEvents(fs.existsSync(eventsPath) ? fs.readFileSync(eventsPath, "utf8") : "");
       } else if (summary.provider === "kimi") {
@@ -4610,6 +4644,55 @@ function createAgentRunService({
     };
   }
 
+  function antigravityModelCatalog() {
+    const dockerPrefix = [
+      "run", "--rm", "-e", "HOME=/home/pwuser",
+      "-v", "mazebench-antigravity-auth:/home/pwuser/.gemini",
+      "--entrypoint", "agy", LOCAL_AGENT_IMAGE
+    ];
+    const result = spawnSync("docker", [...dockerPrefix, "models"], {
+      encoding: "utf8",
+      env: enrichedPathEnv(),
+      timeout: 10_000,
+      maxBuffer: 2 * 1024 * 1024
+    });
+    const version = spawnSync("docker", [...dockerPrefix, "--version"], {
+      encoding: "utf8",
+      env: enrichedPathEnv(),
+      timeout: 10_000
+    });
+    const versionText = String(version.stdout || "").trim();
+    if (result.status !== 0) {
+      return {
+        models: [],
+        source: versionText ? `Google Antigravity ${versionText}` : "Google Antigravity CLI",
+        checked_at: modelCatalogCheckedAt(),
+        note: "The pinned Antigravity runtime could not load its authenticated model catalog. Run `npm run maze:login-antigravity`, then retry."
+      };
+    }
+    const models = String(result.stdout || "")
+      .split(/\r?\n/)
+      .map((line) => line.match(/^(gemini-[a-z0-9.-]+-(low|medium|high))\t(.+)$/i))
+      .filter(Boolean)
+      .map((match) => ({
+        id: match[1],
+        label: match[3],
+        description: "Exact authenticated Antigravity catalog id",
+        reasoning_levels: [match[2].toLowerCase()],
+        default_reasoning: match[2].toLowerCase(),
+        vision: true
+      }));
+    return {
+      models,
+      source: versionText ? `Google Antigravity ${versionText}` : "Google Antigravity CLI",
+      checked_at: modelCatalogCheckedAt(),
+      default_model_id: models[0]?.id || "",
+      note: models.length
+        ? "Exact ids from the authenticated Antigravity catalog. MazeBench verifies the runtime init event and stops instead of accepting a different model."
+        : "Antigravity returned no exact Gemini catalog ids. MazeBench will not invent an alias or fall back."
+    };
+  }
+
   function claudeModelCatalog() {
     // Claude Code has no JSON model-catalog command. Its help lists most aliases,
     // while the model picker metadata embedded in the installed CLI is more
@@ -4947,7 +5030,7 @@ function createAgentRunService({
   function listProviderModels(provider, { fresh = false, harness = "none" } = {}) {
     const normalized = String(provider || "").toLowerCase();
 
-    if (!["codex", "claude", "kimi", "prime"].includes(normalized)) {
+    if (!["antigravity", "codex", "claude", "kimi", "prime"].includes(normalized)) {
       throw new Error(`Unknown provider "${provider}".`);
     }
 
@@ -4965,8 +5048,10 @@ function createAgentRunService({
         : cached.value;
     }
 
-    const value = normalized === "claude"
-      ? claudeModelCatalog()
+    const value = normalized === "antigravity"
+      ? antigravityModelCatalog()
+      : normalized === "claude"
+        ? claudeModelCatalog()
       : normalized === "kimi"
         ? kimiModelCatalog()
         : primeModelCatalog();
@@ -5000,7 +5085,7 @@ function createAgentRunService({
     const inference = String(params.inference || "subscription").trim().toLowerCase();
 
     if (!SUPPORTED_LOCAL_AGENT_VERSIONS[model]) {
-      throw new Error("Choose a certified local Codex, Claude Code, or Kimi Code runner.");
+      throw new Error("Choose a certified local Google Antigravity, Codex, Claude Code, or Kimi Code runner.");
     }
     if (!["subscription", "prime"].includes(inference) || (inference === "prime" && model !== "codex")) {
       throw new Error("Prime inference is supported only by the isolated Codex runner.");
@@ -5049,9 +5134,27 @@ function createAgentRunService({
       const requiredVersions = currentLocalAgentVersions();
       throw new Error(
         "The certified local-agent image is missing or stale. Run `npm run maze:build-local-agents` " +
-        `(required Codex ${requiredVersions.codex}, Claude Code ${requiredVersions.claude}, ` +
+        `(required Antigravity ${requiredVersions.antigravity}, Codex ${requiredVersions.codex}, Claude Code ${requiredVersions.claude}, ` +
         `Kimi Code ${requiredVersions.kimi}).`
       );
+    }
+
+    if (model === "antigravity") {
+      const requestedId = String(params.model_name || "");
+      const exact = listProviderModels("antigravity", { fresh: true }).models.find(
+        (entry) => entry.id === requestedId
+      );
+      if (!exact) {
+        throw new Error(
+          `Antigravity model ${requestedId || "(missing)"} is not in the live authenticated catalog. ` +
+          "MazeBench will not substitute an alias or older model."
+        );
+      }
+      const requestedEffort = String(params.reasoning || "high").toLowerCase();
+      const idEffort = requestedId.match(/-(low|medium|high)$/)?.[1] || "";
+      if (requestedEffort !== idEffort) {
+        throw new Error(`${requestedId} requires matching effort ${idEffort}; received ${requestedEffort}.`);
+      }
     }
     const args = [
       `model=${model}`,
@@ -5101,7 +5204,12 @@ function createAgentRunService({
     if (params.reasoning) {
       const reasoning = String(params.reasoning).toLowerCase();
 
-      if (model === "claude") {
+      if (model === "antigravity") {
+        const expected = String(params.model_name || "").match(/-(low|medium|high)$/)?.[1] || "";
+        if (reasoning !== expected) {
+          throw new Error(`${params.model_name} requires matching Antigravity effort ${expected}.`);
+        }
+      } else if (model === "claude") {
         const exactModelId = resolveClaudeCatalogModelId(params.model_name);
         const supported = claudeReasoningLevels(exactModelId);
 
@@ -5607,8 +5715,8 @@ function createAgentRunService({
           model,
           model_name: exactModelName,
           model_alias: exactModelName !== requestedModelName ? requestedModelName : "",
-          harness: ({ codex: "codex", claude: "claude_code", kimi: "kimi_code" })[model],
-          harness_label: ({ codex: "Codex", claude: "Claude Code", kimi: "Kimi Code" })[model],
+          harness: ({ antigravity: "antigravity", codex: "codex", claude: "claude_code", kimi: "kimi_code" })[model],
+          harness_label: ({ antigravity: "Google Antigravity", codex: "Codex", claude: "Claude Code", kimi: "Kimi Code" })[model],
           harness_version: currentLocalAgentVersion(model),
           harness_boundary: toolUse === "offline"
             ? "disposable-container/game-tools+isolated-python"
@@ -5656,7 +5764,7 @@ function createAgentRunService({
           branch_provider_id: branchPreparation?.newConversationId || null,
           seeded: Boolean(effectiveParams.seed_run || effectiveParams.branch_of),
           conversation_persistence: "run-dir",
-          note: `Local ${{ codex: "Codex", claude: "Claude Code", kimi: "Kimi Code" }[model]} runs in a fresh disposable container. The evaluated process receives MazeBench game controls${toolUse === "offline" ? " plus a preflighted run-scoped Python scratchpad" : " only"}; repository, host files, run artifacts, shell, web, apps, and workers are blocked by launch-time isolation preflights.`
+          note: `Local ${{ antigravity: "Google Antigravity", codex: "Codex", claude: "Claude Code", kimi: "Kimi Code" }[model]} runs in a fresh disposable container. The evaluated process receives MazeBench game controls${toolUse === "offline" ? " plus a preflighted run-scoped Python scratchpad" : " only"}; repository, host files, run artifacts, shell, web, apps, and workers are blocked by launch-time isolation preflights.`
         };
       }
     } catch (error) {
@@ -6026,7 +6134,7 @@ function createAgentRunService({
 
       try {
         const event = JSON.parse(trimmed);
-        const id = event.thread_id || event.session_id;
+        const id = event.conversation_id || event.thread_id || event.session_id || event.init?.conversation_id;
         if (id) return String(id);
       } catch (_error) {
         /* skip non-JSON lines */
@@ -6233,6 +6341,12 @@ function createAgentRunService({
 
     if (meta.model === "claude") {
       return Boolean(findClaudeSessionFile(path.join(stateRoot, "claude"), conversationId));
+    }
+
+    if (meta.model === "antigravity") {
+      return fs.existsSync(
+        path.join(stateRoot, "antigravity", "gemini", "antigravity-cli", "conversations", `${conversationId}.db`)
+      );
     }
 
     return false;

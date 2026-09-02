@@ -13,7 +13,8 @@
     "maze:model": "node scripts/maze-model-repl.js",
     "maze:replay": "node scripts/maze-export-replay.js",
     "maze:build-local-agents": "node scripts/ensure-local-agent-image.js --force",
-    "maze:build-local-codex": "npm run maze:build-local-agents"
+    "maze:build-local-codex": "npm run maze:build-local-agents",
+    "maze:login-antigravity": "node scripts/login-antigravity.js"
   },
   "dependencies": {
     "three": "0.184.0"

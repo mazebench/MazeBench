@@ -356,6 +356,16 @@ function kimiAccountStatus(result) {
   };
 }
 
+function antigravityAccountStatus(result) {
+  const output = String(result?.stdout || "").trim();
+  const authenticated = result?.status === 0 && /^gemini-[^\s]+\s+/m.test(output);
+  return {
+    authenticated,
+    subscription: authenticated,
+    method: authenticated ? "google-oauth" : ""
+  };
+}
+
 function agentEnvironment(options = {}) {
   if (!options.fresh && agentEnvironmentCache && Date.now() - agentEnvironmentCache.at < 15000) {
     return agentEnvironmentCache.value;
@@ -379,6 +389,7 @@ function agentEnvironment(options = {}) {
       timeout,
       maxBuffer: 2 * 1024 * 1024
     });
+  const antigravityInstalled = probe("agy");
   const codexInstalled = probe("codex");
   const claudeInstalled = probe("claude");
   const kimiInstalled = probe("kimi");
@@ -397,11 +408,27 @@ function agentEnvironment(options = {}) {
   const primeAuthenticated =
     primeInstalled && probeCommand("prime", ["whoami"], 8000).status === 0;
   const docker = dockerState();
+  const antigravityContainerAuth = docker.running && docker.image
+    ? antigravityAccountStatus(probeCommand(
+        "docker",
+        [
+          "run", "--rm", "-e", "HOME=/home/pwuser",
+          "-v", "mazebench-antigravity-auth:/home/pwuser/.gemini",
+          "--entrypoint", "agy", LOCAL_AGENT_IMAGE, "models"
+        ],
+        10_000
+      ))
+    : { authenticated: false, subscription: false, method: "" };
   const requiredVersions = docker.image
     ? docker.imageVersions
     : DEFAULT_LOCAL_AGENT_VERSIONS;
   const value = {
     checking: false,
+    antigravity: antigravityContainerAuth.subscription && docker.running && docker.image,
+    antigravity_installed: antigravityInstalled || docker.image,
+    antigravity_authenticated: antigravityContainerAuth.authenticated,
+    antigravity_subscription: antigravityContainerAuth.subscription,
+    antigravity_auth_method: antigravityContainerAuth.method,
     codex: codexInstalled && codexAuth.subscription && docker.running && docker.image,
     codex_installed: codexInstalled,
     codex_authenticated: codexAuth.authenticated,
@@ -473,7 +500,8 @@ async function agentEnvironmentAsync(options = {}) {
   };
 
   agentEnvironmentPromise = (async () => {
-    const [codexInstalled, claudeInstalled, kimiInstalled, primeInstalled, uvInstalled, dockerInstalled] = await Promise.all([
+    const [antigravityInstalled, codexInstalled, claudeInstalled, kimiInstalled, primeInstalled, uvInstalled, dockerInstalled] = await Promise.all([
+      commandExists("agy"),
       commandExists("codex"),
       commandExists("claude"),
       commandExists("kimi"),
@@ -513,8 +541,27 @@ async function agentEnvironmentAsync(options = {}) {
     const requiredVersions = localAgentImage
       ? imageVersions
       : DEFAULT_LOCAL_AGENT_VERSIONS;
+    const antigravityContainerResult = localAgentImage
+      ? await runCommand(
+          "docker",
+          [
+            "run", "--rm", "-e", "HOME=/home/pwuser",
+            "-v", "mazebench-antigravity-auth:/home/pwuser/.gemini",
+            "--entrypoint", "agy", LOCAL_AGENT_IMAGE, "models"
+          ],
+          10_000
+        )
+      : null;
+    const antigravityContainerAuth = antigravityAccountStatus(
+      antigravityContainerResult ? { ...antigravityContainerResult, status: 0 } : null
+    );
     const value = {
       checking: false,
+      antigravity: antigravityContainerAuth.subscription && dockerRunning && localAgentImage,
+      antigravity_installed: antigravityInstalled || localAgentImage,
+      antigravity_authenticated: antigravityContainerAuth.authenticated,
+      antigravity_subscription: antigravityContainerAuth.subscription,
+      antigravity_auth_method: antigravityContainerAuth.method,
       codex: codexInstalled && codexAuth.subscription && dockerRunning && localAgentImage,
       codex_installed: codexInstalled,
       codex_authenticated: codexAuth.authenticated,

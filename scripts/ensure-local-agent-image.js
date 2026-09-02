@@ -6,6 +6,7 @@ const {
   LOCAL_AGENT_IMAGE,
   imageLabelsAreCertified,
   localAgentSourceFingerprint,
+  resolveLatestAntigravityRelease,
   resolveLatestLocalAgentVersions,
   versionsFromImageLabels
 } = require("./local-agent-image");
@@ -64,7 +65,7 @@ function dockerRunning() {
 }
 
 function installedProviderVersion(image, provider) {
-  const command = { codex: "codex", claude: "claude", kimi: "kimi" }[provider];
+  const command = { antigravity: "agy", codex: "codex", claude: "claude", kimi: "kimi" }[provider];
   const result = run(
     "docker",
     ["run", "--rm", "--entrypoint", command, image, "--version"],
@@ -83,7 +84,8 @@ function ensureLocalAgentImage(options = {}) {
   }
 
   console.log("MazeBench: resolving current coding-agent releases...");
-  const versions = resolveLatestLocalAgentVersions();
+  const antigravityRelease = resolveLatestAntigravityRelease();
+  const versions = resolveLatestLocalAgentVersions({ antigravityRelease });
   const sourceFingerprint = localAgentSourceFingerprint(ROOT_DIR);
   const existingLabels = inspectImageLabels(LOCAL_AGENT_IMAGE);
 
@@ -92,15 +94,17 @@ function ensureLocalAgentImage(options = {}) {
       imageLabelsAreCertified(existingLabels, ROOT_DIR, versions)) {
     console.log(
       "MazeBench: persistent local-agent image is current " +
-      "(Codex " + versions.codex + ", Claude Code " + versions.claude + ")."
+      "(Antigravity " + versions.antigravity + ", Codex " + versions.codex +
+      ", Claude Code " + versions.claude + ", Kimi Code " + versions.kimi + ")."
     );
     return { built: false, versions };
   }
 
   const candidate = "mazebench-agent:candidate-" + process.pid;
   console.log(
-    "MazeBench: building a certified candidate with Codex " + versions.codex +
-    " and Claude Code " + versions.claude + "..."
+    "MazeBench: building a certified candidate with Antigravity " + versions.antigravity +
+    ", Codex " + versions.codex + ", Claude Code " + versions.claude +
+    ", and Kimi Code " + versions.kimi + "..."
   );
   try {
     run("docker", [
@@ -109,6 +113,9 @@ function ensureLocalAgentImage(options = {}) {
       "--build-arg", "CODEX_VERSION=" + versions.codex,
       "--build-arg", "CLAUDE_CODE_VERSION=" + versions.claude,
       "--build-arg", "KIMI_CODE_VERSION=" + versions.kimi,
+      "--build-arg", "ANTIGRAVITY_VERSION=" + antigravityRelease.version,
+      "--build-arg", "ANTIGRAVITY_URL=" + antigravityRelease.url,
+      "--build-arg", "ANTIGRAVITY_SHA512=" + antigravityRelease.sha512,
       "--build-arg", "MAZEBENCH_SOURCE_FINGERPRINT=" + sourceFingerprint,
       "-t", candidate,
       "."
@@ -165,7 +172,8 @@ function ensureLocalAgentImage(options = {}) {
     run("docker", ["tag", candidate, LOCAL_AGENT_IMAGE], { timeout: 30_000 });
     console.log(
       "MazeBench: promoted the verified persistent image " +
-      "(Codex " + versions.codex + ", Claude Code " + versions.claude + ")."
+      "(Antigravity " + versions.antigravity + ", Codex " + versions.codex +
+      ", Claude Code " + versions.claude + ", Kimi Code " + versions.kimi + ")."
     );
     return {
       built: true,

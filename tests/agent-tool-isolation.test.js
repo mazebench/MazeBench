@@ -5,10 +5,15 @@ const os = require("node:os");
 const path = require("node:path");
 const {
   SUPPORTED_LOCAL_AGENT_VERSIONS,
+  SUPPORTED_LOCAL_ANTIGRAVITY_VERSION,
   SUPPORTED_LOCAL_CLAUDE_VERSION,
   SUPPORTED_LOCAL_CODEX_VERSION,
   SUPPORTED_LOCAL_KIMI_VERSION,
   agentCommand,
+  antigravityAgentProfile,
+  antigravityMcpConfig,
+  antigravitySettings,
+  assertLocalAntigravityCommandIsolation,
   assertLocalClaudeCommandIsolation,
   assertLocalCodexCommandIsolation,
   assertLocalKimiCommandIsolation,
@@ -17,6 +22,7 @@ const {
   codexMcpConfigArgs,
   distillClaudeEvents,
   distillCodexEvents,
+  distillAntigravityEvents,
   distillKimiEvents,
   hasResumableGameSession,
   kimiAgentProfile,
@@ -41,6 +47,7 @@ const ensureLocalAgentSource = fs.readFileSync(
 const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 const workspace = path.join(os.tmpdir(), "game-only-agent-test");
 const baseConfig = {
+  antigravityBin: "agy",
   agentSwarmWorkspaceDir: path.join(workspace, "swarm-workspaces"),
   agentWorkspaceDir: workspace,
   agentCodexRuntimeDir: path.join(workspace, "codex-runtime"),
@@ -339,10 +346,12 @@ for (const unsafeCommand of [
   );
 }
 const expectedLocalAgentVersions = {
+  antigravity: process.env.MAZEBENCH_LOCAL_ANTIGRAVITY_VERSION || DEFAULT_LOCAL_AGENT_VERSIONS.antigravity,
   codex: process.env.MAZEBENCH_LOCAL_CODEX_VERSION || DEFAULT_LOCAL_AGENT_VERSIONS.codex,
   claude: process.env.MAZEBENCH_LOCAL_CLAUDE_VERSION || DEFAULT_LOCAL_AGENT_VERSIONS.claude,
   kimi: process.env.MAZEBENCH_LOCAL_KIMI_VERSION || DEFAULT_LOCAL_AGENT_VERSIONS.kimi
 };
+assert.equal(SUPPORTED_LOCAL_ANTIGRAVITY_VERSION, expectedLocalAgentVersions.antigravity);
 assert.equal(SUPPORTED_LOCAL_CODEX_VERSION, expectedLocalAgentVersions.codex);
 assert.equal(SUPPORTED_LOCAL_CLAUDE_VERSION, expectedLocalAgentVersions.claude);
 assert.equal(SUPPORTED_LOCAL_KIMI_VERSION, expectedLocalAgentVersions.kimi);
@@ -355,7 +364,7 @@ for (const packagePattern of [
 ]) {
   assert.match(localAgentDockerfile, packagePattern);
 }
-for (const label of ["local-codex", "local-claude", "local-kimi"]) {
+for (const label of ["local-antigravity", "local-codex", "local-claude", "local-kimi"]) {
   assert.match(localAgentDockerfile, new RegExp("org\\.mazebench\\." + label + "\\.version"));
 }
 assert.match(localAgentDockerfile, new RegExp(LOCAL_AGENT_UPDATE_POLICY));
@@ -384,6 +393,48 @@ for (const boundary of [
   assert.match(localAgentSource, boundary);
 }
 assert.doesNotMatch(localAgentSource, /Host access|switch to Host access/);
+
+const antigravityConfig = {
+  ...baseConfig,
+  agentWorkspaceDir: "/app/workspace",
+  inContainer: true,
+  model: "antigravity",
+  modelName: "gemini-3.8-flash-high",
+  outDir: "/run/mazebench-output",
+  reasoning: "high",
+  workspaceDir: "/run/mazebench-workspace/workspace"
+};
+const antigravity = agentCommand(antigravityConfig, buildMcpPrompt(antigravityConfig));
+assert.equal(antigravity.bin, "agy");
+assert.equal(antigravity.argv[antigravity.argv.indexOf("--model") + 1], "gemini-3.8-flash-high");
+assert.equal(antigravity.argv[antigravity.argv.indexOf("--effort") + 1], "high");
+assert.equal(antigravity.argv[antigravity.argv.indexOf("--agent") + 1], "mazebench");
+assert(antigravity.argv.includes("--sandbox"));
+assert(antigravity.argv.includes("--disable-slash-commands"));
+assert.equal(assertLocalAntigravityCommandIsolation(antigravityConfig, antigravity), true);
+assert.deepEqual(Object.keys(JSON.parse(antigravityMcpConfig(antigravityConfig)).mcpServers), ["game"]);
+assert.deepEqual(JSON.parse(antigravitySettings(antigravityConfig)).permissions.allow, [
+  "mcp(game/game_start)",
+  "mcp(game/game_observe)",
+  "mcp(game/game_action)"
+]);
+assert.match(antigravityAgentProfile(), /^tools:\s*\n\s*- call_mcp_tool$/m);
+assert.throws(
+  () => assertLocalAntigravityCommandIsolation(antigravityConfig, {
+    ...antigravity,
+    argv: [...antigravity.argv, "--dangerously-skip-permissions"]
+  }),
+  /forbidden/i
+);
+const antigravityDistilled = distillAntigravityEvents([
+  JSON.stringify({ event: "step_update", step_update: { step_type: "agent_response", text_delta: "Trying up." } }),
+  JSON.stringify({ event: "step_update", step_update: { step_type: "tool", state: "DONE", tool_info: {
+    name: "call_mcp_tool",
+    parameters: { tool_name: "game_action", arguments: { action: "up" } },
+    output: { content: [{ type: "text", text: JSON.stringify({ action: "up", success: true }) }] }
+  } } })
+].join("\n"));
+assert.equal(antigravityDistilled.entries[0].action, "up");
 
 const codexSparkConfig = {
   ...codexConfig,

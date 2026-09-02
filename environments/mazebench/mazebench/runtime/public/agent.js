@@ -15,6 +15,11 @@
   // built-in harness without changing the model or run-settings flow.
   const HARNESSES = [
     {
+      id: "antigravity",
+      name: "Google Antigravity",
+      logo: '<svg viewBox="0 0 128 128" width="128" height="128" aria-hidden="true"><rect width="128" height="128" rx="24" fill="#e96d45"/><g fill="none" stroke="#fff7ee" stroke-width="8" stroke-linecap="round"><path d="M64 20v88M20 64h88M33 33l62 62M95 33 33 95"/><path d="m47 18 17 46 17-46M47 110l17-46 17 46M18 47l46 17-46 17M110 47 64 64l46 17"/></g></svg>'
+    },
+    {
       id: "custom",
       name: "Prime Agent",
       logo: '<img src="/logos/prime.png" alt="" width="128" height="128" loading="eager" decoding="sync" fetchpriority="high">'
@@ -36,6 +41,11 @@
     }
   ];
   const LOCAL_SETUP = {
+    antigravity: {
+      docs: "https://antigravity.google/docs/cli/install/",
+      install: "curl -fsSL https://antigravity.google/cli/install.sh | bash\nnpm run maze:login-antigravity",
+      login: "npm run maze:login-antigravity"
+    },
     codex: {
       docs: "https://developers.openai.com/codex/cli/",
       install: "npm install -g @openai/codex\ncodex login",
@@ -65,6 +75,7 @@
     login: "prime login"
   };
   const RUN_COMPANY_NAMES = {
+    antigravity: "Google",
     codex: "OpenAI",
     claude: "Anthropic",
     kimi: "Moonshot AI",
@@ -476,6 +487,7 @@
   }
 
   function localProviderId(harnessId = state.harness) {
+    if (harnessId === "antigravity") return "antigravity";
     if (harnessId === "codex") return "codex";
     if (harnessId === "claude-code") return "claude";
     if (harnessId === "kimi-code") return "kimi";
@@ -925,7 +937,7 @@
     const providerHost = document.getElementById("provider-picker");
     const providerSelectionFrom = selectedRect(providerHost, ".provider-card.is-selected");
     localAvailabilityRequest += 1;
-    state.execution = "prime";
+    state.execution = harnessId === "antigravity" ? "local" : "prime";
     state.localAvailability = "idle";
     state.harness = harnessId;
     state.modelId = null;
@@ -1859,7 +1871,7 @@
         }
       } else {
         const environment = await refreshEnvironment();
-        const launchedHarness = ({ codex: "codex", claude: "claude-code", kimi: "kimi-code" })[body.model];
+        const launchedHarness = ({ antigravity: "antigravity", codex: "codex", claude: "claude-code", kimi: "kimi-code" })[body.model];
         const availability = localRunAvailability(launchedHarness, environment);
         if (!availability.available) {
           showLocalSetup(launchedHarness, availability);
@@ -1940,7 +1952,7 @@
       ? (run.harness || "none") === "none"
         ? "Prime Intellect"
         : `${harnessName || "Prime Intellect"} via Prime`
-      : ({ codex: "Codex", claude: "Claude Code", kimi: "Kimi Code" }[run.provider || run.model] || run.model);
+      : ({ antigravity: "Google Antigravity", codex: "Codex", claude: "Claude Code", kimi: "Kimi Code" }[run.provider || run.model] || run.model);
     const reasoningEffort = String(run.reasoning || (run.provider === "prime" ? "off" : "auto")).toLowerCase();
     const showStartRoom = Boolean(run.level_id) && !run.start_room_is_default;
     const createdAt = escapeText(run.created_at ? new Date(run.created_at).toLocaleString() : "");
