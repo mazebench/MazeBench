@@ -20,7 +20,8 @@ assert.match(routerSource, /agentRuns\.getLeaderboardRun/);
 assert.match(clientSource, /fable-5-1/);
 assert.match(clientSource, /companyForRun\(left\)\.localeCompare\(companyForRun\(right\)\)/);
 assert.match(clientSource, /Number\(right\.gem_count\).*Number\(left\.gem_count\)/);
-assert.match(clientSource, /compactStepSeries/);
+assert.match(clientSource, /compactLineSeries/);
+assert.match(clientSource, /return `L \$\{px\.toFixed\(2\)\} \$\{py\.toFixed\(2\)\}`/);
 assert.match(themeSource, /\.leaderboard-chart__line/);
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mazebench-leaderboard-"));

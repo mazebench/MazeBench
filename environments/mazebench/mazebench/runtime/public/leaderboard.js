@@ -251,12 +251,12 @@
     );
 
     plotted.forEach((series) => {
-      const points = compactStepSeries(series.points);
+      const points = compactLineSeries(series.points);
       const path = points.map((point, index) => {
         const px = x(point.x);
         const py = y(point.y);
         if (!index) return `M ${px.toFixed(2)} ${py.toFixed(2)}`;
-        return `H ${px.toFixed(2)} V ${py.toFixed(2)}`;
+        return `L ${px.toFixed(2)} ${py.toFixed(2)}`;
       }).join(" ");
       const group = svg("g", { class: "leaderboard-chart__series", style: `--run-color:${series.color}` });
       group.append(
@@ -349,7 +349,7 @@
     if (elements.tooltip) elements.tooltip.hidden = true;
   }
 
-  function compactStepSeries(points) {
+  function compactLineSeries(points) {
     if (points.length < 3) return points;
     const kept = [points[0]];
     for (let index = 1; index < points.length - 1; index += 1) {
