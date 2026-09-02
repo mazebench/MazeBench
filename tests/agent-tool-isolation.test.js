@@ -418,7 +418,10 @@ assert.deepEqual(JSON.parse(antigravitySettings(antigravityConfig)).permissions.
   "mcp(game/game_observe)",
   "mcp(game/game_action)"
 ]);
-assert.match(antigravityAgentProfile(), /^tools:\s*\n\s*- call_mcp_tool$/m);
+const antigravityProfile = antigravityAgentProfile(antigravityConfig);
+assert.match(antigravityProfile, /^tools:\s*\n\s*- call_mcp_tool$/m);
+assert.match(antigravityProfile, /^mcpServers:\s*\n\s+game:\s*\n\s+serverUrl:/m);
+assert.match(antigravityProfile, new RegExp(antigravityConfig.mcpUrl.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 assert.throws(
   () => assertLocalAntigravityCommandIsolation(antigravityConfig, {
     ...antigravity,

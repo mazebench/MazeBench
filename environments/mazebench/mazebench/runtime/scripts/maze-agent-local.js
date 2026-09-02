@@ -1121,8 +1121,12 @@ function antigravitySettings(config) {
   }, null, 2) + "\n";
 }
 
-function antigravityAgentProfile() {
-  return fs.readFileSync(path.join(ROOT_DIR, "scripts", "antigravity-agent.md"), "utf8");
+function antigravityAgentProfile(config) {
+  if (!config?.mcpUrl) throw new Error("Antigravity agent profile requires the private MazeBench MCP endpoint.");
+  const serverName = config.toolUse === "read-only" ? "game" : "mazebench";
+  return fs.readFileSync(path.join(ROOT_DIR, "scripts", "antigravity-agent.md"), "utf8")
+    .replace("__MAZEBENCH_MCP_SERVER__", serverName)
+    .replace("__MAZEBENCH_MCP_SERVER_URL__", JSON.stringify(config.mcpUrl));
 }
 
 function prepareKimiRuntime(config) {
@@ -1297,7 +1301,7 @@ function isolatedDockerAgentCommand(config, command) {
     const appDataDir = path.join(stateDir, "antigravity-cli");
     fs.mkdirSync(agentDir, { recursive: true, mode: 0o700 });
     fs.mkdirSync(appDataDir, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(path.join(agentDir, "agent.md"), antigravityAgentProfile(), { mode: 0o600 });
+    fs.writeFileSync(path.join(agentDir, "agent.md"), antigravityAgentProfile(config), { mode: 0o600 });
     fs.writeFileSync(path.join(configDir, "mcp_config.json"), antigravityMcpConfig(config), { mode: 0o600 });
     fs.writeFileSync(path.join(appDataDir, "settings.json"), antigravitySettings(config), { mode: 0o600 });
     providerBindArgs.push("--bind", stateDir, "/home/pwuser/.gemini");
@@ -1781,10 +1785,14 @@ function assertLocalAntigravityCommandIsolation(config, command) {
   if (allowed.size !== expected.length || !expected.every((permission) => allowed.has(permission))) {
     throw new Error("Antigravity settings expose an unreviewed MCP permission.");
   }
-  const profile = antigravityAgentProfile();
+  const profile = antigravityAgentProfile(config);
   if (!/^tools:\s*\n\s*- call_mcp_tool\s*$/m.test(profile) ||
       /\n\s*- (?:run_command|view_file|search_web|invoke_subagent)\s*$/m.test(profile)) {
     throw new Error("Antigravity agent profile exposes an unreviewed built-in tool.");
+  }
+  if (!new RegExp(`^mcpServers:\\s*\\n\\s+${serverName}:\\s*\\n\\s+serverUrl:`, "m").test(profile) ||
+      !profile.includes(JSON.stringify(config.mcpUrl))) {
+    throw new Error("Antigravity agent profile is not bound to its private MazeBench MCP endpoint.");
   }
   const mcp = JSON.parse(antigravityMcpConfig(config));
   const servers = Object.entries(mcp?.mcpServers || {});
