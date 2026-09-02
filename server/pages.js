@@ -1628,7 +1628,7 @@ function createPageRenderer({
           <p class="muted">Each item is one exact starred run, so two runs of the same model can still be compared independently.</p>
           <div id="leaderboard-run-picker" class="leaderboard-run-picker"></div>
         </section>
-        <script src="/leaderboard.js?v=20260902-diagonal-lines-1" defer></script>`
+        <script src="/leaderboard.js?v=20260902-milestone-lines-1" defer></script>`
     });
   }
 

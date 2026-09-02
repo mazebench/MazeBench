@@ -251,7 +251,7 @@
     );
 
     plotted.forEach((series) => {
-      const points = compactLineSeries(series.points);
+      const points = milestoneLineSeries(series.points);
       const path = points.map((point, index) => {
         const px = x(point.x);
         const py = y(point.y);
@@ -349,16 +349,18 @@
     if (elements.tooltip) elements.tooltip.hidden = true;
   }
 
-  function compactLineSeries(points) {
+  function milestoneLineSeries(points) {
     if (points.length < 3) return points;
     const kept = [points[0]];
-    for (let index = 1; index < points.length - 1; index += 1) {
-      const previous = points[index - 1];
+    let lastScore = points[0].y;
+    for (let index = 1; index < points.length; index += 1) {
       const point = points[index];
-      const next = points[index + 1];
-      if (point.y !== previous.y || point.y !== next.y) kept.push(point);
+      if (point.y === lastScore) continue;
+      kept.push(point);
+      lastScore = point.y;
     }
-    kept.push(points[points.length - 1]);
+    const finalPoint = points[points.length - 1];
+    if (kept[kept.length - 1] !== finalPoint) kept.push(finalPoint);
     return kept;
   }
 
