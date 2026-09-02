@@ -8,6 +8,7 @@ const HOME_MODE_ICONS = Object.freeze({
   play: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false"><line x1="6" x2="10" y1="11" y2="11"></line><line x1="8" x2="8" y1="9" y2="13"></line><line x1="15" x2="15.01" y1="12" y2="12"></line><line x1="18" x2="18.01" y1="10" y2="10"></line><path d="M17.32 5H6.68a4 4 0 0 0-3.978 3.59c-.006.052-.01.101-.017.152C2.604 9.416 2 14.456 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.414-1.414A2 2 0 0 1 9.828 16h4.344a2 2 0 0 1 1.414.586L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.545-.604-6.584-.685-7.258-.007-.05-.011-.1-.017-.151A4 4 0 0 0 17.32 5z"></path></svg>`,
   build: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false"><line x1="6" x2="10" y1="11" y2="11"></line><line x1="8" x2="8" y1="9" y2="13"></line><line x1="15" x2="15.01" y1="12" y2="12"></line><line x1="18" x2="18.01" y1="10" y2="10"></line><path d="M17.32 5H6.68a4 4 0 0 0-3.978 3.59c-.006.052-.01.101-.017.152C2.604 9.416 2 14.456 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.414-1.414A2 2 0 0 1 9.828 16h4.344a2 2 0 0 1 1.414.586L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.545-.604-6.584-.685-7.258-.007-.05-.011-.1-.017-.151A4 4 0 0 0 17.32 5z"></path></svg>`,
   agent: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M12 8V4H8"></path><rect width="16" height="12" x="4" y="8" rx="2"></rect><path d="M2 14h2"></path><path d="M20 14h2"></path><path d="M15 13v2"></path><path d="M9 13v2"></path></svg>`,
+  leaderboard: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M3 3v18h18"></path><path d="m7 16 4-5 4 3 5-7"></path><circle cx="7" cy="16" r="1"></circle><circle cx="11" cy="11" r="1"></circle><circle cx="15" cy="14" r="1"></circle><circle cx="20" cy="7" r="1"></circle></svg>`,
   train: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z"></path><path d="M9 13a4.5 4.5 0 0 0 3-4"></path><path d="M6.003 5.125A3 3 0 0 0 6.401 6.5"></path><path d="M3.477 10.896a4 4 0 0 1 .585-.396"></path><path d="M6 18a4 4 0 0 1-1.967-.516"></path><path d="M12 13h4"></path><path d="M12 18h6a2 2 0 0 1 2 2v1"></path><path d="M12 8h8"></path><path d="M16 8V5a2 2 0 0 1 2-2"></path><circle cx="16" cy="13" r=".5"></circle><circle cx="18" cy="3" r=".5"></circle><circle cx="20" cy="21" r=".5"></circle><circle cx="20" cy="8" r=".5"></circle></svg>`
 });
 
@@ -205,6 +206,7 @@ function createPageRenderer({
       main: `<div class="world-grid home-mode-grid">
           ${modeCard("/build", "build", "Build and Play", "Create, edit, and play the official Maze Bench environment or your local drafts.")}
           ${modeCard("/agent", "agent", "Agent", "Run a model through isolated, named game controls and watch live.")}
+          ${modeCard("/leaderboard", "leaderboard", "Leaderboard", "Compare starred runs across moves, price, tokens, gems, and rooms.")}
           ${modeCard("/train", "train", "Train", "Train models on Maze Bench with Prime Verifiers.")}
         </div>
         ${otherGamesSection}`
@@ -1568,6 +1570,68 @@ function createPageRenderer({
     });
   }
 
+  function renderLeaderboardPage() {
+    return renderSitePage({
+      title: "Leaderboard — Maze Bench",
+      description: "Compare starred Maze Bench model runs across gameplay, price, and token metrics.",
+      bodyClass: "leaderboard-page",
+      main: `<div class="page-head leaderboard-head">
+          <span class="leaderboard-eyebrow">Starred runs</span>
+          <h1>Leaderboard</h1>
+          <p>Compare how selected models explored the same environment. Star or unstar runs from the <a class="text-link" href="/agent#runs">Agent page</a> to curate this chart.</p>
+        </div>
+
+        <section class="panel leaderboard-panel" aria-labelledby="leaderboard-chart-title">
+          <div class="leaderboard-panel__head">
+            <div>
+              <span class="leaderboard-kicker">Performance over time</span>
+              <h2 id="leaderboard-chart-title">Run comparison</h2>
+            </div>
+            <p id="leaderboard-status" class="leaderboard-status" role="status" aria-live="polite">Loading starred runs…</p>
+          </div>
+
+          <div class="leaderboard-controls">
+            <fieldset class="leaderboard-control">
+              <legend>Horizontal axis</legend>
+              <div class="leaderboard-segments" role="group" aria-label="Horizontal axis">
+                <button type="button" data-x-axis="move_count" aria-pressed="true">Move count</button>
+                <button type="button" data-x-axis="api_cost_usd" aria-pressed="false">Price</button>
+                <button type="button" data-x-axis="input_tokens" aria-pressed="false">Input tokens</button>
+              </div>
+            </fieldset>
+            <fieldset class="leaderboard-control">
+              <legend>Score</legend>
+              <div class="leaderboard-segments" role="group" aria-label="Vertical axis">
+                <button type="button" data-y-axis="gems" aria-pressed="true">Gems</button>
+                <button type="button" data-y-axis="rooms" aria-pressed="false">Rooms</button>
+              </div>
+            </fieldset>
+          </div>
+
+          <div id="leaderboard-chart" class="leaderboard-chart" role="img" aria-label="Selected starred run comparison"></div>
+          <div id="leaderboard-tooltip" class="leaderboard-tooltip" hidden></div>
+          <p id="leaderboard-chart-note" class="leaderboard-chart-note" hidden></p>
+          <div id="leaderboard-legend" class="leaderboard-legend" aria-label="Selected run legend"></div>
+        </section>
+
+        <section class="panel leaderboard-models" aria-labelledby="leaderboard-models-title">
+          <div class="leaderboard-panel__head">
+            <div>
+              <span class="leaderboard-kicker">Chart lines</span>
+              <h2 id="leaderboard-models-title">Models</h2>
+            </div>
+            <div class="leaderboard-picker-actions">
+              <button id="leaderboard-select-defaults" class="button--quiet" type="button">Fable 5.1 vs 5</button>
+              <button id="leaderboard-clear" class="button--quiet" type="button">Clear</button>
+            </div>
+          </div>
+          <p class="muted">Each item is one exact starred run, so two runs of the same model can still be compared independently.</p>
+          <div id="leaderboard-run-picker" class="leaderboard-run-picker"></div>
+        </section>
+        <script src="/leaderboard.js?v=20260901-starred-runs-1" defer></script>`
+    });
+  }
+
   return {
     renderAgentPage,
     renderAgentRunPage,
@@ -1576,6 +1640,7 @@ function createPageRenderer({
     renderFlyoverPage,
     renderGamePage,
     renderHomePage,
+    renderLeaderboardPage,
     renderNotFound,
     renderPlayPage,
     renderTrainPage,

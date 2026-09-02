@@ -30,6 +30,7 @@ function createRequestRouter({
   renderFlyoverPage,
   renderGamePage,
   renderHomePage,
+  renderLeaderboardPage,
   renderNotFound,
   renderPlayPage,
   renderTrainPage,
@@ -99,6 +100,11 @@ function createRequestRouter({
 
     if (url.pathname === "/agent") {
       sendHtml(response, 200, renderAgentPage());
+      return;
+    }
+
+    if (url.pathname === "/leaderboard") {
+      sendHtml(response, 200, renderLeaderboardPage());
       return;
     }
 
@@ -265,6 +271,26 @@ function createRequestRouter({
 
       response.writeHead(405, { Allow: "DELETE" });
       response.end();
+      return;
+    }
+
+    if (
+      segments.length === 4 &&
+      segments[0] === "api" &&
+      segments[1] === "leaderboard" &&
+      segments[2] === "runs"
+    ) {
+      if (request.method !== "GET") {
+        response.writeHead(405, { Allow: "GET" });
+        response.end();
+        return;
+      }
+      const leaderboardRun = agentRuns.getLeaderboardRun(decodeURIComponent(segments[3]));
+      if (!leaderboardRun) {
+        sendJson(response, 404, { error: "Starred run not found." });
+        return;
+      }
+      sendJson(response, 200, leaderboardRun);
       return;
     }
 
