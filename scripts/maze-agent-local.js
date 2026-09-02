@@ -19,18 +19,25 @@ const {
   inlinePermissionTable,
   preflightPythonSandbox
 } = require("./maze-python-sandbox");
+const { DEFAULT_LOCAL_AGENT_VERSIONS } = require("./local-agent-image");
 const DEFAULT_MAX_SWARM_WORKERS = 8;
-const SUPPORTED_LOCAL_CODEX_VERSION = "0.146.0";
-const SUPPORTED_LOCAL_CLAUDE_VERSION = "2.1.220";
-const SUPPORTED_LOCAL_KIMI_VERSION = "0.29.1";
+const SUPPORTED_LOCAL_ANTIGRAVITY_VERSION =
+  process.env.MAZEBENCH_LOCAL_ANTIGRAVITY_VERSION || DEFAULT_LOCAL_AGENT_VERSIONS.antigravity;
+const SUPPORTED_LOCAL_CODEX_VERSION =
+  process.env.MAZEBENCH_LOCAL_CODEX_VERSION || DEFAULT_LOCAL_AGENT_VERSIONS.codex;
+const SUPPORTED_LOCAL_CLAUDE_VERSION =
+  process.env.MAZEBENCH_LOCAL_CLAUDE_VERSION || DEFAULT_LOCAL_AGENT_VERSIONS.claude;
+const SUPPORTED_LOCAL_KIMI_VERSION =
+  process.env.MAZEBENCH_LOCAL_KIMI_VERSION || DEFAULT_LOCAL_AGENT_VERSIONS.kimi;
 const SUPPORTED_LOCAL_AGENT_VERSIONS = Object.freeze({
+  antigravity: SUPPORTED_LOCAL_ANTIGRAVITY_VERSION,
   codex: SUPPORTED_LOCAL_CODEX_VERSION,
   claude: SUPPORTED_LOCAL_CLAUDE_VERSION,
   kimi: SUPPORTED_LOCAL_KIMI_VERSION
 });
 const SUPPORTED_KIMI_CODE_VERSIONS = new Set([SUPPORTED_LOCAL_KIMI_VERSION]);
 const RETIRED_LOCAL_AGENT_MESSAGE =
-  "Certified local coding-agent routes require a pinned Codex, Claude Code, or Kimi Code CLI " +
+  "Certified local coding-agent routes require a pinned Antigravity, Codex, Claude Code, or Kimi Code CLI " +
   "inside a fresh Docker container, reviewed game/Python tools only, and launch-time isolation preflights.";
 
 // Claude Code discovers MCP tools only when its default tool registry is
@@ -337,8 +344,12 @@ code to a relative .py script_path chosen by you, then executes that file in a
 fresh Python process. The writable working directory persists for this entire
 run. You may create, reuse, modify, and organize as many relative-path .py,
 .json, and scratch files as useful. Python is optional; decide naturally when
-and how to use it. There is no separate editor or shell; create, revise, and
-execute files through python_exec.
+and how to use it. It would actually be wise to try to world model the env in
+python, and use A* like solver algorithms to inform your moves. It is ultimately
+up to you how you decide to play the env and learn how it works. You have
+absolute freedom to explore and solve, but remember the aim is to collect every
+gem. There is no separate editor or shell; create, revise, and execute files
+through python_exec.
 It cannot read MazeBench source, repositories, run artifacts, host files,
 credentials, or prior runs, and it has no network access. Shell, file-browser,
 editor, web, app, and connector tools are disabled.
@@ -1062,6 +1073,62 @@ function kimiMcpConfig(config) {
   }, null, 2) + "\n";
 }
 
+function antigravityAllowedTools(config) {
+  return config.toolUse === "read-only"
+    ? ["game_start", "game_observe", "game_action"]
+    : [
+        "maze_start",
+        "maze_observe",
+        "maze_action",
+        ...(config.autoRunTools ? ["maze_action_sequence"] : []),
+        "python_exec"
+      ];
+}
+
+function antigravityMcpConfig(config) {
+  if (!config.mcpUrl) throw new Error("Antigravity requires the private MazeBench MCP endpoint.");
+  const serverName = config.toolUse === "read-only" ? "game" : "mazebench";
+  return JSON.stringify({
+    mcpServers: {
+      [serverName]: {
+        serverUrl: config.mcpUrl,
+        disabledTools: []
+      }
+    }
+  }, null, 2) + "\n";
+}
+
+function antigravitySettings(config) {
+  const serverName = config.toolUse === "read-only" ? "game" : "mazebench";
+  const allow = antigravityAllowedTools(config).map((tool) => `mcp(${serverName}/${tool})`);
+  return JSON.stringify({
+    allowNonWorkspaceAccess: false,
+    enableTelemetry: false,
+    enableTerminalSandbox: true,
+    toolPermission: "request-review",
+    permissions: {
+      allow,
+      deny: [
+        "command(*)",
+        "unsandboxed(*)",
+        "read_file(*)",
+        "write_file(*)",
+        "read_url(*)",
+        "execute_url(*)"
+      ],
+      ask: []
+    }
+  }, null, 2) + "\n";
+}
+
+function antigravityAgentProfile(config) {
+  if (!config?.mcpUrl) throw new Error("Antigravity agent profile requires the private MazeBench MCP endpoint.");
+  const serverName = config.toolUse === "read-only" ? "game" : "mazebench";
+  return fs.readFileSync(path.join(ROOT_DIR, "scripts", "antigravity-agent.md"), "utf8")
+    .replace("__MAZEBENCH_MCP_SERVER__", serverName)
+    .replace("__MAZEBENCH_MCP_SERVER_URL__", JSON.stringify(config.mcpUrl));
+}
+
 function prepareKimiRuntime(config) {
   const sourceHome = config.kimiAuthDir || process.env.KIMI_CODE_HOME || path.join(os.homedir(), ".kimi-code");
   const sourceConfig = path.join(sourceHome, "config.toml");
@@ -1171,7 +1238,7 @@ async function startPrivateMcpServer(config) {
 }
 
 function needsPrivateMcpServer(config) {
-  return Boolean(config.mcpEnabled && (config.inContainer || ["claude", "kimi"].includes(config.model)));
+  return Boolean(config.mcpEnabled && (config.inContainer || ["antigravity", "claude", "kimi"].includes(config.model)));
 }
 
 function isolatedDockerAgentCommand(config, command) {
@@ -1181,7 +1248,10 @@ function isolatedDockerAgentCommand(config, command) {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
       const child = path.join(directory, entry.name);
       if (entry.isDirectory()) chownTree(child);
-      fs.chownSync(child, config.agentUid, config.agentGid);
+      // Docker Desktop presents copied symlinks through a read-only metadata
+      // layer. Their in-tree targets are chowned separately, and changing the
+      // link itself is unnecessary for the demoted provider.
+      if (!entry.isSymbolicLink()) fs.chownSync(child, config.agentUid, config.agentGid);
     }
     fs.chownSync(directory, config.agentUid, config.agentGid);
   };
@@ -1200,7 +1270,48 @@ function isolatedDockerAgentCommand(config, command) {
   const credentialSources = [];
   const providerSetenv = [];
 
-  if (config.model === "codex") {
+  if (config.model === "antigravity") {
+    const authDir = process.env.MAZEBENCH_ANTIGRAVITY_AUTH_DIR ||
+      "/run/mazebench-credentials/antigravity";
+    if (!fs.existsSync(authDir) || !fs.statSync(authDir).isDirectory()) {
+      throw new Error(
+        "The isolated Antigravity runtime has no authenticated credential volume. " +
+        "Run `npm run maze:login-antigravity`, then retry."
+      );
+    }
+    const stateDir = path.join(config.outDir, "agent-state", "antigravity", "gemini");
+    if (!fs.existsSync(stateDir)) {
+      fs.mkdirSync(path.dirname(stateDir), { recursive: true });
+      fs.cpSync(authDir, stateDir, { recursive: true });
+      for (const generated of [
+        "annotations", "brain", "builtin", "cache", "conversations", "crashes",
+        "knowledge", "log", "plugins", "presence", "skills"
+      ]) {
+        fs.rmSync(path.join(stateDir, "antigravity-cli", generated), { recursive: true, force: true });
+      }
+      for (const generated of [
+        "cli.log", "conversation_summaries.db", "conversation_summaries.db-shm",
+        "conversation_summaries.db-wal"
+      ]) {
+        fs.rmSync(path.join(stateDir, "antigravity-cli", generated), { force: true });
+      }
+    }
+    const configDir = path.join(stateDir, "config");
+    const agentDir = path.join(configDir, "agents", "mazebench");
+    const appDataDir = path.join(stateDir, "antigravity-cli");
+    fs.mkdirSync(agentDir, { recursive: true, mode: 0o700 });
+    fs.mkdirSync(appDataDir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(agentDir, "agent.md"), antigravityAgentProfile(config), { mode: 0o600 });
+    fs.writeFileSync(path.join(configDir, "mcp_config.json"), antigravityMcpConfig(config), { mode: 0o600 });
+    fs.writeFileSync(path.join(appDataDir, "settings.json"), antigravitySettings(config), { mode: 0o600 });
+    providerBindArgs.push("--bind", stateDir, "/home/pwuser/.gemini");
+    credentialSources.push(authDir);
+    providerSetenv.push(
+      "--setenv", "AGY_CLI_HIDE_LOGO", "1",
+      "--setenv", "AGY_CLI_DISABLE_ESCAPE_SEQUENCE_OPTIMIZATIONS", "1"
+    );
+    chownTree(stateDir);
+  } else if (config.model === "codex") {
     const providerDir = path.join(providerHomeDir, ".codex");
     const sessionsDir = path.join(config.outDir, "agent-state", "codex", "sessions");
     fs.mkdirSync(path.join(providerDir, "sessions"), { recursive: true, mode: 0o700 });
@@ -1374,6 +1485,31 @@ function isolatedDockerAgentCommand(config, command) {
 
 function agentCommand(config, prompt) {
   const maxTurns = config.unlimited ? "" : String(config.swarm ? config.moves + 30 : config.moves + 10);
+
+  if (config.model === "antigravity") {
+    if (!config.modelName || !/^gemini-[a-z0-9.-]+-(?:low|medium|high)$/.test(config.modelName)) {
+      throw new Error("Antigravity requires an exact catalog model id, including its effort suffix.");
+    }
+    const argv = [
+      "--print", prompt,
+      "--output-format", "stream-json",
+      "--model", config.modelName,
+      "--effort", config.reasoning || "high",
+      "--agent", "mazebench",
+      "--sandbox",
+      "--disable-slash-commands",
+      "--print-timeout", "24h"
+    ];
+    if (config.resume) argv.push("--conversation", config.resume);
+    return {
+      bin: config.antigravityBin,
+      argv,
+      env: {
+        AGY_CLI_HIDE_LOGO: "1",
+        AGY_CLI_DISABLE_ESCAPE_SEQUENCE_OPTIMIZATIONS: "1"
+      }
+    };
+  }
 
   if (config.model === "codex") {
     const commandRoot = config.agentWorkspaceDir;
@@ -1580,7 +1716,7 @@ function agentCommand(config, prompt) {
     };
   }
 
-  throw new Error(`Unknown model: ${config.model} (expected "codex", "claude", or "kimi")`);
+  throw new Error(`Unknown model: ${config.model} (expected "antigravity", "codex", "claude", or "kimi")`);
 }
 
 const REQUIRED_LOCAL_CODEX_DISABLED_FEATURES = Object.freeze([
@@ -1602,6 +1738,70 @@ const REQUIRED_LOCAL_CODEX_DISABLED_FEATURES = Object.freeze([
   "tool_suggest",
   "unified_exec"
 ]);
+
+function assertLocalAntigravityCommandIsolation(config, command) {
+  if (!config.inContainer || config.model !== "antigravity") {
+    throw new Error("Local Antigravity must run inside the certified disposable container boundary.");
+  }
+  const offline = config.toolUse === "offline";
+  if (!config.mcpEnabled || !["read-only", "offline"].includes(config.toolUse) ||
+      Boolean(config.tools) !== offline || config.swarm) {
+    throw new Error("Local Antigravity supports one agent with game controls and optional isolated Python only.");
+  }
+  if (command.bin !== config.antigravityBin) {
+    throw new Error("The evaluated process must be the pinned Antigravity CLI.");
+  }
+  const args = command.argv.map(String);
+  for (const forbidden of [
+    "--add-dir", "--dangerously-skip-permissions", "--input-format", "--mode",
+    "--new-project", "--prompt-interactive", "--project"
+  ]) {
+    if (args.includes(forbidden)) throw new Error(`Antigravity launch contains forbidden option ${forbidden}.`);
+  }
+  const valueAfter = (flag) => {
+    const indexes = args.flatMap((value, index) => value === flag ? [index] : []);
+    if (indexes.length !== 1 || indexes[0] + 1 >= args.length) {
+      throw new Error(`Antigravity launch needs one exact ${flag} setting.`);
+    }
+    return args[indexes[0] + 1];
+  };
+  if (!args.includes("--sandbox") || !args.includes("--disable-slash-commands") ||
+      valueAfter("--output-format") !== "stream-json" ||
+      valueAfter("--model") !== config.modelName ||
+      valueAfter("--effort") !== (config.reasoning || "high") ||
+      valueAfter("--agent") !== "mazebench") {
+    throw new Error("Antigravity launch is missing its exact model, effort, agent, or sandbox contract.");
+  }
+  const settings = JSON.parse(antigravitySettings(config));
+  const denied = new Set(settings?.permissions?.deny || []);
+  for (const permission of [
+    "command(*)", "unsandboxed(*)", "read_file(*)", "write_file(*)", "read_url(*)", "execute_url(*)"
+  ]) {
+    if (!denied.has(permission)) throw new Error(`Antigravity settings do not deny ${permission}.`);
+  }
+  const serverName = offline ? "mazebench" : "game";
+  const allowed = new Set(settings?.permissions?.allow || []);
+  const expected = antigravityAllowedTools(config).map((tool) => `mcp(${serverName}/${tool})`);
+  if (allowed.size !== expected.length || !expected.every((permission) => allowed.has(permission))) {
+    throw new Error("Antigravity settings expose an unreviewed MCP permission.");
+  }
+  const profile = antigravityAgentProfile(config);
+  if (!/^tools:\s*\[\]\s*$/m.test(profile) ||
+      /\n\s*- (?:run_command|view_file|search_web|invoke_subagent)\s*$/m.test(profile)) {
+    throw new Error("Antigravity agent profile exposes an unreviewed built-in tool.");
+  }
+  if (!new RegExp(`^mcpServers:\\s*\\n\\s+- name: ${serverName}\\s*\\n\\s+serverUrl:`, "m").test(profile) ||
+      !profile.includes(JSON.stringify(config.mcpUrl))) {
+    throw new Error("Antigravity agent profile is not bound to its private MazeBench MCP endpoint.");
+  }
+  const mcp = JSON.parse(antigravityMcpConfig(config));
+  const servers = Object.entries(mcp?.mcpServers || {});
+  if (servers.length !== 1 || servers[0][0] !== serverName ||
+      servers[0][1]?.serverUrl !== config.mcpUrl) {
+    throw new Error("Antigravity must use exactly one private MazeBench MCP endpoint.");
+  }
+  return true;
+}
 
 function assertLocalCodexCommandIsolation(config, command) {
   if (!config.inContainer || config.model !== "codex") {
@@ -1816,6 +2016,7 @@ function assertLocalKimiCommandIsolation(config, command) {
 }
 
 function assertLocalAgentCommandIsolation(config, command) {
+  if (config.model === "antigravity") return assertLocalAntigravityCommandIsolation(config, command);
   if (config.model === "codex") return assertLocalCodexCommandIsolation(config, command);
   if (config.model === "claude") return assertLocalClaudeCommandIsolation(config, command);
   if (config.model === "kimi") return assertLocalKimiCommandIsolation(config, command);
@@ -1830,7 +2031,9 @@ function isolatedAgentEnvironment(config, commandEnv = {}) {
     ? { CODEX_HOME: "/home/pwuser/.codex" }
     : config.model === "claude"
       ? { CLAUDE_CONFIG_DIR: "/home/pwuser/.claude" }
-      : { KIMI_CODE_HOME: "/home/pwuser/.kimi-code" };
+      : config.model === "kimi"
+        ? { KIMI_CODE_HOME: "/home/pwuser/.kimi-code" }
+        : {};
   return {
     PATH: process.env.PATH || "/usr/local/bin:/usr/bin:/bin",
     HOME: "/home/pwuser",
@@ -1852,7 +2055,12 @@ function localAgentIsolationPreflight(config) {
   const command = agentCommand(preflightConfig, "Isolation preflight only.");
   assertLocalAgentCommandIsolation(preflightConfig, command);
 
-  const providerBin = { codex: config.codexBin, claude: config.claudeBin, kimi: config.kimiBin }[config.model];
+  const providerBin = {
+    antigravity: config.antigravityBin,
+    codex: config.codexBin,
+    claude: config.claudeBin,
+    kimi: config.kimiBin
+  }[config.model];
   const requiredVersion = SUPPORTED_LOCAL_AGENT_VERSIONS[config.model];
   const versionProbe = spawnSync(providerBin, ["--version"], {
     encoding: "utf8",
@@ -1873,7 +2081,8 @@ function localAgentIsolationPreflight(config) {
       ? process.env.MAZEBENCH_PRIME_CONFIG_FILE || "/run/mazebench-credentials/prime-config.json"
       : process.env.MAZEBENCH_CODEX_AUTH_FILE || "/run/mazebench-credentials/codex-auth.json",
     claude: process.env.MAZEBENCH_CLAUDE_AUTH_FILE || "/run/mazebench-credentials/claude-credentials.json",
-    kimi: process.env.MAZEBENCH_KIMI_CONFIG_FILE || "/run/mazebench-credentials/kimi-config.toml"
+    kimi: process.env.MAZEBENCH_KIMI_CONFIG_FILE || "/run/mazebench-credentials/kimi-config.toml",
+    antigravity: process.env.MAZEBENCH_ANTIGRAVITY_AUTH_DIR || "/run/mazebench-credentials/antigravity"
   }[config.model];
   const probeSource = `
     const fs = require("node:fs");
@@ -1963,7 +2172,7 @@ function ensureAgentAvailable(bin) {
   if (probe.status !== 0) {
     throw new Error(
       `Agent CLI not found on PATH: ${bin}\n` +
-        `Install it (or pass ${bin === "codex" ? "codex_bin=" : bin === "claude" ? "claude_bin=" : "kimi_bin="}<path>) and try again.`
+        `Install it (or pass ${bin === "agy" ? "antigravity_bin=" : bin === "codex" ? "codex_bin=" : bin === "claude" ? "claude_bin=" : "kimi_bin="}<path>) and try again.`
     );
   }
 }
@@ -2234,6 +2443,62 @@ function toolResultText(content) {
   return "";
 }
 
+function distillAntigravityEvents(raw) {
+  const entries = [];
+  const transcript = [];
+  let commentary = [];
+  let finalMessage = "";
+  let move = 0;
+
+  for (const line of String(raw || "").split("\n")) {
+    if (!line.trim()) continue;
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch (_error) {
+      continue;
+    }
+    if (event.event === "step_update") {
+      const step = event.step_update || {};
+      const timestamp = event._mazebench_received_at || null;
+      if (step.step_type === "agent_response" && step.text_delta) {
+        const text = String(step.text_delta);
+        commentary.push(text);
+        transcript.push(`[agent] ${text.trim()}`);
+        continue;
+      }
+      if (step.step_type !== "tool" || step.state !== "DONE") continue;
+      const info = step.tool_info || {};
+      const parameters = info.parameters || {};
+      const wrapped = String(info.name || step.tool_name || "") === "call_mcp_tool";
+      const toolName = wrapped
+        ? String(parameters.tool_name || parameters.ToolName || parameters.name || "")
+        : String(info.name || step.tool_name || "");
+      const input = wrapped
+        ? (parameters.arguments || parameters.Arguments || parameters.input || {})
+        : parameters;
+      const output = toolResultText(info.output);
+      transcript.push(`[tool] ${toolName || info.name || "tool"} ${JSON.stringify(input)}`);
+      const actions = actionsFromToolCall(toolName, input);
+      const sequence = isActionSequenceTool(toolName);
+      if ((actions.length || sequence) && !info.error) {
+        const reasoning = commentary.join("").trim();
+        const results = resultsFromOutput(output);
+        const executed = executedToolActions(actions, results, output, sequence);
+        executed.forEach((action, index) => {
+          move += 1;
+          entries.push({ move, action, reasoning, timestamp, ...(results[index] || {}) });
+        });
+        commentary = [];
+      }
+      if (output) transcript.push(output.split("\n").slice(0, 3).join("\n"));
+    } else if (event.event === "result") {
+      finalMessage = String(event.result?.response || "").trim();
+    }
+  }
+  return { entries, transcript: transcript.join("\n\n"), finalMessage };
+}
+
 // Turn Claude Code's --output-format stream-json events into the same per-move
 // reasoning log. Reasoning comes from `text`/`thinking` content blocks; moves
 // come from `tool_use` (Bash) blocks; results are matched by tool_use_id from
@@ -2444,6 +2709,15 @@ function providerFailureFromEvents(raw, provider) {
 
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
+    if (provider === "antigravity" && event.event === "result") {
+      const result = event.result || {};
+      if (result.status === "SUCCESS") return null;
+      return {
+        provider,
+        status: null,
+        message: String(result.error || result.response || "Antigravity request failed.").trim().slice(0, 500)
+      };
+    }
     if (provider === "claude" && event.type === "result") {
       if (!event.is_error && !event.api_error_status) return null;
       return {
@@ -2516,8 +2790,8 @@ function recordNoMoveIfIdle(config, actionCountBefore) {
 
 function runAgent(config, prompt) {
   const agent = agentCommand(config, prompt);
-  if (config.inContainer && config.model === "codex") {
-    assertLocalCodexCommandIsolation(config, agent);
+  if (config.inContainer) {
+    assertLocalAgentCommandIsolation(config, agent);
   }
   const { bin, argv, env: commandEnv = {} } = isolatedDockerAgentCommand(config, agent);
   ensureAgentAvailable(bin);
@@ -2537,8 +2811,10 @@ function runAgent(config, prompt) {
   // the on-disk file the web UI tails never lags behind — important for Codex,
   // whose events are sparse (one short message per move) and would otherwise
   // sit unflushed in a stream buffer until the very end.
-  const distill = config.model === "codex"
-    ? distillCodexEvents
+  const distill = config.model === "antigravity"
+    ? distillAntigravityEvents
+    : config.model === "codex"
+      ? distillCodexEvents
     : config.model === "claude"
       ? distillClaudeEvents
       : distillKimiEvents;
@@ -2559,6 +2835,7 @@ function runAgent(config, prompt) {
     const child = spawn(bin, argv, { cwd, env, stdio: ["ignore", "pipe", "inherit"] });
     let raw = "";
     let eventBuffer = "";
+    let exactModelFailure = null;
     let primeInactivityTimer = null;
     let timeoutFailure = null;
     const resetPrimeInactivityTimer = () => {
@@ -2591,6 +2868,33 @@ function runAgent(config, prompt) {
         try {
           const event = JSON.parse(line);
           event._mazebench_received_at = new Date().toISOString();
+          if (config.model === "antigravity") {
+            if (event.event === "init") {
+              const actualModel = String(event.init?.model || "");
+              const actualAgent = String(event.init?.agent || "");
+              if (actualModel !== config.modelName || actualAgent !== "mazebench") {
+                exactModelFailure = {
+                  provider: config.model,
+                  status: null,
+                  message:
+                    `Exact-model guard stopped Antigravity: requested ${config.modelName}, ` +
+                    `received ${actualModel || "no model id"} with agent ${actualAgent || "default"}.`
+                };
+                child.kill("SIGTERM");
+              }
+            }
+            if (event.event === "step_update" && event.step_update?.step_type === "tool") {
+              const tool = String(event.step_update?.tool_name || event.step_update?.tool_info?.name || "");
+              if (tool && tool !== "call_mcp_tool") {
+                exactModelFailure = {
+                  provider: config.model,
+                  status: null,
+                  message: `Antigravity attempted forbidden built-in tool ${tool}; the run was stopped.`
+                };
+                child.kill("SIGTERM");
+              }
+            }
+          }
           output = JSON.stringify(event);
         } catch (_error) {
           /* preserve unexpected provider output verbatim */
@@ -2635,7 +2939,10 @@ function runAgent(config, prompt) {
       if (code !== 0) {
         console.warn(`\n(agent exited with status ${code}; continuing to export whatever it played)`);
       }
-      resolve({ code, failure: timeoutFailure || providerFailureFromEvents(raw, config.model) });
+      resolve({
+        code,
+        failure: exactModelFailure || timeoutFailure || providerFailureFromEvents(raw, config.model)
+      });
     });
   });
 }
@@ -2821,7 +3128,14 @@ function runInContainer(config, raw) {
   const credentialMounts = [];
   const credentialEnvironment = [];
   let temporaryCredentialDir = "";
-  if (config.model === "codex") {
+  if (config.model === "antigravity") {
+    credentialEnvironment.push(
+      "-e", "MAZEBENCH_ANTIGRAVITY_AUTH_DIR=/run/mazebench-credentials/antigravity"
+    );
+    credentialMounts.push(
+      "-v", "mazebench-antigravity-auth:/run/mazebench-credentials/antigravity:ro"
+    );
+  } else if (config.model === "codex") {
     if (config.inference === "prime") {
       const source = raw.prime_auth
         ? path.resolve(expandTilde(raw.prime_auth))
@@ -3225,7 +3539,7 @@ async function localCodexMain() {
   const model = String(raw.model || "").toLowerCase();
 
   if (!SUPPORTED_LOCAL_AGENT_VERSIONS[model]) {
-    console.error("Usage: node scripts/maze-agent-local.js --model codex|claude|kimi [moves=N level=HxI ...]");
+    console.error("Usage: node scripts/maze-agent-local.js --model antigravity|codex|claude|kimi [moves=N level=HxI ...]");
     process.exit(2);
   }
   const inference = String(raw.inference || "subscription").trim().toLowerCase();
@@ -3236,7 +3550,8 @@ async function localCodexMain() {
       (raw.docker_bin && raw.docker_bin !== "docker") ||
       (raw.codex_bin && raw.codex_bin !== "codex") ||
       (raw.claude_bin && raw.claude_bin !== "claude") ||
-      (raw.kimi_bin && raw.kimi_bin !== "kimi")) {
+      (raw.kimi_bin && raw.kimi_bin !== "kimi") ||
+      (raw.antigravity_bin && raw.antigravity_bin !== "agy")) {
     throw new Error("Local agents use the pinned mazebench-agent image and its bundled provider CLIs.");
   }
 
@@ -3295,6 +3610,7 @@ async function localCodexMain() {
   const requestedMode = String(raw.mode || raw.observation || "text").toLowerCase();
   const mode = ["json", "vision"].includes(requestedMode) ? requestedMode : "text";
   const config = {
+    antigravityBin: raw.antigravity_bin || "agy",
     claudeBin: raw.claude_bin || "claude",
     claudeAllowedTools: raw.claude_allowed_tools || "",
     codexBin: raw.codex_bin || "codex",
@@ -3496,12 +3812,18 @@ async function main() {
 module.exports = {
   RETIRED_LOCAL_AGENT_MESSAGE,
   SUPPORTED_LOCAL_AGENT_VERSIONS,
+  SUPPORTED_LOCAL_ANTIGRAVITY_VERSION,
   SUPPORTED_LOCAL_CLAUDE_VERSION,
   SUPPORTED_LOCAL_CODEX_VERSION,
   SUPPORTED_LOCAL_KIMI_VERSION,
   actionFromShellCommand,
   agentCommand,
+  antigravityAgentProfile,
+  antigravityAllowedTools,
+  antigravityMcpConfig,
+  antigravitySettings,
   assertLocalAgentCommandIsolation,
+  assertLocalAntigravityCommandIsolation,
   assertLocalClaudeCommandIsolation,
   assertLocalCodexCommandIsolation,
   assertLocalKimiCommandIsolation,
@@ -3513,6 +3835,7 @@ module.exports = {
   containerRuntimeMountArgs,
   distillClaudeEvents,
   distillCodexEvents,
+  distillAntigravityEvents,
   distillKimiEvents,
   hasResumableGameSession,
   kimiAllowedTools,

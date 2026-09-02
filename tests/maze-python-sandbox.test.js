@@ -12,12 +12,17 @@ const {
 const root = path.resolve(__dirname, "..");
 const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), "maze-python-test-scratch-"));
 const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "maze-python-test-state-"));
+const containerIdentity = process.env.MAZEBENCH_IN_CONTAINER === "1" &&
+  typeof process.getuid === "function" && process.getuid() === 0
+  ? { runUid: 65534, runGid: 65534 }
+  : {};
 const options = {
   scratchDir,
   stateDir,
   deniedPaths: [root, os.homedir()],
   codexBin: "codex",
-  pythonBin: ""
+  pythonBin: "",
+  ...containerIdentity
 };
 
 try {
@@ -27,6 +32,8 @@ try {
   } else {
 
   const command = pythonSandboxCommand({ ...options, timeoutSeconds: 5 });
+  assert.equal(command.config.runUid, containerIdentity.runUid ?? null);
+  assert.equal(command.config.runGid, containerIdentity.runGid ?? null);
   assert.equal(command.argv[0], "sandbox");
   assert(command.argv.includes("-P"));
   assert(command.argv.includes("mazebench_python"));
@@ -122,7 +129,11 @@ print(json.dumps(result, sort_keys=True))
         scratch_dir: scratchDir,
         state_dir: stateDir,
         denied_paths: [root, os.homedir()],
-        codex_bin: "codex"
+        codex_bin: "codex",
+        ...(containerIdentity.runUid === undefined ? {} : {
+          run_uid: containerIdentity.runUid,
+          run_gid: containerIdentity.runGid
+        })
       })
     }
   );

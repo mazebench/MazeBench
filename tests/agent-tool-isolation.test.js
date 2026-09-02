@@ -5,10 +5,15 @@ const os = require("node:os");
 const path = require("node:path");
 const {
   SUPPORTED_LOCAL_AGENT_VERSIONS,
+  SUPPORTED_LOCAL_ANTIGRAVITY_VERSION,
   SUPPORTED_LOCAL_CLAUDE_VERSION,
   SUPPORTED_LOCAL_CODEX_VERSION,
   SUPPORTED_LOCAL_KIMI_VERSION,
   agentCommand,
+  antigravityAgentProfile,
+  antigravityMcpConfig,
+  antigravitySettings,
+  assertLocalAntigravityCommandIsolation,
   assertLocalClaudeCommandIsolation,
   assertLocalCodexCommandIsolation,
   assertLocalKimiCommandIsolation,
@@ -17,6 +22,7 @@ const {
   codexMcpConfigArgs,
   distillClaudeEvents,
   distillCodexEvents,
+  distillAntigravityEvents,
   distillKimiEvents,
   hasResumableGameSession,
   kimiAgentProfile,
@@ -25,13 +31,23 @@ const {
   needsPrivateMcpServer,
   sanitizeKimiConfig
 } = require("../scripts/maze-agent-local");
+const {
+  DEFAULT_LOCAL_AGENT_VERSIONS,
+  LOCAL_AGENT_UPDATE_POLICY
+} = require("../scripts/local-agent-image");
 
 const root = path.resolve(__dirname, "..");
 const localAgentSource = fs.readFileSync(path.join(root, "scripts", "maze-agent-local.js"), "utf8");
 const agentRunsSource = fs.readFileSync(path.join(root, "server", "agent-runs.js"), "utf8");
 const localAgentDockerfile = fs.readFileSync(path.join(root, "Dockerfile"), "utf8");
+const ensureLocalAgentSource = fs.readFileSync(
+  path.join(root, "scripts", "ensure-local-agent-image.js"),
+  "utf8"
+);
+const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 const workspace = path.join(os.tmpdir(), "game-only-agent-test");
 const baseConfig = {
+  antigravityBin: "agy",
   agentSwarmWorkspaceDir: path.join(workspace, "swarm-workspaces"),
   agentWorkspaceDir: workspace,
   agentCodexRuntimeDir: path.join(workspace, "codex-runtime"),
@@ -158,6 +174,10 @@ assert.match(toolsOnPrompt, /python_exec/);
 assert.match(toolsOnPrompt, /relative \.py script_path chosen by you/);
 assert.match(toolsOnPrompt, /create, reuse, modify, and organize as many relative-path \.py/);
 assert.match(toolsOnPrompt, /Python is optional; decide naturally/);
+assert.match(toolsOnPrompt, /wise to try to world model the env in\s+python/);
+assert.match(toolsOnPrompt, /use A\* like solver algorithms to inform your moves/);
+assert.match(toolsOnPrompt, /absolute freedom to explore and solve/);
+assert.match(toolsOnPrompt, /aim is to collect every\s+gem/);
 assert.doesNotMatch(toolsOnPrompt, /planner\.py|solver\.py|reuse the same path|disposable inline-only/);
 assert.match(toolsOnPrompt, /observations\/current\.json/);
 assert.match(toolsOnPrompt, /PYTHON WORKSPACE OBSERVATION BRIDGE/);
@@ -325,14 +345,17 @@ for (const unsafeCommand of [
     /isolation|missing|non-game|widen/i
   );
 }
-assert.equal(SUPPORTED_LOCAL_CODEX_VERSION, "0.146.0");
-assert.equal(SUPPORTED_LOCAL_CLAUDE_VERSION, "2.1.220");
-assert.equal(SUPPORTED_LOCAL_KIMI_VERSION, "0.29.1");
-assert.deepEqual(SUPPORTED_LOCAL_AGENT_VERSIONS, {
-  codex: "0.146.0",
-  claude: "2.1.220",
-  kimi: "0.29.1"
-});
+const expectedLocalAgentVersions = {
+  antigravity: process.env.MAZEBENCH_LOCAL_ANTIGRAVITY_VERSION || DEFAULT_LOCAL_AGENT_VERSIONS.antigravity,
+  codex: process.env.MAZEBENCH_LOCAL_CODEX_VERSION || DEFAULT_LOCAL_AGENT_VERSIONS.codex,
+  claude: process.env.MAZEBENCH_LOCAL_CLAUDE_VERSION || DEFAULT_LOCAL_AGENT_VERSIONS.claude,
+  kimi: process.env.MAZEBENCH_LOCAL_KIMI_VERSION || DEFAULT_LOCAL_AGENT_VERSIONS.kimi
+};
+assert.equal(SUPPORTED_LOCAL_ANTIGRAVITY_VERSION, expectedLocalAgentVersions.antigravity);
+assert.equal(SUPPORTED_LOCAL_CODEX_VERSION, expectedLocalAgentVersions.codex);
+assert.equal(SUPPORTED_LOCAL_CLAUDE_VERSION, expectedLocalAgentVersions.claude);
+assert.equal(SUPPORTED_LOCAL_KIMI_VERSION, expectedLocalAgentVersions.kimi);
+assert.deepEqual(SUPPORTED_LOCAL_AGENT_VERSIONS, expectedLocalAgentVersions);
 assert.match(localAgentDockerfile, /FROM mcr\.microsoft\.com\/playwright:v1\.60\.0-noble/);
 for (const packagePattern of [
   /"@openai\/codex@\$\{CODEX_VERSION\}"/,
@@ -341,9 +364,17 @@ for (const packagePattern of [
 ]) {
   assert.match(localAgentDockerfile, packagePattern);
 }
-for (const label of ["local-codex", "local-claude", "local-kimi"]) {
-  assert.match(localAgentDockerfile, new RegExp(`org\\.mazebench\\.${label}\\.version`));
+for (const label of ["local-antigravity", "local-codex", "local-claude", "local-kimi"]) {
+  assert.match(localAgentDockerfile, new RegExp("org\\.mazebench\\." + label + "\\.version"));
 }
+assert.match(localAgentDockerfile, new RegExp(LOCAL_AGENT_UPDATE_POLICY));
+assert.match(localAgentDockerfile, /local-agent\.source-fingerprint/);
+assert.match(ensureLocalAgentSource, /running candidate isolation certification/);
+assert.match(ensureLocalAgentSource, /tests\/maze-python-sandbox\.test\.js/);
+assert.match(ensureLocalAgentSource, /--cap-add", "SYS_ADMIN/);
+assert.match(ensureLocalAgentSource, /docker", \["tag", candidate, LOCAL_AGENT_IMAGE\]/);
+assert.match(packageJson.scripts.start, /ensure-local-agent-image\.js --ensure/);
+assert.match(packageJson.scripts["maze:build-local-agents"], /ensure-local-agent-image\.js --force/);
 for (const boundary of [
   /"--read-only"/,
   /"--tmpfs", config\.outDir/,
@@ -362,6 +393,51 @@ for (const boundary of [
   assert.match(localAgentSource, boundary);
 }
 assert.doesNotMatch(localAgentSource, /Host access|switch to Host access/);
+
+const antigravityConfig = {
+  ...baseConfig,
+  agentWorkspaceDir: "/app/workspace",
+  inContainer: true,
+  model: "antigravity",
+  modelName: "gemini-3.8-flash-high",
+  outDir: "/run/mazebench-output",
+  reasoning: "high",
+  workspaceDir: "/run/mazebench-workspace/workspace"
+};
+const antigravity = agentCommand(antigravityConfig, buildMcpPrompt(antigravityConfig));
+assert.equal(antigravity.bin, "agy");
+assert.equal(antigravity.argv[antigravity.argv.indexOf("--model") + 1], "gemini-3.8-flash-high");
+assert.equal(antigravity.argv[antigravity.argv.indexOf("--effort") + 1], "high");
+assert.equal(antigravity.argv[antigravity.argv.indexOf("--agent") + 1], "mazebench");
+assert(antigravity.argv.includes("--sandbox"));
+assert(antigravity.argv.includes("--disable-slash-commands"));
+assert.equal(assertLocalAntigravityCommandIsolation(antigravityConfig, antigravity), true);
+assert.deepEqual(Object.keys(JSON.parse(antigravityMcpConfig(antigravityConfig)).mcpServers), ["game"]);
+assert.deepEqual(JSON.parse(antigravitySettings(antigravityConfig)).permissions.allow, [
+  "mcp(game/game_start)",
+  "mcp(game/game_observe)",
+  "mcp(game/game_action)"
+]);
+const antigravityProfile = antigravityAgentProfile(antigravityConfig);
+assert.match(antigravityProfile, /^tools:\s*\[\]\s*$/m);
+assert.match(antigravityProfile, /^mcpServers:\s*\n\s+- name: game\s*\n\s+serverUrl:/m);
+assert.match(antigravityProfile, new RegExp(antigravityConfig.mcpUrl.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+assert.throws(
+  () => assertLocalAntigravityCommandIsolation(antigravityConfig, {
+    ...antigravity,
+    argv: [...antigravity.argv, "--dangerously-skip-permissions"]
+  }),
+  /forbidden/i
+);
+const antigravityDistilled = distillAntigravityEvents([
+  JSON.stringify({ event: "step_update", step_update: { step_type: "agent_response", text_delta: "Trying up." } }),
+  JSON.stringify({ event: "step_update", step_update: { step_type: "tool", state: "DONE", tool_info: {
+    name: "call_mcp_tool",
+    parameters: { ToolName: "game_action", Arguments: { action: "up" }, ServerName: "game" },
+    output: { content: [{ type: "text", text: JSON.stringify({ action: "up", success: true }) }] }
+  } } })
+].join("\n"));
+assert.equal(antigravityDistilled.entries[0].action, "up");
 
 const codexSparkConfig = {
   ...codexConfig,

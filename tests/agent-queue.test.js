@@ -805,6 +805,76 @@ try {
     service.deleteRun(isolatedLocalTools.id);
   }
 
+  const runnerFixturePath = path.join(scriptsDir, "maze-agent-local.js");
+  const runnerFixtureSource = fs.readFileSync(runnerFixturePath, "utf8");
+  let runtimeBackoffRun;
+  try {
+    fs.writeFileSync(
+      runnerFixturePath,
+      `const fs = require("node:fs");
+const path = require("node:path");
+const args = Object.fromEntries(process.argv.slice(2).map((part) => {
+  const at = part.indexOf("=");
+  return at < 0 ? [part, ""] : [part.slice(0, at), part.slice(at + 1)];
+}));
+const threadId = "019fda33-2630-7ab0-89fd-51d2984b0603";
+const transcriptDir = path.join(args.out, "agent-state", "codex", "sessions", "2026", "09", "02");
+fs.mkdirSync(transcriptDir, { recursive: true });
+fs.writeFileSync(path.join(args.out, "agent-events.jsonl"), JSON.stringify({ type: "thread.started", thread_id: threadId }) + "\\n");
+fs.writeFileSync(
+  path.join(transcriptDir, "rollout-test-" + threadId + ".jsonl"),
+  JSON.stringify({ type: "session_meta", payload: { id: threadId } }) + "\\n"
+);
+setTimeout(() => process.exit(0), 200);
+`,
+      "utf8"
+    );
+    [runtimeBackoffRun] = service.launchRuns({
+      kind: "local",
+      subscription: true,
+      model: "codex",
+      container: true,
+      tools: false,
+      tool_use: "read-only",
+      swarm: false,
+      unlimited: true,
+      allow_quit: false,
+      video: false
+    });
+    launchedIds.push(runtimeBackoffRun.id);
+    agentEnvironmentState = {
+      ...agentEnvironmentState,
+      docker: false,
+      docker_running: false
+    };
+
+    const runtimeBackoffDeadline = Date.now() + 4000;
+    let runtimeBackoffSummary = service.summarizeRun(runtimeBackoffRun.id);
+    while (runtimeBackoffSummary.status !== "paused" && Date.now() < runtimeBackoffDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      runtimeBackoffSummary = service.summarizeRun(runtimeBackoffRun.id);
+    }
+    assert.equal(runtimeBackoffSummary.status, "paused");
+    assert.equal(runtimeBackoffSummary.pause_reason, "provider_backoff");
+    assert.match(runtimeBackoffSummary.pause_message, /Automatic continuation paused:.*Docker daemon running/);
+    assert(Number.isFinite(Date.parse(runtimeBackoffSummary.retry_at)));
+    assert.equal(runtimeBackoffSummary.unlimited, true);
+  } finally {
+    agentEnvironmentState = {
+      ...agentEnvironmentState,
+      docker: true,
+      docker_running: true
+    };
+    fs.writeFileSync(runnerFixturePath, runnerFixtureSource, "utf8");
+  }
+
+  const resumedRuntimeBackoff = service.resumeRun(runtimeBackoffRun.id);
+  assert.equal(resumedRuntimeBackoff.id, runtimeBackoffRun.id);
+  assert.equal(resumedRuntimeBackoff.status, "running");
+  assert.equal(resumedRuntimeBackoff.unlimited, true);
+  assert.equal(service.stopRun(runtimeBackoffRun.id).status, "paused");
+  service.deleteRun(runtimeBackoffRun.id);
+
   const retiredLocalId = "retired-local-run";
   const retiredLocalDir = path.join(rootDir, "outputs", "maze-local", "site", retiredLocalId);
   fs.mkdirSync(retiredLocalDir, { recursive: true });

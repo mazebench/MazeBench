@@ -33,10 +33,13 @@ const COPY_DIRECTORIES = [
 ];
 
 const COPY_FILES = [
+  ".dockerignore",
+  "Dockerfile",
   "LICENSE",
   "THIRD_PARTY_NOTICES.md",
   "server.js",
   "package.json",
+  "package-lock.json",
   "games/maze/config.json",
   "games/maze/level_parsing.json",
   "games/maze/toolbox.json",

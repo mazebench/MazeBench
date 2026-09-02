@@ -19,8 +19,12 @@ const MIRRORED_DIRECTORIES = [
 ];
 
 const MIRRORED_FILES = [
+  ".dockerignore",
+  "Dockerfile",
   "LICENSE",
   "THIRD_PARTY_NOTICES.md",
+  "package.json",
+  "package-lock.json",
   "environments/mazebench/prime-harness-catalog.json",
   "games/maze/level_parsing.json",
   "games/maze/toolbox.json",
@@ -63,7 +67,11 @@ const MIRRORED_FILES = [
   "shared/default-world-template.js",
   "shared/maze-ascii-palette.js",
   "shared/maze-observation-contract.js",
+  "scripts/antigravity-agent.md",
   "scripts/maze-agent-local.js",
+  "scripts/ensure-local-agent-image.js",
+  "scripts/local-agent-image.js",
+  "scripts/login-antigravity.js",
   "scripts/maze-bridge.js",
   "scripts/codex-play.js",
   "scripts/maze-play.js",
@@ -82,7 +90,7 @@ const MIRRORED_FILES = [
 ];
 
 function isIgnoredName(name) {
-  return name.startsWith(".");
+  return name.startsWith(".") && name !== ".dockerignore";
 }
 
 function walkFiles(directoryPath, relativePrefix, results = []) {

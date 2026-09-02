@@ -7,11 +7,16 @@ const { spawn, spawnSync } = require("child_process");
 const {
   RETIRED_LOCAL_AGENT_MESSAGE,
   SUPPORTED_LOCAL_AGENT_VERSIONS,
+  distillAntigravityEvents,
   distillClaudeEvents,
   distillCodexEvents,
   distillKimiEvents,
   loadCodexModels
 } = require("../scripts/maze-agent-local");
+const {
+  LOCAL_AGENT_IMAGE,
+  imageLabelsAreCertified
+} = require("../scripts/local-agent-image");
 const {
   findClaudeSessionFile,
   findCodexSessionFile,
@@ -134,6 +139,76 @@ function claudeReasoningLevels(modelId) {
     ...(supportsXhigh ? ["xhigh"] : []),
     ...(supportsMax ? ["max"] : [])
   ];
+}
+
+function compareClaudeModelVersions(left, right) {
+  const leftParts = String(left).split(".").map(Number);
+  const rightParts = String(right).split(".").map(Number);
+  const length = Math.max(leftParts.length, rightParts.length);
+
+  for (let index = 0; index < length; index += 1) {
+    const difference = (rightParts[index] || 0) - (leftParts[index] || 0);
+    if (difference) return difference;
+  }
+  return 0;
+}
+
+function claudeCatalogModelsFromMetadata(metadataLines, detectedAliases = []) {
+  const lines = Array.isArray(metadataLines)
+    ? metadataLines.map((line) => String(line || "").trim()).filter(Boolean)
+    : [];
+  const pickerFamilies = lines.flatMap((line) => {
+    const match = line.match(/^Custom ([a-z][a-z0-9-]*) model$/i);
+    return match ? [match[1].toLowerCase()] : [];
+  });
+  const aliases = [...new Set([...detectedAliases, ...pickerFamilies]
+    .map((alias) => String(alias || "").trim().toLowerCase())
+    .filter((alias) => /^[a-z][a-z0-9-]*$/.test(alias)))];
+  const descriptions = {
+    fable: "Latest Fable tier — highest capability",
+    opus: "Latest Opus tier — deep reasoning",
+    sonnet: "Latest Sonnet tier — balanced speed and capability",
+    haiku: "Latest Haiku tier — fastest responses"
+  };
+
+  return aliases.flatMap((alias) => {
+    const escapedAlias = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const versionPattern = new RegExp(
+      "^" + escapedAlias + "\\s+(\\d+(?:\\.\\d+)*)\\s*(?:-|$)",
+      "i"
+    );
+    const versions = [...new Set(lines.flatMap((line) => {
+      const match = line.match(versionPattern);
+      return match ? [match[1]] : [];
+    }))].sort(compareClaudeModelVersions);
+    const title = alias.charAt(0).toUpperCase() + alias.slice(1);
+
+    if (alias === "fable" && versions.length) {
+      return versions.map((version, index) => {
+        const id = "claude-fable-" + version.replace(/\./g, "-");
+        return {
+          id,
+          label: "Fable " + version,
+          description: "Exact Claude Fable " + version + " model" +
+            (index ? " (previous release)" : " — highest capability"),
+          resolved_model_id: id,
+          reasoning_levels: claudeReasoningLevels(id)
+        };
+      });
+    }
+
+    const version = versions[0];
+    const resolvedModelId = version
+      ? "claude-" + alias + "-" + version.replace(/\./g, "-")
+      : "";
+    return [{
+      id: alias,
+      label: version ? title + " " + version : title + " (latest)",
+      description: descriptions[alias] || "Latest model behind the " + alias + " alias",
+      resolved_model_id: resolvedModelId,
+      reasoning_levels: claudeReasoningLevels(resolvedModelId)
+    }];
+  });
 }
 
 // Keep Prime's runner contract provider-neutral. Provider-specific extensions
@@ -513,6 +588,21 @@ function createAgentRunService({
   const codexSessionPaths = new Map();
   const autoQuitMonitors = new Map();
 
+  function currentLocalAgentVersions(options = {}) {
+    const environment = typeof agentEnvironment === "function"
+      ? agentEnvironment(options)
+      : {};
+    const imageVersions = environment?.local_agent_image_versions;
+    return {
+      ...SUPPORTED_LOCAL_AGENT_VERSIONS,
+      ...(imageVersions && typeof imageVersions === "object" ? imageVersions : {})
+    };
+  }
+
+  function currentLocalAgentVersion(provider, options = {}) {
+    return currentLocalAgentVersions(options)[provider] || "";
+  }
+
   function requireIsolatedLocalAgentLaunch(params) {
     const model = String(params?.model || "").trim().toLowerCase();
     const container = !(params?.container === false || params?.container === "false");
@@ -546,8 +636,8 @@ function createAgentRunService({
     const validBoundary = meta?.harness_boundary === `${boundaryPrefix}game-tools-only` ||
       (toolUse === "offline" && meta?.harness_boundary === `${boundaryPrefix}game-tools+isolated-python`);
     if (
-      meta?.harness !== ({ codex: "codex", claude: "claude_code", kimi: "kimi_code" })[provider] ||
-      meta?.harness_version !== SUPPORTED_LOCAL_AGENT_VERSIONS[provider] ||
+      meta?.harness !== ({ antigravity: "antigravity", codex: "codex", claude: "claude_code", kimi: "kimi_code" })[provider] ||
+      meta?.harness_version !== currentLocalAgentVersion(provider) ||
       !validBoundary ||
       meta?.container_image !== "mazebench-agent"
     ) {
@@ -570,8 +660,8 @@ function createAgentRunService({
       ? agentEnvironment({ fresh: true })
       : {};
     if (!environment[provider]) {
-      const label = { claude: "Claude Code", kimi: "Kimi Code", codex: "Codex" }[provider] || provider;
-      const login = { claude: "claude auth login", kimi: "kimi login", codex: "codex login" }[provider] || "";
+      const label = { antigravity: "Google Antigravity", claude: "Claude Code", kimi: "Kimi Code", codex: "Codex" }[provider] || provider;
+      const login = { antigravity: "npm run maze:login-antigravity", claude: "claude auth login", kimi: "kimi login", codex: "codex login" }[provider] || "";
       throw new Error(`${label} needs an active local account. Run \`${login}\`, then refresh the Agent page.`);
     }
   }
@@ -579,7 +669,7 @@ function createAgentRunService({
   function localLaunchEnvironment(params) {
     const environment = enrichedPathEnv();
     if (!(params?.subscription === true || params?.subscription === "true")) return environment;
-    for (const key of ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "CODEX_ACCESS_TOKEN"]) {
+    for (const key of ["GEMINI_API_KEY", "GOOGLE_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "CODEX_ACCESS_TOKEN"]) {
       delete environment[key];
     }
     return environment;
@@ -647,15 +737,13 @@ function createAgentRunService({
     }
     const result = spawnSync(
       "docker",
-      ["image", "inspect", "docker.io/library/mazebench-agent:latest", "--format", "{{json .Config.Labels}}"],
+      ["image", "inspect", LOCAL_AGENT_IMAGE, "--format", "{{json .Config.Labels}}"],
       { encoding: "utf8", env: enrichedPathEnv(), timeout: 8000, maxBuffer: 128 * 1024 }
     );
     if (result.status !== 0) return false;
     try {
       const labels = JSON.parse(String(result.stdout || "{}"));
-      return labels["org.mazebench.local-codex.version"] === SUPPORTED_LOCAL_AGENT_VERSIONS.codex &&
-        labels["org.mazebench.local-claude.version"] === SUPPORTED_LOCAL_AGENT_VERSIONS.claude &&
-        labels["org.mazebench.local-kimi.version"] === SUPPORTED_LOCAL_AGENT_VERSIONS.kimi;
+      return imageLabelsAreCertified(labels, rootDir);
     } catch (_error) {
       return false;
     }
@@ -1621,8 +1709,20 @@ function createAgentRunService({
       );
       return readRunMeta(runId);
     } catch (error) {
-      console.error(`Could not auto-continue run ${runId}: ${error instanceof Error ? error.message : String(error)}`);
-      return null;
+      const current = readRunMeta(runId) || meta;
+      if (["pausing", "paused", "stopping", "stopped"].includes(current.status)) {
+        return current;
+      }
+      const detail = error instanceof Error ? error.message : String(error);
+      const failure = {
+        provider: "local-runtime",
+        status: null,
+        message: `Automatic continuation paused: ${detail}`
+      };
+      const paused = providerBackoffMeta(runId, current, failure, current.exit_code ?? null);
+      writeRunMeta(runId, paused);
+      console.error(`Could not auto-continue run ${runId}; it will retry automatically: ${detail}`);
+      return paused;
     }
   }
 
@@ -2759,8 +2859,10 @@ function createAgentRunService({
 
     try {
       const raw = fs.readFileSync(eventsPath, "utf8");
-      const distilled = model === "claude"
-        ? distillClaudeEvents(raw)
+      const distilled = model === "antigravity"
+        ? distillAntigravityEvents(raw)
+        : model === "claude"
+          ? distillClaudeEvents(raw)
         : model === "kimi"
           ? distillKimiEvents(raw)
           : distillCodexEvents(raw);
@@ -3640,6 +3742,37 @@ function createAgentRunService({
             ? parseCodexSession(fs.readFileSync(codexSessionPath, "utf8"))
             : parseCodexEvents(fs.existsSync(eventsPath) ? fs.readFileSync(eventsPath, "utf8") : "");
         }
+      } else if (summary.provider === "antigravity") {
+        const events = fs.existsSync(eventsPath)
+          ? fs.readFileSync(eventsPath, "utf8").split(/\r?\n/).flatMap((line) => {
+              try {
+                return line.trim() ? [JSON.parse(line)] : [];
+              } catch (_error) {
+                return [];
+              }
+            })
+          : [];
+        const usage = [...events].reverse().find((event) => event.event === "result" && event.result?.usage)?.result?.usage || {};
+        const inputTokens = Math.max(0, Number(usage.input_tokens) || 0);
+        const outputTokens = Math.max(0, Number(usage.output_tokens) || 0);
+        value = {
+          provider: "antigravity",
+          available: inputTokens + outputTokens > 0,
+          exact: true,
+          note: "Exact usage reported by the Antigravity stream result.",
+          total_tokens: Math.max(0, Number(usage.total_tokens) || inputTokens + outputTokens),
+          input_tokens: inputTokens,
+          cached_input_tokens: Math.max(0, Number(usage.cache_read_tokens) || 0),
+          output_tokens: outputTokens,
+          reasoning_tokens: Math.max(0, Number(usage.thinking_tokens) || 0),
+          current_context_tokens: inputTokens || null,
+          context_window: null,
+          average_tokens_per_action: null,
+          agents_current: null,
+          agents_total: null,
+          compactions: 0,
+          actions: []
+        };
       } else if (summary.provider === "claude") {
         value = parseClaudeEvents(fs.existsSync(eventsPath) ? fs.readFileSync(eventsPath, "utf8") : "");
       } else if (summary.provider === "kimi") {
@@ -4593,34 +4726,113 @@ function createAgentRunService({
     };
   }
 
+  function antigravityModelCatalog() {
+    const dockerPrefix = [
+      "run", "--rm", "-e", "HOME=/home/pwuser",
+      "-v", "mazebench-antigravity-auth:/home/pwuser/.gemini",
+      "--entrypoint", "agy", LOCAL_AGENT_IMAGE
+    ];
+    const result = spawnSync("docker", [...dockerPrefix, "models"], {
+      encoding: "utf8",
+      env: enrichedPathEnv(),
+      timeout: 10_000,
+      maxBuffer: 2 * 1024 * 1024
+    });
+    const version = spawnSync("docker", [...dockerPrefix, "--version"], {
+      encoding: "utf8",
+      env: enrichedPathEnv(),
+      timeout: 10_000
+    });
+    const versionText = String(version.stdout || "").trim();
+    if (result.status !== 0) {
+      return {
+        models: [],
+        source: versionText ? `Google Antigravity ${versionText}` : "Google Antigravity CLI",
+        checked_at: modelCatalogCheckedAt(),
+        note: "The pinned Antigravity runtime could not load its authenticated model catalog. Run `npm run maze:login-antigravity`, then retry."
+      };
+    }
+    const models = String(result.stdout || "")
+      .split(/\r?\n/)
+      .map((line) => line.match(/^(gemini-[a-z0-9.-]+-(low|medium|high))\t(.+)$/i))
+      .filter(Boolean)
+      .map((match) => ({
+        id: match[1],
+        label: match[3],
+        description: "Exact authenticated Antigravity catalog id",
+        reasoning_levels: [match[2].toLowerCase()],
+        default_reasoning: match[2].toLowerCase(),
+        vision: true
+      }));
+    return {
+      models,
+      source: versionText ? `Google Antigravity ${versionText}` : "Google Antigravity CLI",
+      checked_at: modelCatalogCheckedAt(),
+      default_model_id: models[0]?.id || "",
+      note: models.length
+        ? "Exact ids from the authenticated Antigravity catalog. MazeBench verifies the runtime init event and stops instead of accepting a different model."
+        : "Antigravity returned no exact Gemini catalog ids. MazeBench will not invent an alias or fall back."
+    };
+  }
+
   function claudeModelCatalog() {
     // Claude Code has no JSON model-catalog command. Its help lists most aliases,
     // while the model picker metadata embedded in the installed CLI is more
     // complete (for example, current builds expose Haiku in /model but omit it
     // from the --model help example). Read both so this catalog follows the
     // installed CLI instead of maintaining a stale model list here.
-    const help = spawnSync("claude", ["--help"], {
-      encoding: "utf8",
-      env: enrichedPathEnv(),
-      timeout: 5000,
-      maxBuffer: 2 * 1024 * 1024
-    });
+    const useLocalImage = localAgentImageAvailable();
+    const runClaudeCatalogCommand = (args, timeout = 5000, maxBuffer = 2 * 1024 * 1024) =>
+      spawnSync(
+        useLocalImage ? "docker" : "claude",
+        useLocalImage
+          ? ["run", "--rm", "--entrypoint", "claude", LOCAL_AGENT_IMAGE, ...args]
+          : args,
+        {
+          encoding: "utf8",
+          env: enrichedPathEnv(),
+          timeout,
+          maxBuffer
+        }
+      );
+    const help = runClaudeCatalogCommand(["--help"]);
     const helpText = String(help.stdout || help.stderr || "");
     const aliasExample = helpText.match(/alias for the latest model[\s\S]{0,180}?\((?:e\.g\.\s*)?([^)]*)\)/i);
     const detectedAliases = aliasExample
       ? [...aliasExample[1].matchAll(/['"]([a-z][a-z0-9-]*)['"]/gi)].map((match) => match[1].toLowerCase())
       : [];
 
+    let metadataLines = [];
     const pickerLabels = new Map();
     const pickerModelIds = new Map();
-    const executable = spawnSync("sh", ["-c", "command -v claude"], {
+    const executable = useLocalImage
+      ? { status: 1, stdout: "" }
+      : spawnSync("sh", ["-c", "command -v claude"], {
       encoding: "utf8",
       env: enrichedPathEnv(),
       timeout: 2000
-    });
+      });
     const executablePath = String(executable.stdout || "").trim();
 
-    if (executable.status === 0 && executablePath) {
+    if (useLocalImage) {
+      const pickerMetadata = spawnSync(
+        "docker",
+        [
+          "run", "--rm", "--entrypoint", "sh", LOCAL_AGENT_IMAGE, "-lc",
+          "LC_ALL=C strings \"$(command -v claude)\" | awk '/^Custom [[:alnum:]-]+ model$/ || /^[[:alnum:]-]+ [0-9]+([.][0-9]+)*([[:space:]]+-|[[:space:]]*$)/'"
+        ],
+        {
+          encoding: "utf8",
+          env: enrichedPathEnv(),
+          timeout: 10_000,
+          maxBuffer: 2 * 1024 * 1024
+        }
+      );
+      metadataLines = String(pickerMetadata.stdout || "")
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+    } else if (executable.status === 0 && executablePath) {
       // `strings` lets us read the same static labels used by /model without
       // opening an interactive session, changing the user's default, or making
       // an API request. The awk filter keeps the 200MB+ executable out of memory.
@@ -4639,7 +4851,7 @@ function createAgentRunService({
           maxBuffer: 2 * 1024 * 1024
         }
       );
-      const metadataLines = String(pickerMetadata.stdout || "")
+      metadataLines = String(pickerMetadata.stdout || "")
         .split(/\r?\n/)
         .map((line) => line.trim())
         .filter(Boolean);
@@ -4683,31 +4895,22 @@ function createAgentRunService({
       sonnet: "Latest Sonnet tier — balanced speed and capability",
       haiku: "Latest Haiku tier — fastest responses"
     };
-    const version = spawnSync("claude", ["--version"], {
-      encoding: "utf8",
-      env: enrichedPathEnv(),
-      timeout: 5000
-    });
+    const models = claudeCatalogModelsFromMetadata(metadataLines, aliases);
+    const version = runClaudeCatalogCommand(["--version"]);
     const versionText = String(version.stdout || "").trim().replace(/\s*\(Claude Code\)\s*$/i, "");
 
     return {
-      models: aliases.map((alias) => ({
-        id: alias,
-        label: pickerLabels.get(alias) || `${alias.charAt(0).toUpperCase()}${alias.slice(1)} (latest)`,
-        description: descriptions[alias] || `Latest model behind the ${alias} alias`,
-        resolved_model_id: pickerModelIds.get(alias) || "",
-        reasoning_levels: claudeReasoningLevels(pickerModelIds.get(alias) || "")
-      })),
+      models,
       source: versionText ? `Claude Code ${versionText}` : "Installed Claude Code CLI",
       checked_at: modelCatalogCheckedAt(),
-      default_model_id: aliases[0] || "",
+      default_model_id: models[0]?.id || "",
       // The CLI accepts this complete syntax set, but each model above carries
       // its own supported subset. Versioned Claude family ids deliberately use
       // a family-level rule so newly released aliases keep their effort control.
       reasoning_levels: ["low", "medium", "high", "xhigh", "max"],
       reasoning_default: "",
       note: pickerLabels.size
-        ? "Models and display versions detected from this installed Claude Code build. Aliases stay dynamic when Claude rolls them forward."
+        ? "Models detected from this installed Claude Code build. Fable releases launch by exact full model id."
         : detectedAliases.length
           ? "Aliases detected from the installed CLI; this build did not expose exact picker labels."
           : "Claude Code did not expose a model list. Use Custom… for a full model id."
@@ -4910,7 +5113,7 @@ function createAgentRunService({
   function listProviderModels(provider, { fresh = false, harness = "none" } = {}) {
     const normalized = String(provider || "").toLowerCase();
 
-    if (!["codex", "claude", "kimi", "prime"].includes(normalized)) {
+    if (!["antigravity", "codex", "claude", "kimi", "prime"].includes(normalized)) {
       throw new Error(`Unknown provider "${provider}".`);
     }
 
@@ -4928,8 +5131,10 @@ function createAgentRunService({
         : cached.value;
     }
 
-    const value = normalized === "claude"
-      ? claudeModelCatalog()
+    const value = normalized === "antigravity"
+      ? antigravityModelCatalog()
+      : normalized === "claude"
+        ? claudeModelCatalog()
       : normalized === "kimi"
         ? kimiModelCatalog()
         : primeModelCatalog();
@@ -4963,7 +5168,7 @@ function createAgentRunService({
     const inference = String(params.inference || "subscription").trim().toLowerCase();
 
     if (!SUPPORTED_LOCAL_AGENT_VERSIONS[model]) {
-      throw new Error("Choose a certified local Codex, Claude Code, or Kimi Code runner.");
+      throw new Error("Choose a certified local Google Antigravity, Codex, Claude Code, or Kimi Code runner.");
     }
     if (!["subscription", "prime"].includes(inference) || (inference === "prime" && model !== "codex")) {
       throw new Error("Prime inference is supported only by the isolated Codex runner.");
@@ -5009,11 +5214,30 @@ function createAgentRunService({
       );
     }
     if (!localAgentImageAvailable()) {
+      const requiredVersions = currentLocalAgentVersions();
       throw new Error(
         "The certified local-agent image is missing or stale. Run `npm run maze:build-local-agents` " +
-        `(required Codex ${SUPPORTED_LOCAL_AGENT_VERSIONS.codex}, Claude Code ${SUPPORTED_LOCAL_AGENT_VERSIONS.claude}, ` +
-        `Kimi Code ${SUPPORTED_LOCAL_AGENT_VERSIONS.kimi}).`
+        `(required Antigravity ${requiredVersions.antigravity}, Codex ${requiredVersions.codex}, Claude Code ${requiredVersions.claude}, ` +
+        `Kimi Code ${requiredVersions.kimi}).`
       );
+    }
+
+    if (model === "antigravity") {
+      const requestedId = String(params.model_name || "");
+      const exact = listProviderModels("antigravity", { fresh: true }).models.find(
+        (entry) => entry.id === requestedId
+      );
+      if (!exact) {
+        throw new Error(
+          `Antigravity model ${requestedId || "(missing)"} is not in the live authenticated catalog. ` +
+          "MazeBench will not substitute an alias or older model."
+        );
+      }
+      const requestedEffort = String(params.reasoning || "high").toLowerCase();
+      const idEffort = requestedId.match(/-(low|medium|high)$/)?.[1] || "";
+      if (requestedEffort !== idEffort) {
+        throw new Error(`${requestedId} requires matching effort ${idEffort}; received ${requestedEffort}.`);
+      }
     }
     const args = [
       `model=${model}`,
@@ -5063,7 +5287,12 @@ function createAgentRunService({
     if (params.reasoning) {
       const reasoning = String(params.reasoning).toLowerCase();
 
-      if (model === "claude") {
+      if (model === "antigravity") {
+        const expected = String(params.model_name || "").match(/-(low|medium|high)$/)?.[1] || "";
+        if (reasoning !== expected) {
+          throw new Error(`${params.model_name} requires matching Antigravity effort ${expected}.`);
+        }
+      } else if (model === "claude") {
         const exactModelId = resolveClaudeCatalogModelId(params.model_name);
         const supported = claudeReasoningLevels(exactModelId);
 
@@ -5226,7 +5455,7 @@ function createAgentRunService({
         display,
         harness,
         harnessConfig,
-        harnessVersion: SUPPORTED_LOCAL_AGENT_VERSIONS.codex,
+        harnessVersion: currentLocalAgentVersion("codex"),
         harnessLabel: definition.label,
         harnessBoundary: toolUse === "offline"
           ? "prime-inference/disposable-container/game-tools+isolated-python"
@@ -5569,9 +5798,9 @@ function createAgentRunService({
           model,
           model_name: exactModelName,
           model_alias: exactModelName !== requestedModelName ? requestedModelName : "",
-          harness: ({ codex: "codex", claude: "claude_code", kimi: "kimi_code" })[model],
-          harness_label: ({ codex: "Codex", claude: "Claude Code", kimi: "Kimi Code" })[model],
-          harness_version: SUPPORTED_LOCAL_AGENT_VERSIONS[model],
+          harness: ({ antigravity: "antigravity", codex: "codex", claude: "claude_code", kimi: "kimi_code" })[model],
+          harness_label: ({ antigravity: "Google Antigravity", codex: "Codex", claude: "Claude Code", kimi: "Kimi Code" })[model],
+          harness_version: currentLocalAgentVersion(model),
           harness_boundary: toolUse === "offline"
             ? "disposable-container/game-tools+isolated-python"
             : "disposable-container/game-tools-only",
@@ -5618,7 +5847,7 @@ function createAgentRunService({
           branch_provider_id: branchPreparation?.newConversationId || null,
           seeded: Boolean(effectiveParams.seed_run || effectiveParams.branch_of),
           conversation_persistence: "run-dir",
-          note: `Local ${{ codex: "Codex", claude: "Claude Code", kimi: "Kimi Code" }[model]} runs in a fresh disposable container. The evaluated process receives MazeBench game controls${toolUse === "offline" ? " plus a preflighted run-scoped Python scratchpad" : " only"}; repository, host files, run artifacts, shell, web, apps, and workers are blocked by launch-time isolation preflights.`
+          note: `Local ${{ antigravity: "Google Antigravity", codex: "Codex", claude: "Claude Code", kimi: "Kimi Code" }[model]} runs in a fresh disposable container. The evaluated process receives MazeBench game controls${toolUse === "offline" ? " plus a preflighted run-scoped Python scratchpad" : " only"}; repository, host files, run artifacts, shell, web, apps, and workers are blocked by launch-time isolation preflights.`
         };
       }
     } catch (error) {
@@ -5988,7 +6217,7 @@ function createAgentRunService({
 
       try {
         const event = JSON.parse(trimmed);
-        const id = event.thread_id || event.session_id;
+        const id = event.conversation_id || event.thread_id || event.session_id || event.init?.conversation_id;
         if (id) return String(id);
       } catch (_error) {
         /* skip non-JSON lines */
@@ -6195,6 +6424,12 @@ function createAgentRunService({
 
     if (meta.model === "claude") {
       return Boolean(findClaudeSessionFile(path.join(stateRoot, "claude"), conversationId));
+    }
+
+    if (meta.model === "antigravity") {
+      return fs.existsSync(
+        path.join(stateRoot, "antigravity", "gemini", "antigravity-cli", "conversations", `${conversationId}.db`)
+      );
     }
 
     return false;
@@ -6984,6 +7219,7 @@ function createAgentRunService({
 module.exports = {
   apiPricingForRun,
   branchLaunchParams,
+  claudeCatalogModelsFromMetadata,
   claudeReasoningLevels,
   collectedAllWorldGems,
   createAgentRunService,
