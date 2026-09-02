@@ -341,8 +341,12 @@ code to a relative .py script_path chosen by you, then executes that file in a
 fresh Python process. The writable working directory persists for this entire
 run. You may create, reuse, modify, and organize as many relative-path .py,
 .json, and scratch files as useful. Python is optional; decide naturally when
-and how to use it. There is no separate editor or shell; create, revise, and
-execute files through python_exec.
+and how to use it. It would actually be wise to try to world model the env in
+python, and use A* like solver algorithms to inform your moves. It is ultimately
+up to you how you decide to play the env and learn how it works. You have
+absolute freedom to explore and solve, but remember the aim is to collect every
+gem. There is no separate editor or shell; create, revise, and execute files
+through python_exec.
 It cannot read MazeBench source, repositories, run artifacts, host files,
 credentials, or prior runs, and it has no network access. Shell, file-browser,
 editor, web, app, and connector tools are disabled.
