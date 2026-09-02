@@ -13,6 +13,10 @@ const {
   loadCodexModels
 } = require("../scripts/maze-agent-local");
 const {
+  LOCAL_AGENT_IMAGE,
+  imageLabelsAreCertified
+} = require("../scripts/local-agent-image");
+const {
   findClaudeSessionFile,
   findCodexSessionFile,
   findCodexSessionFiles,
@@ -585,6 +589,21 @@ function createAgentRunService({
   const codexSessionPaths = new Map();
   const autoQuitMonitors = new Map();
 
+  function currentLocalAgentVersions(options = {}) {
+    const environment = typeof agentEnvironment === "function"
+      ? agentEnvironment(options)
+      : {};
+    const imageVersions = environment?.local_agent_image_versions;
+    return {
+      ...SUPPORTED_LOCAL_AGENT_VERSIONS,
+      ...(imageVersions && typeof imageVersions === "object" ? imageVersions : {})
+    };
+  }
+
+  function currentLocalAgentVersion(provider, options = {}) {
+    return currentLocalAgentVersions(options)[provider] || "";
+  }
+
   function requireIsolatedLocalAgentLaunch(params) {
     const model = String(params?.model || "").trim().toLowerCase();
     const container = !(params?.container === false || params?.container === "false");
@@ -619,7 +638,7 @@ function createAgentRunService({
       (toolUse === "offline" && meta?.harness_boundary === `${boundaryPrefix}game-tools+isolated-python`);
     if (
       meta?.harness !== ({ codex: "codex", claude: "claude_code", kimi: "kimi_code" })[provider] ||
-      meta?.harness_version !== SUPPORTED_LOCAL_AGENT_VERSIONS[provider] ||
+      meta?.harness_version !== currentLocalAgentVersion(provider) ||
       !validBoundary ||
       meta?.container_image !== "mazebench-agent"
     ) {
@@ -719,15 +738,13 @@ function createAgentRunService({
     }
     const result = spawnSync(
       "docker",
-      ["image", "inspect", "docker.io/library/mazebench-agent:latest", "--format", "{{json .Config.Labels}}"],
+      ["image", "inspect", LOCAL_AGENT_IMAGE, "--format", "{{json .Config.Labels}}"],
       { encoding: "utf8", env: enrichedPathEnv(), timeout: 8000, maxBuffer: 128 * 1024 }
     );
     if (result.status !== 0) return false;
     try {
       const labels = JSON.parse(String(result.stdout || "{}"));
-      return labels["org.mazebench.local-codex.version"] === SUPPORTED_LOCAL_AGENT_VERSIONS.codex &&
-        labels["org.mazebench.local-claude.version"] === SUPPORTED_LOCAL_AGENT_VERSIONS.claude &&
-        labels["org.mazebench.local-kimi.version"] === SUPPORTED_LOCAL_AGENT_VERSIONS.kimi;
+      return imageLabelsAreCertified(labels, rootDir);
     } catch (_error) {
       return false;
     }
@@ -4671,12 +4688,21 @@ function createAgentRunService({
     // complete (for example, current builds expose Haiku in /model but omit it
     // from the --model help example). Read both so this catalog follows the
     // installed CLI instead of maintaining a stale model list here.
-    const help = spawnSync("claude", ["--help"], {
-      encoding: "utf8",
-      env: enrichedPathEnv(),
-      timeout: 5000,
-      maxBuffer: 2 * 1024 * 1024
-    });
+    const useLocalImage = localAgentImageAvailable();
+    const runClaudeCatalogCommand = (args, timeout = 5000, maxBuffer = 2 * 1024 * 1024) =>
+      spawnSync(
+        useLocalImage ? "docker" : "claude",
+        useLocalImage
+          ? ["run", "--rm", "--entrypoint", "claude", LOCAL_AGENT_IMAGE, ...args]
+          : args,
+        {
+          encoding: "utf8",
+          env: enrichedPathEnv(),
+          timeout,
+          maxBuffer
+        }
+      );
+    const help = runClaudeCatalogCommand(["--help"]);
     const helpText = String(help.stdout || help.stderr || "");
     const aliasExample = helpText.match(/alias for the latest model[\s\S]{0,180}?\((?:e\.g\.\s*)?([^)]*)\)/i);
     const detectedAliases = aliasExample
@@ -4686,14 +4712,34 @@ function createAgentRunService({
     let metadataLines = [];
     const pickerLabels = new Map();
     const pickerModelIds = new Map();
-    const executable = spawnSync("sh", ["-c", "command -v claude"], {
+    const executable = useLocalImage
+      ? { status: 1, stdout: "" }
+      : spawnSync("sh", ["-c", "command -v claude"], {
       encoding: "utf8",
       env: enrichedPathEnv(),
       timeout: 2000
-    });
+      });
     const executablePath = String(executable.stdout || "").trim();
 
-    if (executable.status === 0 && executablePath) {
+    if (useLocalImage) {
+      const pickerMetadata = spawnSync(
+        "docker",
+        [
+          "run", "--rm", "--entrypoint", "sh", LOCAL_AGENT_IMAGE, "-lc",
+          "LC_ALL=C strings \"$(command -v claude)\" | awk '/^Custom [[:alnum:]-]+ model$/ || /^[[:alnum:]-]+ [0-9]+([.][0-9]+)*([[:space:]]+-|[[:space:]]*$)/'"
+        ],
+        {
+          encoding: "utf8",
+          env: enrichedPathEnv(),
+          timeout: 10_000,
+          maxBuffer: 2 * 1024 * 1024
+        }
+      );
+      metadataLines = String(pickerMetadata.stdout || "")
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+    } else if (executable.status === 0 && executablePath) {
       // `strings` lets us read the same static labels used by /model without
       // opening an interactive session, changing the user's default, or making
       // an API request. The awk filter keeps the 200MB+ executable out of memory.
@@ -4757,11 +4803,7 @@ function createAgentRunService({
       haiku: "Latest Haiku tier — fastest responses"
     };
     const models = claudeCatalogModelsFromMetadata(metadataLines, aliases);
-    const version = spawnSync("claude", ["--version"], {
-      encoding: "utf8",
-      env: enrichedPathEnv(),
-      timeout: 5000
-    });
+    const version = runClaudeCatalogCommand(["--version"]);
     const versionText = String(version.stdout || "").trim().replace(/\s*\(Claude Code\)\s*$/i, "");
 
     return {
@@ -5077,10 +5119,11 @@ function createAgentRunService({
       );
     }
     if (!localAgentImageAvailable()) {
+      const requiredVersions = currentLocalAgentVersions();
       throw new Error(
         "The certified local-agent image is missing or stale. Run `npm run maze:build-local-agents` " +
-        `(required Codex ${SUPPORTED_LOCAL_AGENT_VERSIONS.codex}, Claude Code ${SUPPORTED_LOCAL_AGENT_VERSIONS.claude}, ` +
-        `Kimi Code ${SUPPORTED_LOCAL_AGENT_VERSIONS.kimi}).`
+        `(required Codex ${requiredVersions.codex}, Claude Code ${requiredVersions.claude}, ` +
+        `Kimi Code ${requiredVersions.kimi}).`
       );
     }
     const args = [
@@ -5294,7 +5337,7 @@ function createAgentRunService({
         display,
         harness,
         harnessConfig,
-        harnessVersion: SUPPORTED_LOCAL_AGENT_VERSIONS.codex,
+        harnessVersion: currentLocalAgentVersion("codex"),
         harnessLabel: definition.label,
         harnessBoundary: toolUse === "offline"
           ? "prime-inference/disposable-container/game-tools+isolated-python"
@@ -5639,7 +5682,7 @@ function createAgentRunService({
           model_alias: exactModelName !== requestedModelName ? requestedModelName : "",
           harness: ({ codex: "codex", claude: "claude_code", kimi: "kimi_code" })[model],
           harness_label: ({ codex: "Codex", claude: "Claude Code", kimi: "Kimi Code" })[model],
-          harness_version: SUPPORTED_LOCAL_AGENT_VERSIONS[model],
+          harness_version: currentLocalAgentVersion(model),
           harness_boundary: toolUse === "offline"
             ? "disposable-container/game-tools+isolated-python"
             : "disposable-container/game-tools-only",

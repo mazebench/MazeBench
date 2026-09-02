@@ -25,11 +25,20 @@ const {
   needsPrivateMcpServer,
   sanitizeKimiConfig
 } = require("../scripts/maze-agent-local");
+const {
+  DEFAULT_LOCAL_AGENT_VERSIONS,
+  LOCAL_AGENT_UPDATE_POLICY
+} = require("../scripts/local-agent-image");
 
 const root = path.resolve(__dirname, "..");
 const localAgentSource = fs.readFileSync(path.join(root, "scripts", "maze-agent-local.js"), "utf8");
 const agentRunsSource = fs.readFileSync(path.join(root, "server", "agent-runs.js"), "utf8");
 const localAgentDockerfile = fs.readFileSync(path.join(root, "Dockerfile"), "utf8");
+const ensureLocalAgentSource = fs.readFileSync(
+  path.join(root, "scripts", "ensure-local-agent-image.js"),
+  "utf8"
+);
+const packageJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 const workspace = path.join(os.tmpdir(), "game-only-agent-test");
 const baseConfig = {
   agentSwarmWorkspaceDir: path.join(workspace, "swarm-workspaces"),
@@ -325,14 +334,15 @@ for (const unsafeCommand of [
     /isolation|missing|non-game|widen/i
   );
 }
-assert.equal(SUPPORTED_LOCAL_CODEX_VERSION, "0.146.0");
-assert.equal(SUPPORTED_LOCAL_CLAUDE_VERSION, "2.1.220");
-assert.equal(SUPPORTED_LOCAL_KIMI_VERSION, "0.29.1");
-assert.deepEqual(SUPPORTED_LOCAL_AGENT_VERSIONS, {
-  codex: "0.146.0",
-  claude: "2.1.220",
-  kimi: "0.29.1"
-});
+const expectedLocalAgentVersions = {
+  codex: process.env.MAZEBENCH_LOCAL_CODEX_VERSION || DEFAULT_LOCAL_AGENT_VERSIONS.codex,
+  claude: process.env.MAZEBENCH_LOCAL_CLAUDE_VERSION || DEFAULT_LOCAL_AGENT_VERSIONS.claude,
+  kimi: process.env.MAZEBENCH_LOCAL_KIMI_VERSION || DEFAULT_LOCAL_AGENT_VERSIONS.kimi
+};
+assert.equal(SUPPORTED_LOCAL_CODEX_VERSION, expectedLocalAgentVersions.codex);
+assert.equal(SUPPORTED_LOCAL_CLAUDE_VERSION, expectedLocalAgentVersions.claude);
+assert.equal(SUPPORTED_LOCAL_KIMI_VERSION, expectedLocalAgentVersions.kimi);
+assert.deepEqual(SUPPORTED_LOCAL_AGENT_VERSIONS, expectedLocalAgentVersions);
 assert.match(localAgentDockerfile, /FROM mcr\.microsoft\.com\/playwright:v1\.60\.0-noble/);
 for (const packagePattern of [
   /"@openai\/codex@\$\{CODEX_VERSION\}"/,
@@ -342,8 +352,16 @@ for (const packagePattern of [
   assert.match(localAgentDockerfile, packagePattern);
 }
 for (const label of ["local-codex", "local-claude", "local-kimi"]) {
-  assert.match(localAgentDockerfile, new RegExp(`org\\.mazebench\\.${label}\\.version`));
+  assert.match(localAgentDockerfile, new RegExp("org\\.mazebench\\." + label + "\\.version"));
 }
+assert.match(localAgentDockerfile, new RegExp(LOCAL_AGENT_UPDATE_POLICY));
+assert.match(localAgentDockerfile, /local-agent\.source-fingerprint/);
+assert.match(ensureLocalAgentSource, /running candidate isolation certification/);
+assert.match(ensureLocalAgentSource, /tests\/maze-python-sandbox\.test\.js/);
+assert.match(ensureLocalAgentSource, /--cap-add", "SYS_ADMIN/);
+assert.match(ensureLocalAgentSource, /docker", \["tag", candidate, LOCAL_AGENT_IMAGE\]/);
+assert.match(packageJson.scripts.start, /ensure-local-agent-image\.js --ensure/);
+assert.match(packageJson.scripts["maze:build-local-agents"], /ensure-local-agent-image\.js --force/);
 for (const boundary of [
   /"--read-only"/,
   /"--tmpfs", config\.outDir/,

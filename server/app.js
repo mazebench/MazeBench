@@ -14,6 +14,12 @@ const { createPageRenderer } = require("./pages");
 const { createRequestRouter } = require("./router");
 const { createSolverExportService } = require("./solver-exports");
 const {
+  DEFAULT_LOCAL_AGENT_VERSIONS,
+  LOCAL_AGENT_IMAGE,
+  imageLabelsAreCertified,
+  versionsFromImageLabels
+} = require("../scripts/local-agent-image");
+const {
   ensureDirectory,
   getContentType,
   listTopLevelFiles,
@@ -263,17 +269,6 @@ const solverExports = createSolverExportService({
 // local container-mode runs.
 let agentEnvironmentCache = null;
 let agentEnvironmentPromise = null;
-const LOCAL_AGENT_IMAGE = "docker.io/library/mazebench-agent:latest";
-const LOCAL_AGENT_VERSIONS = Object.freeze({
-  codex: "0.146.0",
-  claude: "2.1.220",
-  kimi: "0.29.1"
-});
-const LOCAL_AGENT_IMAGE_LABELS = Object.freeze({
-  codex: "org.mazebench.local-codex.version",
-  claude: "org.mazebench.local-claude.version",
-  kimi: "org.mazebench.local-kimi.version"
-});
 
 // A container run needs BOTH the docker binary AND a reachable daemon. Report
 // them separately so the UI can say "install Docker" vs "start Docker".
@@ -306,14 +301,11 @@ function dockerState() {
   } catch (_error) {
     /* an invalid/missing label set is an unreviewed image */
   }
-  const imageVersions = Object.fromEntries(
-    Object.entries(LOCAL_AGENT_IMAGE_LABELS).map(([provider, label]) => [provider, String(labels[label] || "")])
-  );
+  const imageVersions = versionsFromImageLabels(labels);
   return {
     installed: true,
     running: true,
-    image: image.status === 0 && Object.entries(LOCAL_AGENT_VERSIONS)
-      .every(([provider, version]) => imageVersions[provider] === version),
+    image: image.status === 0 && imageLabelsAreCertified(labels, ROOT_DIR),
     imageVersions
   };
 }
@@ -405,6 +397,9 @@ function agentEnvironment(options = {}) {
   const primeAuthenticated =
     primeInstalled && probeCommand("prime", ["whoami"], 8000).status === 0;
   const docker = dockerState();
+  const requiredVersions = docker.image
+    ? docker.imageVersions
+    : DEFAULT_LOCAL_AGENT_VERSIONS;
   const value = {
     checking: false,
     codex: codexInstalled && codexAuth.subscription && docker.running && docker.image,
@@ -429,11 +424,11 @@ function agentEnvironment(options = {}) {
     docker_running: docker.running,
     local_agent_image: docker.image,
     local_agent_image_versions: docker.imageVersions,
-    local_agent_required_versions: LOCAL_AGENT_VERSIONS,
+    local_agent_required_versions: requiredVersions,
     // Compatibility keys retained for older Agent pages.
     local_codex_image: docker.image,
     local_codex_image_version: docker.imageVersions.codex || "",
-    local_codex_required_version: LOCAL_AGENT_VERSIONS.codex,
+    local_codex_required_version: requiredVersions.codex,
     // Prime v1 evals run via `uv run eval`; the `prime` CLI is only needed for
     // the model catalog / login, so `uv` is what gates launching a Prime run.
     prime: primeInstalled && primeAuthenticated,
@@ -511,11 +506,13 @@ async function agentEnvironmentAsync(options = {}) {
     } catch (_error) {
       /* an invalid/missing label set is an unreviewed image */
     }
-    const imageVersions = Object.fromEntries(
-      Object.entries(LOCAL_AGENT_IMAGE_LABELS).map(([provider, label]) => [provider, String(imageLabels[label] || "")])
+    const imageVersions = versionsFromImageLabels(imageLabels);
+    const localAgentImage = Boolean(
+      imageResult && imageLabelsAreCertified(imageLabels, ROOT_DIR)
     );
-    const localAgentImage = Boolean(imageResult && Object.entries(LOCAL_AGENT_VERSIONS)
-      .every(([provider, version]) => imageVersions[provider] === version));
+    const requiredVersions = localAgentImage
+      ? imageVersions
+      : DEFAULT_LOCAL_AGENT_VERSIONS;
     const value = {
       checking: false,
       codex: codexInstalled && codexAuth.subscription && dockerRunning && localAgentImage,
@@ -539,10 +536,10 @@ async function agentEnvironmentAsync(options = {}) {
       docker_running: Boolean(dockerRunning),
       local_agent_image: localAgentImage,
       local_agent_image_versions: imageVersions,
-      local_agent_required_versions: LOCAL_AGENT_VERSIONS,
+      local_agent_required_versions: requiredVersions,
       local_codex_image: localAgentImage,
       local_codex_image_version: imageVersions.codex || "",
-      local_codex_required_version: LOCAL_AGENT_VERSIONS.codex,
+      local_codex_required_version: requiredVersions.codex,
       prime: primeInstalled && primeAuthenticated,
       prime_installed: primeInstalled,
       prime_authenticated: primeAuthenticated,
