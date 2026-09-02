@@ -18,6 +18,8 @@ assert.match(pagesSource, /data-x-axis="input_tokens"/);
 assert.match(chromeSource, /href="\/leaderboard">Leaderboard/);
 assert.match(routerSource, /agentRuns\.getLeaderboardRun/);
 assert.match(clientSource, /fable-5-1/);
+assert.match(clientSource, /companyForRun\(left\)\.localeCompare\(companyForRun\(right\)\)/);
+assert.match(clientSource, /Number\(right\.gem_count\).*Number\(left\.gem_count\)/);
 assert.match(clientSource, /compactStepSeries/);
 assert.match(themeSource, /\.leaderboard-chart__line/);
 

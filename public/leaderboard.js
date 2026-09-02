@@ -132,7 +132,22 @@
       elements.status.textContent = "No starred runs";
       return;
     }
-    elements.picker.innerHTML = state.runs.map((run, index) => {
+    const grouped = [...state.runs]
+      .sort((left, right) =>
+        companyForRun(left).localeCompare(companyForRun(right)) ||
+        (Number(right.gem_count) || 0) - (Number(left.gem_count) || 0) ||
+        String(right.created_at || "").localeCompare(String(left.created_at || ""))
+      )
+      .reduce((groups, run) => {
+        const company = companyForRun(run);
+        if (!groups.has(company)) groups.set(company, []);
+        groups.get(company).push(run);
+        return groups;
+      }, new Map());
+    elements.picker.innerHTML = [...grouped].map(([company, runs]) => {
+      const topGems = Math.max(0, ...runs.map((run) => Number(run.gem_count) || 0));
+      const options = runs.map((run) => {
+      const index = state.runs.findIndex((candidate) => candidate.id === run.id);
       const selected = state.selected.has(run.id);
       const loading = state.loading.has(run.id);
       const color = colorForRun(run.id, index);
@@ -145,6 +160,14 @@
         <span class="leaderboard-run-option__score">${formatInteger(run.gem_count)} <small>gems</small></span>
         ${loading ? '<span class="leaderboard-run-option__loading" aria-label="Loading"></span>' : ""}
       </button>`;
+      }).join("");
+      return `<section class="leaderboard-company" aria-labelledby="leaderboard-company-${slug(company)}">
+        <header class="leaderboard-company__head">
+          <h3 id="leaderboard-company-${slug(company)}">${escapeText(company)}</h3>
+          <span>${runs.length} starred run${runs.length === 1 ? "" : "s"} · top score ${formatInteger(topGems)} gems</span>
+        </header>
+        <div class="leaderboard-company__runs">${options}</div>
+      </section>`;
     }).join("");
     elements.picker.querySelectorAll("[data-run-id]").forEach((button) => {
       button.addEventListener("click", () => {
@@ -381,6 +404,37 @@
     const tools = run?.tool_use === "offline" ? "Python off" : run?.tool_use === "read-only" ? "Python read only" : run?.tool_use ? `Python ${run.tool_use}` : "";
     const date = run?.created_at ? new Date(run.created_at).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "";
     return [mode, tools, date].filter(Boolean).join(" · ");
+  }
+
+  function companyForRun(run) {
+    const model = String(run?.model_name || "").toLowerCase();
+    const prefix = model.split("/")[0];
+    if (model.startsWith("claude-") || prefix === "anthropic") return "Anthropic";
+    if (model.startsWith("gpt-") || prefix === "openai") return "OpenAI";
+    if (model.startsWith("gemini-") || prefix === "google") return "Google";
+    if (model.startsWith("kimi/") || prefix === "moonshotai") return "Moonshot AI";
+    if (model.startsWith("grok-") || prefix === "x-ai") return "xAI";
+    const companies = {
+      deepseek: "DeepSeek",
+      meta: "Meta",
+      "meta-llama": "Meta",
+      minimax: "MiniMax",
+      nvidia: "NVIDIA",
+      qwen: "Alibaba",
+      stealth: "Stealth",
+      xiaomi: "Xiaomi",
+      "z-ai": "Z.ai"
+    };
+    if (companies[prefix]) return companies[prefix];
+    if (run?.provider === "claude") return "Anthropic";
+    if (run?.provider === "codex") return "OpenAI";
+    if (run?.provider === "kimi") return "Moonshot AI";
+    if (run?.provider === "prime") return "Prime Intellect";
+    return prefix ? prefix.replace(/(^|[-_])\w/g, (match) => match.replace(/[-_]/, " ").toUpperCase()) : "Other";
+  }
+
+  function slug(value) {
+    return String(value || "company").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "company";
   }
 
   function colorForRun(id, fallbackIndex = 0) {
