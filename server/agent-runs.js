@@ -136,6 +136,78 @@ function claudeReasoningLevels(modelId) {
   ];
 }
 
+function compareClaudeModelVersions(left, right) {
+  const leftParts = String(left).split(".").map(Number);
+  const rightParts = String(right).split(".").map(Number);
+  const length = Math.max(leftParts.length, rightParts.length);
+
+  for (let index = 0; index < length; index += 1) {
+    const difference = (rightParts[index] || 0) - (leftParts[index] || 0);
+    if (difference) return difference;
+  }
+  return 0;
+}
+
+function claudeCatalogModelsFromMetadata(metadataLines, detectedAliases = []) {
+  const lines = Array.isArray(metadataLines)
+    ? metadataLines.map((line) => String(line || "").trim()).filter(Boolean)
+    : [];
+  const pickerFamilies = lines.flatMap((line) => {
+    const match = line.match(/^Custom ([a-z][a-z0-9-]*) model$/i);
+    return match ? [match[1].toLowerCase()] : [];
+  });
+  const aliases = [...new Set([...detectedAliases, ...pickerFamilies]
+    .map((alias) => String(alias || "").trim().toLowerCase())
+    .filter((alias) => /^[a-z][a-z0-9-]*$/.test(alias)))];
+  const descriptions = {
+    fable: "Latest Fable tier — highest capability",
+    opus: "Latest Opus tier — deep reasoning",
+    sonnet: "Latest Sonnet tier — balanced speed and capability",
+    haiku: "Latest Haiku tier — fastest responses"
+  };
+
+  return aliases.flatMap((alias) => {
+    const escapedAlias = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const versionPattern = new RegExp(
+      "^" + escapedAlias + "\\s+(\\d+(?:\\.\\d+)*)\\s*(?:-|$)",
+      "i"
+    );
+    const versions = [...new Set(lines.flatMap((line) => {
+      const match = line.match(versionPattern);
+      return match ? [match[1]] : [];
+    }))].sort(compareClaudeModelVersions);
+    const title = alias.charAt(0).toUpperCase() + alias.slice(1);
+
+    // Fable releases are distinct benchmark choices. Their picker entries must
+    // submit the full immutable id instead of the moving fable alias.
+    if (alias === "fable" && versions.length) {
+      return versions.map((version, index) => {
+        const id = "claude-fable-" + version.replace(/\./g, "-");
+        return {
+          id,
+          label: "Fable " + version,
+          description: "Exact Claude Fable " + version + " model" +
+            (index ? " (previous release)" : " — highest capability"),
+          resolved_model_id: id,
+          reasoning_levels: claudeReasoningLevels(id)
+        };
+      });
+    }
+
+    const version = versions[0];
+    const resolvedModelId = version
+      ? "claude-" + alias + "-" + version.replace(/\./g, "-")
+      : "";
+    return [{
+      id: alias,
+      label: version ? title + " " + version : title + " (latest)",
+      description: descriptions[alias] || "Latest model behind the " + alias + " alias",
+      resolved_model_id: resolvedModelId,
+      reasoning_levels: claudeReasoningLevels(resolvedModelId)
+    }];
+  });
+}
+
 // Keep Prime's runner contract provider-neutral. Provider-specific extensions
 // are intentionally excluded, but every Prime model gets the stable
 // off/low/medium/high choice exposed by the runner.
@@ -4611,6 +4683,7 @@ function createAgentRunService({
       ? [...aliasExample[1].matchAll(/['"]([a-z][a-z0-9-]*)['"]/gi)].map((match) => match[1].toLowerCase())
       : [];
 
+    let metadataLines = [];
     const pickerLabels = new Map();
     const pickerModelIds = new Map();
     const executable = spawnSync("sh", ["-c", "command -v claude"], {
@@ -4639,7 +4712,7 @@ function createAgentRunService({
           maxBuffer: 2 * 1024 * 1024
         }
       );
-      const metadataLines = String(pickerMetadata.stdout || "")
+      metadataLines = String(pickerMetadata.stdout || "")
         .split(/\r?\n/)
         .map((line) => line.trim())
         .filter(Boolean);
@@ -4683,6 +4756,7 @@ function createAgentRunService({
       sonnet: "Latest Sonnet tier — balanced speed and capability",
       haiku: "Latest Haiku tier — fastest responses"
     };
+    const models = claudeCatalogModelsFromMetadata(metadataLines, aliases);
     const version = spawnSync("claude", ["--version"], {
       encoding: "utf8",
       env: enrichedPathEnv(),
@@ -4691,23 +4765,17 @@ function createAgentRunService({
     const versionText = String(version.stdout || "").trim().replace(/\s*\(Claude Code\)\s*$/i, "");
 
     return {
-      models: aliases.map((alias) => ({
-        id: alias,
-        label: pickerLabels.get(alias) || `${alias.charAt(0).toUpperCase()}${alias.slice(1)} (latest)`,
-        description: descriptions[alias] || `Latest model behind the ${alias} alias`,
-        resolved_model_id: pickerModelIds.get(alias) || "",
-        reasoning_levels: claudeReasoningLevels(pickerModelIds.get(alias) || "")
-      })),
+      models,
       source: versionText ? `Claude Code ${versionText}` : "Installed Claude Code CLI",
       checked_at: modelCatalogCheckedAt(),
-      default_model_id: aliases[0] || "",
+      default_model_id: models[0]?.id || "",
       // The CLI accepts this complete syntax set, but each model above carries
       // its own supported subset. Versioned Claude family ids deliberately use
       // a family-level rule so newly released aliases keep their effort control.
       reasoning_levels: ["low", "medium", "high", "xhigh", "max"],
       reasoning_default: "",
       note: pickerLabels.size
-        ? "Models and display versions detected from this installed Claude Code build. Aliases stay dynamic when Claude rolls them forward."
+        ? "Models detected from this installed Claude Code build. Fable releases launch by exact full model id."
         : detectedAliases.length
           ? "Aliases detected from the installed CLI; this build did not expose exact picker labels."
           : "Claude Code did not expose a model list. Use Custom… for a full model id."
@@ -6984,6 +7052,7 @@ function createAgentRunService({
 module.exports = {
   apiPricingForRun,
   branchLaunchParams,
+  claudeCatalogModelsFromMetadata,
   claudeReasoningLevels,
   collectedAllWorldGems,
   createAgentRunService,
