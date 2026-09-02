@@ -141,6 +141,76 @@ function claudeReasoningLevels(modelId) {
   ];
 }
 
+function compareClaudeModelVersions(left, right) {
+  const leftParts = String(left).split(".").map(Number);
+  const rightParts = String(right).split(".").map(Number);
+  const length = Math.max(leftParts.length, rightParts.length);
+
+  for (let index = 0; index < length; index += 1) {
+    const difference = (rightParts[index] || 0) - (leftParts[index] || 0);
+    if (difference) return difference;
+  }
+  return 0;
+}
+
+function claudeCatalogModelsFromMetadata(metadataLines, detectedAliases = []) {
+  const lines = Array.isArray(metadataLines)
+    ? metadataLines.map((line) => String(line || "").trim()).filter(Boolean)
+    : [];
+  const pickerFamilies = lines.flatMap((line) => {
+    const match = line.match(/^Custom ([a-z][a-z0-9-]*) model$/i);
+    return match ? [match[1].toLowerCase()] : [];
+  });
+  const aliases = [...new Set([...detectedAliases, ...pickerFamilies]
+    .map((alias) => String(alias || "").trim().toLowerCase())
+    .filter((alias) => /^[a-z][a-z0-9-]*$/.test(alias)))];
+  const descriptions = {
+    fable: "Latest Fable tier — highest capability",
+    opus: "Latest Opus tier — deep reasoning",
+    sonnet: "Latest Sonnet tier — balanced speed and capability",
+    haiku: "Latest Haiku tier — fastest responses"
+  };
+
+  return aliases.flatMap((alias) => {
+    const escapedAlias = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const versionPattern = new RegExp(
+      "^" + escapedAlias + "\\s+(\\d+(?:\\.\\d+)*)\\s*(?:-|$)",
+      "i"
+    );
+    const versions = [...new Set(lines.flatMap((line) => {
+      const match = line.match(versionPattern);
+      return match ? [match[1]] : [];
+    }))].sort(compareClaudeModelVersions);
+    const title = alias.charAt(0).toUpperCase() + alias.slice(1);
+
+    if (alias === "fable" && versions.length) {
+      return versions.map((version, index) => {
+        const id = "claude-fable-" + version.replace(/\./g, "-");
+        return {
+          id,
+          label: "Fable " + version,
+          description: "Exact Claude Fable " + version + " model" +
+            (index ? " (previous release)" : " — highest capability"),
+          resolved_model_id: id,
+          reasoning_levels: claudeReasoningLevels(id)
+        };
+      });
+    }
+
+    const version = versions[0];
+    const resolvedModelId = version
+      ? "claude-" + alias + "-" + version.replace(/\./g, "-")
+      : "";
+    return [{
+      id: alias,
+      label: version ? title + " " + version : title + " (latest)",
+      description: descriptions[alias] || "Latest model behind the " + alias + " alias",
+      resolved_model_id: resolvedModelId,
+      reasoning_levels: claudeReasoningLevels(resolvedModelId)
+    }];
+  });
+}
+
 // Keep Prime's runner contract provider-neutral. Provider-specific extensions
 // are intentionally excluded, but every Prime model gets the stable
 // off/low/medium/high choice exposed by the runner.
@@ -1639,8 +1709,20 @@ function createAgentRunService({
       );
       return readRunMeta(runId);
     } catch (error) {
-      console.error(`Could not auto-continue run ${runId}: ${error instanceof Error ? error.message : String(error)}`);
-      return null;
+      const current = readRunMeta(runId) || meta;
+      if (["pausing", "paused", "stopping", "stopped"].includes(current.status)) {
+        return current;
+      }
+      const detail = error instanceof Error ? error.message : String(error);
+      const failure = {
+        provider: "local-runtime",
+        status: null,
+        message: `Automatic continuation paused: ${detail}`
+      };
+      const paused = providerBackoffMeta(runId, current, failure, current.exit_code ?? null);
+      writeRunMeta(runId, paused);
+      console.error(`Could not auto-continue run ${runId}; it will retry automatically: ${detail}`);
+      return paused;
     }
   }
 
@@ -4720,6 +4802,7 @@ function createAgentRunService({
       ? [...aliasExample[1].matchAll(/['"]([a-z][a-z0-9-]*)['"]/gi)].map((match) => match[1].toLowerCase())
       : [];
 
+    let metadataLines = [];
     const pickerLabels = new Map();
     const pickerModelIds = new Map();
     const executable = useLocalImage
@@ -4768,7 +4851,7 @@ function createAgentRunService({
           maxBuffer: 2 * 1024 * 1024
         }
       );
-      const metadataLines = String(pickerMetadata.stdout || "")
+      metadataLines = String(pickerMetadata.stdout || "")
         .split(/\r?\n/)
         .map((line) => line.trim())
         .filter(Boolean);
@@ -7136,6 +7219,7 @@ function createAgentRunService({
 module.exports = {
   apiPricingForRun,
   branchLaunchParams,
+  claudeCatalogModelsFromMetadata,
   claudeReasoningLevels,
   collectedAllWorldGems,
   createAgentRunService,
