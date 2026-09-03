@@ -64,6 +64,11 @@ Prime Intellect Verifiers:
   mazebench prime install
   mazebench prime eval   [model=openai/gpt-5-nano n=1 r=1 max_turns=8]
   mazebench prime vision [model=openai/gpt-4.1-mini width=512 height=512 max_turns=8]
+
+Local AMD GPU training (PPO against the maze-bridge engine):
+  mazebench train-local probe
+  mazebench train-local train [--envs 8 --updates 200]
+  mazebench train-local eval --checkpoint outputs/local-train/latest.pt
 Repo root is auto-detected; override with MAZEBENCH_REPO_ROOT.
 """
 
@@ -198,10 +203,10 @@ def _require(binary: str, hint: str) -> None:
         raise CliError(f"`{binary}` was not found on PATH. {hint}")
 
 
-def _run(cmd: list[str], cwd: Path) -> int:
+def _run(cmd: list[str], cwd: Path, env: dict[str, str] | None = None) -> int:
     printable = " ".join(str(part) for part in cmd)
     print(f"$ {printable}", file=sys.stderr)
-    return subprocess.call(cmd, cwd=str(cwd))
+    return subprocess.call(cmd, cwd=str(cwd), env=env)
 
 
 def _pairs_to_kv(pairs: dict[str, str]) -> list[str]:
@@ -615,6 +620,25 @@ def run_prime(
     return 0 if action == "help" else 2
 
 
+def _train_local_python(root: Path) -> str:
+    windows = root / ".venv" / "Scripts" / "python.exe"
+    posix = root / ".venv" / "bin" / "python"
+    if windows.is_file():
+        return str(windows)
+    if posix.is_file():
+        return str(posix)
+    return sys.executable
+
+
+def run_train_local(root: Path, rest: list[str]) -> int:
+    python = _train_local_python(root)
+    env = os.environ.copy()
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = str(root) + (os.pathsep + existing if existing else "")
+    cmd = [python, "-m", "train.local", *rest]
+    return _run(cmd, root, env=env)
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
 
@@ -646,6 +670,9 @@ def main(argv: list[str] | None = None) -> int:
             return run_build(root, pairs, flags)
         if command == "prime":
             return run_prime(root, words[1:], pairs, flags)
+        if command in ("train-local", "train_local"):
+            rest = words[1:] + _pairs_to_kv(pairs) + flags
+            return run_train_local(root, rest)
         if command == "replay":
             return run_replay(root, words[1:], pairs, flags)
         if command == "ascii":

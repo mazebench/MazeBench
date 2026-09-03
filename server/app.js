@@ -5,6 +5,7 @@ const { execFile, spawnSync } = require("child_process");
 const { promisify } = require("util");
 const { createAgentRunService, enrichedPathEnv } = require("./agent-runs");
 const { createTrainingService } = require("./training");
+const { createLocalTrainStore } = require("./train-local");
 const { createLocalBuildWorldService } = require("./build-worlds-local");
 const { createRemoteService } = require("./remote");
 const { createMazeLevelService } = require("./maze-levels");
@@ -59,6 +60,11 @@ const PUBLIC_FILE_ROUTES = new Map(
     "/agent.js",
     "/agent-run.js",
     "/train.js",
+    "/train-chart.js",
+    "/train-env.js",
+    "/train-ppo-webgpu.js",
+    "/train-profile.js",
+    "/train-worker.js",
     "/site.css",
     "/build-theme.css",
     "/author-theme.css",
@@ -245,6 +251,7 @@ const training = createTrainingService({
   rootDir: ROOT_DIR,
   worldMaps
 });
+const trainLocal = createLocalTrainStore(ROOT_DIR);
 
 const remote = createRemoteService({
   buildWorlds,
@@ -752,6 +759,7 @@ const { handleRequest } = createRequestRouter({
   sendJson,
   sendRedirect,
   solverExports,
+  trainLocal,
   training,
   worldMaps,
   writeMazePreviewImageData

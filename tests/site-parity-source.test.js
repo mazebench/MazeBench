@@ -98,8 +98,10 @@ try {
     codeChallenge,
     "the browser code must be bound to the verifier held only by the local server"
   );
-  const remoteConfigMode = fs.statSync(path.join(remoteConfigRoot, "data", "remote.json")).mode & 0o777;
-  assert.equal(remoteConfigMode, 0o600, "the local hosted-session cache must be owner-readable only");
+  if (process.platform !== "win32") {
+    const remoteConfigMode = fs.statSync(path.join(remoteConfigRoot, "data", "remote.json")).mode & 0o777;
+    assert.equal(remoteConfigMode, 0o600, "the local hosted-session cache must be owner-readable only");
+  }
 } finally {
   fs.rmSync(remoteConfigRoot, { recursive: true, force: true });
 }
@@ -126,13 +128,11 @@ assert.match(kimiLogo, /M9\.39 13\.9501L17\.82 5\.59012/);
 assert.match(kimiLogo, /fill="black"/);
 assert.match(siteTheme, /img\[src\$="\/kimi\.svg"\][\s\S]*?object-fit: contain/);
 
-assert.match(
-  pages,
-  /id="train-model-loading" class="models-loading" role="status" aria-live="polite"><span class="inline-spinner" aria-hidden="true"><\/span><span class="models-loading__label">Loading models<\/span>/
-);
+assert.match(pages, /WebGPU PPO/);
+assert.match(pages, /id="episode-grid"/);
+assert.match(pages, /rel="preload" as="script" href="\/maze-engine\.js"/);
 assert.match(siteTheme, /\.inline-spinner \{[\s\S]*?animation: loading-spin 0\.85s linear infinite/);
 assert.match(siteTheme, /@keyframes loading-spin \{[\s\S]*?transform: rotate\(360deg\)/);
-assert.match(pages, /rel="preload" as="image" href="\/logos\/codex\.png"[^>]*fetchpriority="high"/);
 assert.doesNotMatch(pages, /rel="preload" as="image" href="\/logos\/claude\.png"/);
 assert.doesNotMatch(pages, /rel="preload" as="image" href="\/logos\/kimi\.svg"/);
 assert.match(appSource, /"\/logos\/kimi\.svg"/);
