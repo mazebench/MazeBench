@@ -16,6 +16,17 @@ function deadMask() {
   return [false, false, false, false, false, false, false, false, true, true];
 }
 
+function installSignalExits(proc = process) {
+  const onInterrupt = () => proc.exit(130);
+  const onTerminate = () => proc.exit(143);
+  proc.once("SIGINT", onInterrupt);
+  proc.once("SIGTERM", onTerminate);
+  return () => {
+    proc.off("SIGINT", onInterrupt);
+    proc.off("SIGTERM", onTerminate);
+  };
+}
+
 function destroyCachedBuffers(value, seen = new Set()) {
   if (!value || typeof value !== "object" || seen.has(value)) return;
   seen.add(value);
@@ -422,13 +433,7 @@ async function runSweep(flags) {
       : `envs=${core.SPACE.nEnvs.filter((value) => value <= flags.maxEnvs).join(",")} searched`;
   let stop = false;
   let stopReason = "";
-  const onStop = () => {
-    stop = true;
-    stopReason = "signal received";
-    console.log("stopping after current trial…");
-  };
-  process.on("SIGINT", onStop);
-  process.on("SIGTERM", onStop);
+  const removeSignalExits = installSignalExits();
   console.log(
     `Dawn ${ready.adapter || adapterLabel(gpu)}  ${envLabel}  ${flags.seconds}s per trial  ${flags.trials} settings per round`
   );
@@ -495,8 +500,7 @@ async function runSweep(flags) {
       }
     }
   } finally {
-    process.off("SIGINT", onStop);
-    process.off("SIGTERM", onStop);
+    removeSignalExits();
     state.resources = resourceMonitor.summary();
     if (stopReason) state.stopReason = stopReason;
     state = core.saveState(dir, state);
@@ -533,4 +537,12 @@ if (require.main === module) {
   });
 }
 
-module.exports = { collect, flatten, releaseTrialBuffers, reseedPpo, runTrial, startPlayData };
+module.exports = {
+  collect,
+  flatten,
+  installSignalExits,
+  releaseTrialBuffers,
+  reseedPpo,
+  runTrial,
+  startPlayData
+};

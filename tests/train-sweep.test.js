@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const core = require("../scripts/train-sweep-core");
-const { releaseTrialBuffers } = require("../scripts/train-sweep");
+const { installSignalExits, releaseTrialBuffers } = require("../scripts/train-sweep");
 const { test } = require("./helpers/train-env-fixture");
 
 function tempDir() {
@@ -242,6 +242,26 @@ async function main() {
     assert.equal(blocked.summary().pausedMs, 1000);
     assert.equal(core.isResourceFailure(new Error("WebGPU device was lost")), true);
     assert.equal(core.isResourceFailure(new Error("bad level")), false);
+  });
+
+  await test("interrupt signals exit immediately instead of waiting for the trial", () => {
+    const handlers = new Map();
+    const exitCodes = [];
+    const proc = {
+      once: (signal, handler) => handlers.set(signal, handler),
+      off: (signal, handler) => {
+        if (handlers.get(signal) === handler) handlers.delete(signal);
+      },
+      exit: (code) => exitCodes.push(code)
+    };
+    const removeSignalExits = installSignalExits(proc);
+
+    handlers.get("SIGINT")();
+    handlers.get("SIGTERM")();
+    assert.deepEqual(exitCodes, [130, 143]);
+
+    removeSignalExits();
+    assert.equal(handlers.size, 0);
   });
 
   await test("trial cleanup destroys cached GPU buffers between shapes", () => {
