@@ -86,7 +86,7 @@ function createPageRenderer({
       title,
       description,
       extraHeadHtml: `<link rel="stylesheet" href="/build-theme.css?v=20260719-build-card-gems-1">
-    <link rel="stylesheet" href="/local-site.css?v=20260722-json-grid-1">
+    <link rel="stylesheet" href="/local-site.css?v=20260831-saloppo-1">
     ${extraHeadHtml}`
     })}
   </head>
@@ -205,7 +205,7 @@ function createPageRenderer({
       main: `<div class="world-grid home-mode-grid">
           ${modeCard("/build", "build", "Build and Play", "Create, edit, and play the official Maze Bench environment or your local drafts.")}
           ${modeCard("/agent", "agent", "Agent", "Run a model through isolated, named game controls and watch live.")}
-          ${modeCard("/train", "train", "Train", "Train models on Maze Bench with Prime Verifiers.")}
+          ${modeCard("/train", "train", "Train", "Run local WebGPU PPO on Maze Bench and inspect episodes.")}
         </div>
         ${otherGamesSection}`
     });
@@ -258,7 +258,7 @@ function createPageRenderer({
     <link rel="stylesheet" href="/styles.css">
     <link rel="stylesheet" href="/site.css">
     <link rel="stylesheet" href="/play-theme.css?v=${PLAY_ASSET_VERSION}">
-    <link rel="stylesheet" href="/local-site.css?v=20260722-json-grid-1">`;
+    <link rel="stylesheet" href="/local-site.css?v=20260831-saloppo-1">`;
   }
 
   function renderPlayPage(game, level) {
@@ -469,7 +469,7 @@ function createPageRenderer({
     ${includeRuntimeStyles ? '<link rel="stylesheet" href="/styles.css">' : ""}
     <link rel="stylesheet" href="/site.css">
     <link rel="stylesheet" href="/author-theme.css">
-    ${includeLocalSite ? '<link rel="stylesheet" href="/local-site.css?v=20260722-json-grid-1">' : ""}`;
+    ${includeLocalSite ? '<link rel="stylesheet" href="/local-site.css?v=20260831-saloppo-1">' : ""}`;
   }
 
   function renderAuthorPage(game, level) {
@@ -712,8 +712,9 @@ function createPageRenderer({
   function renderTrainPage() {
     const game = getGame("maze");
     const trainData = {
-      bootstrapUrl: "/api/train/bootstrap",
-      runsUrl: "/api/train/runs?limit=10",
+      bootstrapUrl: "/api/train/local/bootstrap",
+      runsUrl: "/api/train/local/runs",
+      workerUrl: "/train-worker.js?v=20260901-gpu-rollout-19",
       environment: {
         id: "maze",
         title: game?.name || "Maze Bench",
@@ -726,103 +727,117 @@ function createPageRenderer({
     return renderSitePage({
       title: "Train — Maze Bench",
       bodyClass: "train-page",
-      extraHeadHtml: `<link rel="preload" as="image" href="/logos/codex.png" type="image/png" fetchpriority="high">
-    <link rel="preload" as="image" href="/logos/prime.png" type="image/png" fetchpriority="high">`,
+      extraHeadHtml: `<link rel="preload" as="script" href="/maze-engine.js">
+    <link rel="preload" as="script" href="/train-env.js?v=20260901-gpu-rollout-19">
+    <link rel="preload" as="script" href="/train-chart.js?v=20260831-chart-6">
+    <link rel="preload" as="script" href="/train.js?v=20260831-chart-6">`,
       main: `<div class="page-head train-page-head">
           <h1>Train</h1>
-          <p id="train-status" class="author-status" role="status" aria-live="polite"></p>
+          <p id="train-status" class="author-status" role="status" aria-live="polite">Local WebGPU PPO</p>
+          <span id="train-readiness" class="train-readiness">CHECKING GPU…</span>
         </div>
-        <section class="panel agent-composer train-composer" aria-label="Launch training">
+        <section class="panel agent-composer train-composer" aria-label="WebGPU PPO training">
           <div class="composer-head train-composer__head">
-            <h2>New training run</h2>
-            <span id="train-readiness" class="train-readiness">Checking Prime…</span>
+            <h2>WebGPU PPO</h2>
+            <span id="train-adapter" class="train-adapter">Browser GPU</span>
           </div>
-
-          <section class="composer-section train-section train-section--model">
-            <div class="composer-section-title"><span class="composer-step">01</span><div><h3>Base model</h3></div></div>
-            <div id="train-model-loading" class="models-loading" role="status" aria-live="polite"><span class="inline-spinner" aria-hidden="true"></span><span class="models-loading__label">Loading models</span></div>
-            <div id="train-model-picker" class="train-model-grid" role="radiogroup" aria-label="Base model" hidden></div>
-          </section>
-
-          <section id="train-observation-section" class="composer-section train-section" hidden>
-            <div class="composer-section-title"><span class="composer-step">02</span><div><h3>Observation mode</h3></div></div>
-            <div class="animated-segmented train-segmented" id="train-observation-picker" role="radiogroup" aria-label="Observation mode">
-              <span class="segmented__glider" aria-hidden="true"></span>
-              <button type="button" class="segmented__option" data-observation="ascii" aria-pressed="false"><span class="segmented__icon">TXT</span><span>Text</span></button>
-              <button type="button" class="segmented__option" data-observation="vision" aria-pressed="false" disabled title="Hosted Vision is coming soon"><span class="segmented__icon">IMG</span><span>Vision soon</span></button>
+          <p class="train-copy">Trains a small policy on the Maze Bench engine in this browser using a fused WebGPU collect (one GPU dispatch per update). The discrete GPU is selected through WebGPU. Episodes can be scrubbed on the right as they finish.</p>
+          <div class="train-reward-grid">
+            <label class="train-reward-card train-reward-card--gems">
+              <span class="train-reward-card__icon">${TRAIN_REWARD_ICONS.gems}</span>
+              <span class="train-reward-card__copy"><strong>Collecting gems</strong><small>per gem</small></span>
+              <input id="train-reward-gems" type="number" min="0" max="100" step="0.05" inputmode="decimal">
+            </label>
+            <label class="train-reward-card train-reward-card--rooms">
+              <span class="train-reward-card__icon">${TRAIN_REWARD_ICONS.rooms}</span>
+              <span class="train-reward-card__copy"><strong>New rooms</strong><small>per room</small></span>
+              <input id="train-reward-rooms" type="number" min="0" max="100" step="0.05" inputmode="decimal">
+            </label>
+            <label class="train-reward-card train-reward-card--blocks">
+              <span class="train-reward-card__icon">${TRAIN_REWARD_ICONS.blocks}</span>
+              <span class="train-reward-card__copy"><strong>Pushing blocks</strong><small>per novel position</small></span>
+              <input id="train-reward-blocks" type="number" min="0" max="100" step="0.05" inputmode="decimal">
+            </label>
+          </div>
+          <div class="train-settings-grid">
+            <label class="field"><span>Parallel envs</span><input id="train-envs" type="number" min="1" max="16" inputmode="numeric"></label>
+            <label class="field"><span>Steps per update</span><input id="train-num-steps" type="number" min="8" max="256" inputmode="numeric"></label>
+            <label class="field"><span>Actions per episode</span><input id="train-max-actions" type="number" min="8" max="10000" inputmode="numeric"></label>
+            <label class="field"><span>Updates</span><input id="train-updates" type="number" min="1" max="100000" inputmode="numeric"></label>
+            <label class="field"><span>Novelty bonus</span><input id="train-novelty" type="number" min="0" max="1" step="0.005" inputmode="decimal"></label>
+            <label class="field"><span>Start room</span><input id="train-level" type="text" spellcheck="false"></label>
+            <label class="field"><span>Algorithm</span>
+              <select id="train-algorithm">
+                <option value="ppo" selected>WebGPU PPO</option>
+                <option value="saloppo">SaloPPO</option>
+              </select>
+            </label>
+          </div>
+          <div class="train-launch-dock">
+            <div class="train-launch-summary">
+              <strong id="train-launch-model">WebGPU MLP policy</strong>
+              <span id="train-launch-environment">Maze Bench · ${trainData.environment.room_total} rooms · ${trainData.environment.gem_total} gems</span>
             </div>
-          </section>
-
-          <section id="train-rewards-section" class="composer-section train-section" hidden>
-            <div class="composer-section-title"><span class="composer-step">03</span><div><h3>Reward values</h3></div></div>
-            <div class="train-reward-grid">
-              <label class="train-reward-card train-reward-card--gems">
-                <span class="train-reward-card__icon">${TRAIN_REWARD_ICONS.gems}</span>
-                <span class="train-reward-card__copy"><strong>Collecting gems</strong><small>per gem</small></span>
-                <input id="train-reward-gems" type="number" min="0" max="100" step="0.05" inputmode="decimal">
-              </label>
-              <label class="train-reward-card train-reward-card--rooms">
-                <span class="train-reward-card__icon">${TRAIN_REWARD_ICONS.rooms}</span>
-                <span class="train-reward-card__copy"><strong>New rooms</strong><small>per room</small></span>
-                <input id="train-reward-rooms" type="number" min="0" max="100" step="0.05" inputmode="decimal">
-              </label>
-              <label class="train-reward-card train-reward-card--blocks">
-                <span class="train-reward-card__icon">${TRAIN_REWARD_ICONS.blocks}</span>
-                <span class="train-reward-card__copy"><strong>Pushing blocks</strong><small>per novel position</small></span>
-                <input id="train-reward-blocks" type="number" min="0" max="100" step="0.05" inputmode="decimal">
-              </label>
-            </div>
-          </section>
-
-          <section id="train-rollout-section" class="composer-section train-section" hidden>
-            <div class="composer-section-title"><span class="composer-step">04</span><div><h3>Rollouts</h3></div></div>
-            <div class="train-settings-grid">
-              <label class="field"><span>Actions per rollout</span><input id="train-max-actions" type="number" min="1" max="100000" inputmode="numeric"></label>
-              <label class="field"><span>Rollouts per example</span><input id="train-rollouts" type="number" min="2" max="128" inputmode="numeric"></label>
-              <label class="field"><span>Tokens per turn</span><input id="train-max-tokens" type="number" min="64" max="131072" inputmode="numeric"></label>
-            </div>
-          </section>
-
-          <section id="train-settings-section" class="composer-section train-section" hidden>
-            <div class="composer-section-title"><span class="composer-step">05</span><div><h3>Training</h3></div></div>
-            <div class="train-settings-grid">
-              <label class="field"><span>Training steps</span><input id="train-max-steps" type="number" min="1" max="100000" inputmode="numeric"></label>
-              <label class="field"><span>Batch size</span><input id="train-batch-size" type="number" min="2" max="8192" inputmode="numeric"></label>
-              <label class="field"><span>Temperature</span><input id="train-temperature" type="number" min="0" max="2" step="0.05" inputmode="decimal"></label>
-            </div>
-          </section>
-
-          <section id="train-launch-section" class="composer-section composer-section--run train-section" hidden>
-            <div class="composer-section-title"><span class="composer-step">06</span><div><h3>Train</h3></div></div>
-            <div class="train-launch-dock">
-              <div class="train-launch-summary"><strong id="train-launch-model">Choose a model</strong><span id="train-launch-environment">Maze Bench · ${trainData.environment.room_total} rooms · ${trainData.environment.gem_total} gems</span></div>
-              <button id="launch-training" class="button--primary train-launch-button" type="button" disabled><span>Train</span><span aria-hidden="true">↗</span></button>
-            </div>
-          </section>
-        </section>
-
-        <section class="panel train-runs-panel" aria-label="Training runs">
-          <div class="runs-head"><div><h2>Training runs</h2></div><button id="refresh-training-runs" class="catalog-refresh" type="button">↻ Refresh</button></div>
-          <div id="training-runs" class="training-runs"></div>
-        </section>
-        <div id="train-prime-setup-modal" class="build-modal provider-setup-modal" role="dialog" aria-modal="true" aria-labelledby="train-prime-setup-title" hidden>
-          <div class="build-modal__dialog provider-setup-modal__dialog">
-            <div class="provider-setup-modal__head">
-              <span class="provider-setup-modal__logo" aria-hidden="true"><img src="/logos/prime.png" alt="" width="128" height="128"></span>
-              <div><span class="provider-setup-modal__eyebrow">Prime setup needed</span><h2 id="train-prime-setup-title">Reconnect Prime</h2></div>
-            </div>
-            <p id="train-prime-setup-message" class="provider-setup-modal__message"></p>
-            <pre class="provider-setup-modal__command"><code id="train-prime-setup-command"></code></pre>
-            <p id="train-prime-setup-note" class="provider-setup-modal__note"></p>
-            <div class="build-modal__actions">
-              <a class="button" href="https://docs.primeintellect.ai/cli-reference/introduction" target="_blank" rel="noreferrer">Setup guide</a>
-              <button id="train-prime-setup-dismiss" class="button" type="button">Not now</button>
-              <button id="train-prime-setup-retry" class="button--primary" type="button">Check again</button>
+            <div class="train-launch-actions">
+              <button id="launch-training" class="button--primary train-launch-button" type="button"><span>Train</span></button>
+              <button id="stop-training" class="button train-stop-button" type="button" disabled>Stop</button>
             </div>
           </div>
+        </section>
+
+        <div class="train-workspace">
+        <section class="panel train-metrics-panel" aria-label="Live metrics">
+          <div class="runs-head"><div><h2>Live run</h2></div><span id="train-live-update" class="muted">No updates yet</span></div>
+          <div class="train-metric-grid">
+            <div class="train-metric"><strong id="metric-reward">0</strong><small>reward</small></div>
+            <div class="train-metric"><strong id="metric-gems">0</strong><small>gems</small></div>
+            <div class="train-metric"><strong id="metric-rooms">0</strong><small>rooms</small></div>
+            <div class="train-metric"><strong id="metric-fps">0</strong><small>steps/s</small></div>
+            <div class="train-metric"><strong id="metric-entropy">0</strong><small>entropy</small></div>
+            <div class="train-metric"><strong id="metric-episodes">0</strong><small>episodes</small></div>
+          </div>
+          <div class="train-chart-grid">
+            <figure class="train-chart-card">
+              <figcaption>Reward <span>mean / update</span></figcaption>
+              <canvas id="train-chart-reward" class="train-chart" width="640" height="160" aria-label="Reward vs update"></canvas>
+            </figure>
+            <figure class="train-chart-card">
+              <figcaption>Steps / s <span>collect + update</span></figcaption>
+              <canvas id="train-chart-fps" class="train-chart" width="640" height="160" aria-label="FPS vs update"></canvas>
+            </figure>
+            <figure class="train-chart-card">
+              <figcaption>Entropy <span>policy</span></figcaption>
+              <canvas id="train-chart-entropy" class="train-chart" width="640" height="160" aria-label="Entropy vs update"></canvas>
+            </figure>
+          </div>
+        </section>
+
+        <div class="train-split train-split--board">
+          <section class="panel train-leaderboard-panel" aria-label="Leaderboard">
+            <div class="runs-head"><div><h2>Leaderboard</h2></div><button id="refresh-training-runs" class="catalog-refresh" type="button">↻</button></div>
+            <ol id="training-runs" class="train-leaderboard"></ol>
+          </section>
+          <section class="panel train-episodes-panel" aria-label="Episodes">
+            <div class="runs-head"><div><h2>Episodes</h2></div><span class="muted">Top 6 · click to view</span></div>
+            <div id="episode-list" class="episode-list"></div>
+          </section>
+          <section class="panel train-viewer-panel" aria-label="Episode viewer">
+            <div class="runs-head"><div><h2>Viewer</h2></div><span id="viewer-meta" class="muted">Select an episode</span></div>
+            <canvas id="episode-grid" class="episode-grid" width="256" height="256"></canvas>
+            <label class="train-scrubber"><span>Step</span><input id="episode-step" type="range" min="0" max="0" value="0" disabled></label>
+            <div class="viewer-actions">
+              <button id="episode-prev" class="button" type="button" disabled>Prev</button>
+              <button id="episode-play" class="button" type="button" disabled>Play</button>
+              <button id="episode-next" class="button" type="button" disabled>Next</button>
+            </div>
+            <pre id="episode-log" class="episode-log"></pre>
+          </section>
+        </div>
         </div>
         <script>window.__TRAIN_DATA__ = ${serializeForScript(trainData)};</script>
-        <script src="/train.js?v=20260716-prime-setup-1" defer></script>`
+        <script src="/train-env.js?v=20260901-gpu-rollout-19" defer></script>
+        <script src="/train-chart.js?v=20260831-chart-6" defer></script>
+        <script src="/train.js?v=20260831-chart-6" defer></script>`
     });
   }
 

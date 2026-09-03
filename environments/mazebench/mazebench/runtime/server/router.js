@@ -41,6 +41,7 @@ function createRequestRouter({
   sendJson,
   sendRedirect,
   solverExports,
+  trainLocal,
   training,
   worldMaps,
   writeMazePreviewImageData
@@ -105,6 +106,85 @@ function createRequestRouter({
     if (url.pathname === "/train") {
       sendHtml(response, 200, renderTrainPage());
       return;
+    }
+
+    if (url.pathname === "/api/train/local/bootstrap") {
+      if (request.method !== "GET") {
+        response.writeHead(405, { Allow: "GET" });
+        response.end();
+        return;
+      }
+      const game = getGame("maze");
+      const levelId = game ? defaultLevelIdForGame(game) : "level_HxI";
+      const level = game && levelId ? getLevel(game, levelId) : null;
+      sendJson(response, 200, {
+        backend: "webgpu-ppo",
+        environment: {
+          id: "maze",
+          title: game?.name || "Maze Bench",
+          default_level_id: levelId,
+          room_total: game?.worldMap?.levels?.length || 0,
+          gem_total: game ? buildWorlds.countWorldGems(game) : 0
+        },
+        playData: game && level ? getLevelState(game, level) : null,
+        defaults: {
+          gem_reward_weight: 1,
+          room_reward_weight: 0.1,
+          push_reward_weight: 0.05,
+          novelty_bonus: 0.01,
+          max_actions: 128,
+          n_envs: 4,
+          num_steps: 32,
+          updates: 200,
+          learning_rate: 0.0003
+        }
+      });
+      return;
+    }
+
+    if (url.pathname === "/api/train/local/runs") {
+      if (request.method === "GET") {
+        sendJson(response, 200, { runs: trainLocal.listRuns(Number(url.searchParams.get("limit")) || 20) });
+        return;
+      }
+      if (request.method === "POST") {
+        const payload = await readJsonBody(request);
+        sendJson(response, 201, trainLocal.createRun(payload));
+        return;
+      }
+      response.writeHead(405, { Allow: "GET, POST" });
+      response.end();
+      return;
+    }
+
+    if (segments[0] === "api" && segments[1] === "train" && segments[2] === "local" && segments[3] === "runs" && segments[4]) {
+      const runId = decodeURIComponent(segments[4]);
+      if (segments.length === 5) {
+        if (request.method === "GET") {
+          const run = trainLocal.getRun(runId);
+          if (!run) {
+            sendJson(response, 404, { error: "Run not found." });
+            return;
+          }
+          sendJson(response, 200, run);
+          return;
+        }
+        if (request.method === "POST") {
+          const payload = await readJsonBody(request);
+          sendJson(response, 200, trainLocal.finishRun(runId, payload.status || "finished"));
+          return;
+        }
+      }
+      if (segments.length === 6 && segments[5] === "metrics" && request.method === "POST") {
+        const payload = await readJsonBody(request);
+        sendJson(response, 201, trainLocal.appendJsonl(runId, "metrics.jsonl", payload));
+        return;
+      }
+      if (segments.length === 6 && segments[5] === "episodes" && request.method === "POST") {
+        const payload = await readJsonBody(request);
+        sendJson(response, 201, trainLocal.appendJsonl(runId, "episodes.jsonl", payload));
+        return;
+      }
     }
 
     if (url.pathname === "/api/train/bootstrap") {

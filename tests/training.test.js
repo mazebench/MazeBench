@@ -39,16 +39,69 @@ assert.equal(
 assert.equal(primeSetupKind({ cliOk: true, accountOk: true, error: "Network timed out" }), "");
 
 const trainClient = fs.readFileSync(path.join(ROOT_DIR, "public", "train.js"), "utf8");
+const trainEnv = fs.readFileSync(path.join(ROOT_DIR, "public", "train-env.js"), "utf8");
+const trainPpo = fs.readFileSync(path.join(ROOT_DIR, "public", "train-ppo-webgpu.js"), "utf8");
+const trainWorker = fs.readFileSync(path.join(ROOT_DIR, "public", "train-worker.js"), "utf8");
 const agentClient = fs.readFileSync(path.join(ROOT_DIR, "public", "agent.js"), "utf8");
 const appSource = fs.readFileSync(path.join(ROOT_DIR, "server", "app.js"), "utf8");
 const pagesSource = fs.readFileSync(path.join(ROOT_DIR, "server", "pages.js"), "utf8");
-assert.match(trainClient, /showPrimeSetup\(kind\)/);
-assert.match(trainClient, /Prime login has expired or is no longer authorized/);
-assert.match(trainClient, /uv tool install -U prime/);
+const routerSource = fs.readFileSync(path.join(ROOT_DIR, "server", "router.js"), "utf8");
+assert.match(trainClient, /WebGPU/);
+assert.match(trainClient, /TrainChart/);
+assert.match(trainClient, /episode-grid/);
+assert.match(trainClient, /saloppo/);
+assert.match(pagesSource, /id="train-algorithm"/);
+assert.match(pagesSource, />SaloPPO</);
+assert.match(trainWorker, /algorithm === "saloppo"/);
+assert.match(trainPpo, /updateSaloMemory/);
+assert.match(trainClient, /topEpisodes\(6\)/);
+assert.match(trainClient, /keepBestEpisodes/);
+assert.match(trainClient, /reward <= episodeReward/);
+assert.doesNotMatch(trainClient, /length > 80/);
+assert.match(pagesSource, /Top 6 · click to view/);
+assert.doesNotMatch(trainClient, /history\.reward\.length > 240/);
+assert.match(trainClient, /plannedUpdates/);
+assert.match(pagesSource, /train-chart\.js/);
+assert.match(appSource, /\/train-chart\.js/);
+assert.match(trainEnv, /class MazeTrainEnv/);
+assert.match(trainPpo, /navigator\.gpu/);
+assert.match(trainPpo, /@compute/);
+assert.match(trainPpo, /dims\.gemWeight/);
+assert.match(trainPpo, /dims\.pushWeight/);
+assert.match(trainPpo, /dims\.noveltyBonus/);
+assert.match(trainPpo, /fn pushGroup/);
+assert.match(trainPpo, /fn applyPunchers/);
+assert.match(trainPpo, /fn moveClones/);
+assert.match(trainPpo, /fn restoreStart/);
+assert.match(trainPpo, /fn tryExit/);
+assert.match(trainPpo, /fn loadRoom/);
+assert.match(trainEnv, /ensureWorldAtlas/);
+assert.match(trainWorker, /prefetchWorld: true/);
+assert.doesNotMatch(trainPpo, /buildEngineRollShader/);
+assert.doesNotMatch(trainPpo, /needEngine/);
+assert.match(trainPpo, /grid\[i\] & 255u/);
+assert.match(trainEnv, /MAX_ACTORS/);
+assert.match(trainEnv, /packActors/);
+assert.match(trainPpo, /writeRolloutDims/);
+assert.match(trainPpo, /updateRollout/);
+assert.match(trainPpo, /compactPpoUpdate/);
+assert.match(trainPpo, /PPO_MEGA_SHADER/);
+assert.match(trainPpo, /updateRolloutGpu/);
+assert.doesNotMatch(trainPpo, /return 0\.05;/);
+assert.match(trainWorker, /TrainPpo\.WebGpuPpo/);
+assert.match(trainWorker, /gpuRollout/);
+assert.match(trainWorker, /updateRollout/);
+assert.match(trainWorker, /entropyCoef/);
+assert.match(trainWorker, /pushWeight: config\.pushWeight/);
+assert.match(trainWorker, /gemWeight: config\.gemWeight/);
+assert.match(trainWorker, /type === "profile"/);
+const trainProfile = fs.readFileSync(path.join(ROOT_DIR, "public", "train-profile.js"), "utf8");
+assert.match(trainProfile, /createProfiler/);
+assert.match(pagesSource, /WebGPU PPO/);
+assert.doesNotMatch(pagesSource, /id="train-prime-setup-modal"/);
+assert.match(routerSource, /\/api\/train\/local\/bootstrap/);
 assert.match(appSource, /primeInstalled && probeCommand/);
 assert.match(agentClient, /showPrimeSetup\(environment/);
-assert.match(pagesSource, /id="train-prime-setup-modal"/);
-assert.match(pagesSource, /src="\/logos\/prime\.png"/);
 
 const starterConfig = fs.readFileSync(path.join(ROOT_DIR, "configs", "rl", "mazebench.toml"), "utf8");
 const primeSystemPrompt = fs.readFileSync(
@@ -95,7 +148,7 @@ assert.match(toml, /allow_quit = false/);
 assert.match(toml, /observation_mode = "ascii"/);
 const parsedToml = JSON.parse(
   execFileSync(
-    "python3",
+    process.env.PYTHON || (process.platform === "win32" ? "python" : "python3"),
     ["-c", "import json,sys,tomllib; print(json.dumps(tomllib.loads(sys.stdin.read())))"],
     { encoding: "utf8", input: toml }
   )
