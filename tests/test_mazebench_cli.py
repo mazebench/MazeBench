@@ -1,3 +1,6 @@
+import subprocess
+import sys
+
 from pathlib import Path
 from unittest import TestCase, mock
 
@@ -13,6 +16,20 @@ class CliCommandTests(TestCase):
         self.assertEqual(result, 0)
         resolve_root.assert_not_called()
         print_output.assert_called_once_with(mazebench_cli.USAGE)
+
+    def test_pid_liveness_probe_does_not_terminate_process(self):
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(30)"]
+        )
+        try:
+            self.assertTrue(mazebench_cli._pid_alive(proc.pid))
+            with self.assertRaises(subprocess.TimeoutExpired):
+                proc.wait(timeout=0.1)
+        finally:
+            if proc.poll() is None:
+                proc.terminate()
+            proc.wait(timeout=5)
+
 
     @mock.patch.object(mazebench_cli, "run_ascii", return_value=23)
     @mock.patch.object(mazebench_cli, "resolve_root", return_value=Path("/maze"))
