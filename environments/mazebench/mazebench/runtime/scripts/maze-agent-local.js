@@ -2906,6 +2906,19 @@ function expandTilde(value) {
   return text.startsWith("~") ? path.join(process.env.HOME || "", text.slice(1)) : text;
 }
 
+function resolveMuseAuthRequest(raw = {}) {
+  if (raw.muse_auth) return path.resolve(expandTilde(raw.muse_auth));
+  if (process.env.MAZEBENCH_MUSE_AUTH_FILE) {
+    return path.resolve(expandTilde(process.env.MAZEBENCH_MUSE_AUTH_FILE));
+  }
+  const configRoot = process.env.XDG_CONFIG_HOME || path.join(process.env.HOME || "", ".config");
+  const isolatedAuth = path.join(configRoot, "mazebench-muse-container", "auth.json");
+  if (fs.existsSync(isolatedAuth) && fs.statSync(isolatedAuth).isFile() && fs.statSync(isolatedAuth).size > 0) {
+    return isolatedAuth;
+  }
+  return path.join(configRoot, "muse", "auth.json");
+}
+
 function readPrimeCredential(filePath) {
   let value;
   try {
@@ -3107,9 +3120,7 @@ function runInContainer(config, raw) {
       credentialMounts.push("-v", `${deviceId}:/run/mazebench-credentials/kimi-device-id:ro`);
     }
   } else if (config.model === "muse") {
-    const requested = raw.muse_auth
-      ? path.resolve(expandTilde(raw.muse_auth))
-      : path.join(process.env.XDG_CONFIG_HOME || path.join(process.env.HOME || "", ".config"), "muse", "auth.json");
+    const requested = resolveMuseAuthRequest(raw);
     const authPath = fs.existsSync(requested) && fs.statSync(requested).isDirectory()
       ? path.join(requested, "auth.json")
       : requested;
@@ -3757,6 +3768,7 @@ module.exports = {
   recordNoMoveIfIdle,
   resultFromOutput,
   resultsFromOutput,
+  resolveMuseAuthRequest,
   sanitizeKimiConfig
 };
 
