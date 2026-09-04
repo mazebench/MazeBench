@@ -9,6 +9,7 @@ const {
   SUPPORTED_LOCAL_AGENT_VERSIONS,
   distillClaudeEvents,
   distillCodexEvents,
+  distillGrokEvents,
   distillKimiEvents,
   loadCodexModels
 } = require("../scripts/maze-agent-local");
@@ -59,6 +60,7 @@ function enrichedPathEnv() {
     path.join(os.homedir(), ".local", "bin"),
     path.join(os.homedir(), ".claude", "local"),
     path.join(os.homedir(), ".kimi-code", "bin"),
+    path.join(os.homedir(), ".grok", "bin"),
     "/opt/homebrew/bin",
     "/usr/local/bin"
   ];
@@ -546,7 +548,7 @@ function createAgentRunService({
     const validBoundary = meta?.harness_boundary === `${boundaryPrefix}game-tools-only` ||
       (toolUse === "offline" && meta?.harness_boundary === `${boundaryPrefix}game-tools+isolated-python`);
     if (
-      meta?.harness !== ({ codex: "codex", claude: "claude_code", kimi: "kimi_code" })[provider] ||
+      meta?.harness !== ({ codex: "codex", claude: "claude_code", kimi: "kimi_code", grok: "grok_build" })[provider] ||
       meta?.harness_version !== SUPPORTED_LOCAL_AGENT_VERSIONS[provider] ||
       !validBoundary ||
       meta?.container_image !== "mazebench-agent"
@@ -570,8 +572,8 @@ function createAgentRunService({
       ? agentEnvironment({ fresh: true })
       : {};
     if (!environment[provider]) {
-      const label = { claude: "Claude Code", kimi: "Kimi Code", codex: "Codex" }[provider] || provider;
-      const login = { claude: "claude auth login", kimi: "kimi login", codex: "codex login" }[provider] || "";
+      const label = { claude: "Claude Code", kimi: "Kimi Code", codex: "Codex", grok: "Grok Build" }[provider] || provider;
+      const login = { claude: "claude auth login", kimi: "kimi login", codex: "codex login", grok: "grok login --device-auth" }[provider] || "";
       throw new Error(`${label} needs an active local account. Run \`${login}\`, then refresh the Agent page.`);
     }
   }
@@ -655,7 +657,8 @@ function createAgentRunService({
       const labels = JSON.parse(String(result.stdout || "{}"));
       return labels["org.mazebench.local-codex.version"] === SUPPORTED_LOCAL_AGENT_VERSIONS.codex &&
         labels["org.mazebench.local-claude.version"] === SUPPORTED_LOCAL_AGENT_VERSIONS.claude &&
-        labels["org.mazebench.local-kimi.version"] === SUPPORTED_LOCAL_AGENT_VERSIONS.kimi;
+        labels["org.mazebench.local-kimi.version"] === SUPPORTED_LOCAL_AGENT_VERSIONS.kimi &&
+        labels["org.mazebench.local-grok.version"] === SUPPORTED_LOCAL_AGENT_VERSIONS.grok;
     } catch (_error) {
       return false;
     }
@@ -2545,7 +2548,7 @@ function createAgentRunService({
       ),
       prime_evaluation_score:
         Number.isFinite(Number(primeEvaluation?.avg_score)) ? Number(primeEvaluation.avg_score) : null,
-      // Grouping key for the runs-list provider filter (codex | claude | kimi | prime).
+      // Grouping key for the runs-list provider filter (codex | claude | kimi | grok | prime).
       provider: meta.kind === "prime" ? "prime" : meta.model,
       pausable:
         ["running", "pausing"].includes(meta.status) &&
@@ -2763,7 +2766,9 @@ function createAgentRunService({
         ? distillClaudeEvents(raw)
         : model === "kimi"
           ? distillKimiEvents(raw)
-          : distillCodexEvents(raw);
+          : model === "grok"
+            ? distillGrokEvents(raw)
+            : distillCodexEvents(raw);
       const liveReasoning = distilled.entries || [];
       const liveWithText = liveReasoning.filter((entry) => entry.reasoning).length;
       const finalWithText = finalReasoning.filter((entry) => entry.reasoning).length;
@@ -2942,7 +2947,7 @@ function createAgentRunService({
           });
         }
       });
-    } else if (provider === "claude") {
+    } else if (provider === "claude" || provider === "grok") {
       events.forEach((event) => {
         const timestamp = normalizeEventTimestamp(event._mazebench_received_at || event.timestamp);
         if (event.type === "assistant" && Array.isArray(event.message?.content)) {
@@ -3451,13 +3456,13 @@ function createAgentRunService({
           });
         }
       });
-    } else if (summary.provider === "claude") {
+    } else if (summary.provider === "claude" || summary.provider === "grok") {
       events.forEach((event) => {
         const timestamp = event._mazebench_received_at;
         if (!timestamp) return;
         if (event.type === "assistant" && Array.isArray(event.message?.content)) {
           event.message.content.forEach((block) => {
-            if (block?.type !== "tool_use" || !block.id || /^mcp__mazebench/.test(block.name)) return;
+            if (block?.type !== "tool_use" || !block.id || /^(?:mcp__)?mazebench__/.test(block.name)) return;
             const shell = block.name === "Bash" ? shellActivityLabel(block.input?.command) : null;
             pending.set(block.id, {
               id: `provider-${block.id}`,
@@ -3640,7 +3645,7 @@ function createAgentRunService({
             ? parseCodexSession(fs.readFileSync(codexSessionPath, "utf8"))
             : parseCodexEvents(fs.existsSync(eventsPath) ? fs.readFileSync(eventsPath, "utf8") : "");
         }
-      } else if (summary.provider === "claude") {
+      } else if (summary.provider === "claude" || summary.provider === "grok") {
         value = parseClaudeEvents(fs.existsSync(eventsPath) ? fs.readFileSync(eventsPath, "utf8") : "");
       } else if (summary.provider === "kimi") {
         value = kimiWirePath
@@ -4784,6 +4789,52 @@ function createAgentRunService({
     }
   }
 
+  function grokModelCatalog() {
+    const result = spawnSync("grok", ["models"], {
+      encoding: "utf8",
+      env: enrichedPathEnv(),
+      timeout: 10000,
+      maxBuffer: 2 * 1024 * 1024
+    });
+    const version = spawnSync("grok", ["--version"], {
+      encoding: "utf8",
+      env: enrichedPathEnv(),
+      timeout: 3000
+    });
+    const versionText = String(version.stdout || version.stderr || "").trim();
+    const output = `${String(result.stdout || "")}\n${String(result.stderr || "")}`
+      .replace(/\x1b\[[0-9;]*m/g, "");
+    const authenticated = result.status === 0 && /logged in with grok\.com/i.test(output);
+    const defaultId = authenticated
+      ? String(output.match(/Default model:\s*([^\s]+)/i)?.[1] || "")
+      : "";
+    const detected = [...output.matchAll(/^\s*[*-]\s+([^\s]+)(?:\s+\(default\))?\s*$/gm)]
+      .map((match) => String(match[1] || "").trim())
+      .filter(Boolean);
+    const ids = authenticated ? [...new Set(detected)] : [];
+    ids
+      .sort((left, right) => Number(right === defaultId) - Number(left === defaultId));
+    const models = ids.map((id) => ({
+      id,
+      label: id === "grok-4.6" ? "Grok 4.6" : id === "grok-4.5" ? "Grok 4.5" : id,
+      description: "xAI Grok Build through your linked X/xAI subscription",
+      reasoning_levels: ["low", "medium", "high", "xhigh"],
+      default_reasoning: "xhigh",
+      vision: true
+    }));
+    return {
+      models,
+      source: versionText ? `Grok Build ${versionText.replace(/^grok\s+/i, "")}` : "Grok Build CLI",
+      checked_at: modelCatalogCheckedAt(),
+      default_model_id: defaultId,
+      note: authenticated && models.length
+        ? "Uses your linked X/xAI subscription through Grok Build OAuth; no xAI API key or OpenRouter credits are used."
+        : authenticated
+          ? "Grok Build returned no model ids, so MazeBench refuses to invent or substitute one."
+          : "Run `grok login --device-auth` to use your linked X/xAI subscription."
+    };
+  }
+
   // Prime's model list (OpenAI-style /models) exposes no modality field, so we
   // infer image-input support from the model id: an allowlist of known
   // multimodal families, with text-only variants (…-mini reasoning models,
@@ -4910,7 +4961,7 @@ function createAgentRunService({
   function listProviderModels(provider, { fresh = false, harness = "none" } = {}) {
     const normalized = String(provider || "").toLowerCase();
 
-    if (!["codex", "claude", "kimi", "prime"].includes(normalized)) {
+    if (!["codex", "claude", "kimi", "grok", "prime"].includes(normalized)) {
       throw new Error(`Unknown provider "${provider}".`);
     }
 
@@ -4932,7 +4983,9 @@ function createAgentRunService({
       ? claudeModelCatalog()
       : normalized === "kimi"
         ? kimiModelCatalog()
-        : primeModelCatalog();
+        : normalized === "grok"
+          ? grokModelCatalog()
+          : primeModelCatalog();
     const ttl = value.models.length ? PROVIDER_MODEL_TTL_MS : PROVIDER_MODEL_ERROR_TTL_MS;
 
     providerModelCache.set(normalized, { value, expiresAt: Date.now() + ttl });
@@ -4963,7 +5016,7 @@ function createAgentRunService({
     const inference = String(params.inference || "subscription").trim().toLowerCase();
 
     if (!SUPPORTED_LOCAL_AGENT_VERSIONS[model]) {
-      throw new Error("Choose a certified local Codex, Claude Code, or Kimi Code runner.");
+      throw new Error("Choose a certified local Codex, Claude Code, Kimi Code, or Grok Build runner.");
     }
     if (!["subscription", "prime"].includes(inference) || (inference === "prime" && model !== "codex")) {
       throw new Error("Prime inference is supported only by the isolated Codex runner.");
@@ -5012,7 +5065,7 @@ function createAgentRunService({
       throw new Error(
         "The certified local-agent image is missing or stale. Run `npm run maze:build-local-agents` " +
         `(required Codex ${SUPPORTED_LOCAL_AGENT_VERSIONS.codex}, Claude Code ${SUPPORTED_LOCAL_AGENT_VERSIONS.claude}, ` +
-        `Kimi Code ${SUPPORTED_LOCAL_AGENT_VERSIONS.kimi}).`
+        `Kimi Code ${SUPPORTED_LOCAL_AGENT_VERSIONS.kimi}, Grok Build ${SUPPORTED_LOCAL_AGENT_VERSIONS.grok}).`
       );
     }
     const args = [
@@ -5056,6 +5109,17 @@ function createAgentRunService({
       }
     }
 
+    if (model === "grok") {
+      const requestedGrokModel = String(params.model_name || "").trim();
+      const liveGrokModels = grokModelCatalog().models;
+      if (!requestedGrokModel || !liveGrokModels.some((entry) => entry.id === requestedGrokModel)) {
+        throw new Error(
+          `Grok Build model ${requestedGrokModel || "(missing)"} is not in the live authenticated catalog; ` +
+          "MazeBench will not substitute an older or different model."
+        );
+      }
+    }
+
     if (params.model_name) {
       args.push(`model_name=${String(params.model_name)}`);
     }
@@ -5082,6 +5146,8 @@ function createAgentRunService({
         if (exact && supported.length && !supported.includes(reasoning)) {
           throw new Error(`${exact.id} supports Kimi effort: ${supported.join(", ")}.`);
         }
+      } else if (model === "grok" && !["low", "medium", "high", "xhigh"].includes(reasoning)) {
+        throw new Error("Grok 4.6 supports Grok Build effort: low, medium, high, xhigh.");
       }
 
       args.push(`reasoning=${reasoning}`);
@@ -5569,8 +5635,8 @@ function createAgentRunService({
           model,
           model_name: exactModelName,
           model_alias: exactModelName !== requestedModelName ? requestedModelName : "",
-          harness: ({ codex: "codex", claude: "claude_code", kimi: "kimi_code" })[model],
-          harness_label: ({ codex: "Codex", claude: "Claude Code", kimi: "Kimi Code" })[model],
+          harness: ({ codex: "codex", claude: "claude_code", kimi: "kimi_code", grok: "grok_build" })[model],
+          harness_label: ({ codex: "Codex", claude: "Claude Code", kimi: "Kimi Code", grok: "Grok Build" })[model],
           harness_version: SUPPORTED_LOCAL_AGENT_VERSIONS[model],
           harness_boundary: toolUse === "offline"
             ? "disposable-container/game-tools+isolated-python"
@@ -5618,7 +5684,7 @@ function createAgentRunService({
           branch_provider_id: branchPreparation?.newConversationId || null,
           seeded: Boolean(effectiveParams.seed_run || effectiveParams.branch_of),
           conversation_persistence: "run-dir",
-          note: `Local ${{ codex: "Codex", claude: "Claude Code", kimi: "Kimi Code" }[model]} runs in a fresh disposable container. The evaluated process receives MazeBench game controls${toolUse === "offline" ? " plus a preflighted run-scoped Python scratchpad" : " only"}; repository, host files, run artifacts, shell, web, apps, and workers are blocked by launch-time isolation preflights.`
+          note: `Local ${{ codex: "Codex", claude: "Claude Code", kimi: "Kimi Code", grok: "Grok Build" }[model]}${model === "grok" ? " uses linked X/xAI subscription inference and" : ""} runs in a fresh disposable container. The evaluated process receives MazeBench game controls${toolUse === "offline" ? " plus a preflighted run-scoped Python scratchpad" : " only"}; repository, host files, run artifacts, shell, web, apps, and workers are blocked by launch-time isolation preflights.`
         };
       }
     } catch (error) {

@@ -119,6 +119,10 @@ let agentEnvironmentState = {
   kimi_installed: true,
   kimi_authenticated: true,
   kimi_subscription: true,
+  grok: true,
+  grok_installed: true,
+  grok_authenticated: true,
+  grok_subscription: true,
   prime: true,
   prime_installed: true,
   prime_authenticated: true,
@@ -127,8 +131,9 @@ let agentEnvironmentState = {
   docker_installed: true,
   docker_running: true,
   local_agent_image: true,
-  local_agent_versions: { codex: "0.146.0", claude: "2.1.220", kimi: "0.29.1" },
-  local_agent_image_versions: { codex: "0.146.0", claude: "2.1.220", kimi: "0.29.1" },
+  local_agent_versions: { codex: "0.146.0", claude: "2.1.220", kimi: "0.29.1", grok: "1.0.13" },
+  local_agent_required_versions: { codex: "0.146.0", claude: "2.1.220", kimi: "0.29.1", grok: "1.0.13" },
+  local_agent_image_versions: { codex: "0.146.0", claude: "2.1.220", kimi: "0.29.1", grok: "1.0.13" },
   local_codex_image: true,
   local_codex_image_version: "0.146.0",
   local_codex_required_version: "0.146.0"
@@ -752,12 +757,14 @@ try {
   for (const [model, harness, version] of [
     ["codex", "codex", "0.146.0"],
     ["claude", "claude_code", "2.1.220"],
-    ["kimi", "kimi_code", "0.29.1"]
+    ["kimi", "kimi_code", "0.29.1"],
+    ["grok", "grok_build", "1.0.13"]
   ]) {
     const [isolatedLocal] = service.launchRuns({
       kind: "local",
       subscription: true,
       model,
+      ...(model === "grok" ? { model_name: "grok-4.6" } : {}),
       container: true,
       tools: false,
       tool_use: "read-only",
@@ -782,6 +789,7 @@ try {
       kind: "local",
       subscription: true,
       model,
+      ...(model === "grok" ? { model_name: "grok-4.6" } : {}),
       container: true,
       tools: true,
       tool_use: "offline",

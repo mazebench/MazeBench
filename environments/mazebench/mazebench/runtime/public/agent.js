@@ -30,6 +30,11 @@
       logo: '<img src="/logos/claude.png" alt="" width="128" height="128" loading="eager" decoding="sync" fetchpriority="high">'
     },
     {
+      id: "grok-build",
+      name: "Grok Build",
+      logo: '<img src="/logos/grok-build.svg" alt="" width="128" height="128" loading="eager" decoding="sync" fetchpriority="high">'
+    },
+    {
       id: "kimi-code",
       name: "Kimi Code",
       logo: '<img src="/logos/kimi.svg" alt="" width="128" height="128" loading="eager" decoding="sync" fetchpriority="high">'
@@ -50,6 +55,11 @@
       docs: "https://moonshotai.github.io/kimi-code/en/guides/getting-started.html",
       install: "npm install -g @moonshot-ai/kimi-code\nkimi login",
       login: "kimi login"
+    },
+    "grok-build": {
+      docs: "https://docs.x.ai/build/overview",
+      install: "curl -fsSL https://x.ai/cli/install.sh | bash\ngrok login --device-auth",
+      login: "grok login --device-auth"
     }
   };
   const PRIME_SETUP = {
@@ -68,6 +78,7 @@
     codex: "OpenAI",
     claude: "Anthropic",
     kimi: "Moonshot AI",
+    grok: "xAI",
     prime: "Prime Intellect"
   };
   const RUN_STATUS_LABELS = {
@@ -465,6 +476,7 @@
     if (harnessId === "custom") return state.customHarnessId;
     if (harnessId === "claude-code") return "claude_code";
     if (harnessId === "kimi-code") return "kimi_code";
+    if (harnessId === "grok-build") return "grok_build";
     return harnessId;
   }
 
@@ -479,6 +491,7 @@
     if (harnessId === "codex") return "codex";
     if (harnessId === "claude-code") return "claude";
     if (harnessId === "kimi-code") return "kimi";
+    if (harnessId === "grok-build") return "grok";
     return "";
   }
 
@@ -1260,6 +1273,11 @@
         ? model.reasoning_levels
         : ["high"];
     }
+    if (state.harness === "grok-build") {
+      return model && Array.isArray(model.reasoning_levels) && model.reasoning_levels.length
+        ? model.reasoning_levels
+        : ["low", "medium", "high", "xhigh"];
+    }
     return model && Array.isArray(model.reasoning_levels) && model.reasoning_levels.length
       ? model.reasoning_levels
       : ["low", "medium", "high", "xhigh"];
@@ -1859,7 +1877,7 @@
         }
       } else {
         const environment = await refreshEnvironment();
-        const launchedHarness = ({ codex: "codex", claude: "claude-code", kimi: "kimi-code" })[body.model];
+        const launchedHarness = ({ codex: "codex", claude: "claude-code", kimi: "kimi-code", grok: "grok-build" })[body.model];
         const availability = localRunAvailability(launchedHarness, environment);
         if (!availability.available) {
           showLocalSetup(launchedHarness, availability);
@@ -1940,7 +1958,7 @@
       ? (run.harness || "none") === "none"
         ? "Prime Intellect"
         : `${harnessName || "Prime Intellect"} via Prime`
-      : ({ codex: "Codex", claude: "Claude Code", kimi: "Kimi Code" }[run.provider || run.model] || run.model);
+      : ({ codex: "Codex", claude: "Claude Code", kimi: "Kimi Code", grok: "Grok Build" }[run.provider || run.model] || run.model);
     const reasoningEffort = String(run.reasoning || (run.provider === "prime" ? "off" : "auto")).toLowerCase();
     const showStartRoom = Boolean(run.level_id) && !run.start_room_is_default;
     const createdAt = escapeText(run.created_at ? new Date(run.created_at).toLocaleString() : "");
