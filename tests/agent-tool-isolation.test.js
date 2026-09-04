@@ -27,6 +27,7 @@ const {
   museMcpConfig,
   migrateSeedSessionObservation,
   needsPrivateMcpServer,
+  resolveMuseAuthRequest,
   sanitizeKimiConfig
 } = require("../scripts/maze-agent-local");
 const {
@@ -94,6 +95,37 @@ const baseConfig = {
   workspaceDir: workspace,
   yaw: 0
 };
+
+{
+  const authHome = fs.mkdtempSync(path.join(os.tmpdir(), "maze-muse-auth-"));
+  const priorHome = process.env.HOME;
+  const priorXdg = process.env.XDG_CONFIG_HOME;
+  const priorOverride = process.env.MAZEBENCH_MUSE_AUTH_FILE;
+  try {
+    process.env.HOME = authHome;
+    delete process.env.XDG_CONFIG_HOME;
+    delete process.env.MAZEBENCH_MUSE_AUTH_FILE;
+    const isolatedAuth = path.join(authHome, ".config", "mazebench-muse-container", "auth.json");
+    fs.mkdirSync(path.dirname(isolatedAuth), { recursive: true });
+    fs.writeFileSync(isolatedAuth, "isolated");
+    assert.equal(resolveMuseAuthRequest({}), isolatedAuth);
+
+    const override = path.join(authHome, "override.json");
+    process.env.MAZEBENCH_MUSE_AUTH_FILE = override;
+    assert.equal(resolveMuseAuthRequest({}), override);
+
+    const explicit = path.join(authHome, "explicit.json");
+    assert.equal(resolveMuseAuthRequest({ muse_auth: explicit }), explicit);
+  } finally {
+    if (priorHome === undefined) delete process.env.HOME;
+    else process.env.HOME = priorHome;
+    if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME;
+    else process.env.XDG_CONFIG_HOME = priorXdg;
+    if (priorOverride === undefined) delete process.env.MAZEBENCH_MUSE_AUTH_FILE;
+    else process.env.MAZEBENCH_MUSE_AUTH_FILE = priorOverride;
+    fs.rmSync(authHome, { recursive: true, force: true });
+  }
+}
 
 assert.match(localAgentSource, /const resuming = \$\{JSON\.stringify\(Boolean\(config\.resume\)\)\}/);
 assert.match(localAgentSource, /workspace_state_valid: resuming \|\| workspaceEntries\.length === 0/);
