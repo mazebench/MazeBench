@@ -28,6 +28,7 @@ const MIRRORED_FILES = [
   "games/maze/world_parsing.json",
   "public/author-play-data.js",
   "public/agent-run.js",
+  "public/leaderboard.js",
   "public/agent.js",
   "public/maze-token-patterns.js",
   "public/author-shell.js",

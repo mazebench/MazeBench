@@ -2699,6 +2699,186 @@ function createAgentRunService({
     };
   }
 
+  // Compact, chart-ready telemetry for the local leaderboard. The endpoint is
+  // deliberately limited to starred runs: stars are the explicit curation
+  // boundary shared by the Agent page, this leaderboard, and MazeJam exports.
+  function leaderboardHeatmap(runId, summary, actions) {
+    const roomSize = 16;
+    const visits = new Map();
+    const rooms = new Map();
+    let totalVisits = 0;
+    let currentRoom = String(summary.level_id || "");
+    let initialPlayer = readInitialPlayer(runId);
+    let reconstructed = null;
+
+    if (!initialPlayer || actions.some((action) => !action.player)) {
+      reconstructed = reconstructBoardStateTimeline(runId, summary);
+      initialPlayer ||= reconstructed?.initial_player || null;
+    }
+
+    const coordinatesForRoom = (roomId) => {
+      const parsed = worldMaps.parseMazeWorldLevelId?.(summary.game_id || "maze", roomId);
+      if (parsed) return parsed;
+      const match = String(roomId || "").match(/^level_([A-Z])x([A-Z])$/i);
+      return match
+        ? {
+            column: match[1].toUpperCase(),
+            row: match[2].toUpperCase(),
+            columnIndex: match[1].toUpperCase().charCodeAt(0) - 65,
+            rowIndex: match[2].toUpperCase().charCodeAt(0) - 65
+          }
+        : null;
+    };
+    const addVisit = (player, roomId) => {
+      const position = normalizedPlayerPosition(player);
+      const coordinates = coordinatesForRoom(roomId);
+      const localX = Math.round(position?.x);
+      const localY = Math.round(position?.y);
+      if (
+        !position ||
+        !coordinates ||
+        localX < 0 ||
+        localX >= roomSize ||
+        localY < 0 ||
+        localY >= roomSize
+      ) return;
+      const x = coordinates.columnIndex * roomSize + localX;
+      const y = coordinates.rowIndex * roomSize + localY;
+      const key = `${x},${y}`;
+      visits.set(key, (visits.get(key) || 0) + 1);
+      totalVisits += 1;
+      rooms.set(String(roomId), {
+        id: String(roomId),
+        label: String(roomId).replace(/^level_/, ""),
+        column: coordinates.columnIndex,
+        row: coordinates.rowIndex
+      });
+    };
+
+    addVisit(initialPlayer, currentRoom);
+    actions.forEach((action, index) => {
+      if (action?.current_room) currentRoom = String(action.current_room);
+      const turn = Number(action?.turn) || index + 1;
+      addVisit(action?.player || reconstructed?.players.get(turn), currentRoom);
+    });
+    if (!visits.size || !rooms.size) return null;
+
+    const roomList = [...rooms.values()].sort((left, right) =>
+      left.row - right.row || left.column - right.column
+    );
+    const counts = [...visits.values()];
+    return {
+      room_size: roomSize,
+      rooms: roomList,
+      cells: [...visits.entries()]
+        .map(([key, count]) => [...key.split(",").map(Number), count])
+        .sort((left, right) => left[1] - right[1] || left[0] - right[0]),
+      total_visits: totalVisits,
+      unique_cells: visits.size,
+      max_count: Math.max(...counts),
+      min_room_column: Math.min(...roomList.map((room) => room.column)),
+      max_room_column: Math.max(...roomList.map((room) => room.column)),
+      min_room_row: Math.min(...roomList.map((room) => room.row)),
+      max_room_row: Math.max(...roomList.map((room) => room.row))
+    };
+  }
+
+  function getLeaderboardRun(runId) {
+    const summary = summarizeRun(runId);
+    if (!summary || !summary.favorited) return null;
+
+    const actions = readActions(runId);
+    const usage = readTokenUsage(runId, summary);
+    const usagePoints = (Array.isArray(usage?.actions) ? usage.actions : [])
+      .map((point, index) => ({
+        ...point,
+        action: Math.max(1, Number(point?.action) || index + 1)
+      }))
+      .sort((left, right) => left.action - right.action);
+    const totalInputTokens = Math.max(0, Number(usage?.input_tokens) || 0);
+    const totalApiCost = Number(usage?.api_cost_estimate_usd);
+    const hasApiCost = Number.isFinite(totalApiCost) && totalApiCost >= 0;
+    const startingRoom = String(summary.level_id || "");
+    const visitedRooms = new Set(startingRoom ? [startingRoom] : []);
+    const points = [{
+      move_count: 0,
+      input_tokens: 0,
+      api_cost_usd: hasApiCost ? 0 : null,
+      gems: 0,
+      rooms: visitedRooms.size
+    }];
+    let usageIndex = 0;
+    let cumulativeInputTokens = 0;
+    let cumulativeApiCost = hasApiCost ? 0 : null;
+
+    actions.forEach((action, index) => {
+      const moveCount = Math.max(index + 1, Number(action?.turn) || 0);
+      while (usageIndex < usagePoints.length && usagePoints[usageIndex].action <= moveCount) {
+        const usagePoint = usagePoints[usageIndex];
+        cumulativeInputTokens += Math.max(0, Number(usagePoint.input_tokens) || 0);
+        if (Number.isFinite(Number(usagePoint.api_cost_cumulative_usd))) {
+          cumulativeApiCost = Math.max(0, Number(usagePoint.api_cost_cumulative_usd));
+        }
+        usageIndex += 1;
+      }
+      if (action?.current_room) visitedRooms.add(String(action.current_room));
+      points.push({
+        move_count: moveCount,
+        input_tokens: cumulativeInputTokens,
+        api_cost_usd: cumulativeApiCost,
+        gems: Math.max(0, Number(action?.gem_count) || 0),
+        rooms: visitedRooms.size
+      });
+    });
+
+    // Older favorites can have exact final usage without per-action telemetry.
+    // Preserve their exact gameplay curve and interpolate only the selected X
+    // axis, making that approximation explicit in the response and UI.
+    const approximateUsageTimeline = points.length > 1 && usagePoints.length === 0 &&
+      (totalInputTokens > 0 || hasApiCost);
+    if (approximateUsageTimeline) {
+      const denominator = points.length - 1;
+      points.forEach((point, index) => {
+        const progress = index / denominator;
+        point.input_tokens = Math.round(totalInputTokens * progress);
+        point.api_cost_usd = hasApiCost ? totalApiCost * progress : null;
+      });
+    } else if (points.length > 1) {
+      const last = points[points.length - 1];
+      last.input_tokens = Math.max(last.input_tokens, totalInputTokens);
+      if (hasApiCost) last.api_cost_usd = totalApiCost;
+    }
+
+    return {
+      run: {
+        id: summary.id,
+        url: summary.url,
+        model_name: summary.model_name,
+        provider: summary.provider,
+        created_at: summary.created_at,
+        status: summary.status,
+        mode: summary.mode,
+        tool_use: summary.tool_use,
+        game_title: summary.game_title,
+        level_id: summary.level_id,
+        gem_count: summary.gem_count,
+        gem_total: summary.gem_total,
+        room_count: summary.room_count,
+        room_total: summary.room_total,
+        turns: summary.turns
+      },
+      usage: {
+        available: Boolean(usage?.available),
+        exact: Boolean(usage?.exact),
+        approximate_timeline: approximateUsageTimeline,
+        input_tokens: totalInputTokens,
+        api_cost_usd: hasApiCost ? totalApiCost : null
+      },
+      heatmap: leaderboardHeatmap(runId, summary, actions),
+      points
+    };
+  }
+
   // Per-move reasoning, live. reasoning.json exists only once the run finishes;
   // while it runs we distill the streamed agent-events.jsonl on the fly so the
   // web UI shows each move's thoughts as they arrive.
@@ -6953,6 +7133,7 @@ function createAgentRunService({
     deleteRun,
     generateRunVideo,
     generateRunReview,
+    getLeaderboardRun,
     getEnvironment,
     getEnvironmentAsync,
     getRunNotes,

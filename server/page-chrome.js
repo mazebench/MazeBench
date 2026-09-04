@@ -89,6 +89,7 @@ function topbar({ rightHtml = "", extraNavHtml = "", extraHtml = "" } = {}) {
       <nav class="topbar-nav" aria-label="Site">
         <a class="nav-link" href="/build">Build</a>
         <a class="nav-link" href="/agent">Agent</a>
+        <a class="nav-link" href="/leaderboard">Leaderboard</a>
         <a class="nav-link" href="/train">Train</a>
         ${extraNavHtml}
       </nav>
@@ -105,6 +106,7 @@ function siteFooter() {
       <span>Maze Bench (local)</span>
       <a class="text-link" href="/build">Build</a>
       <a class="text-link" href="/agent">Agent</a>
+      <a class="text-link" href="/leaderboard">Leaderboard</a>
       <a class="text-link" href="/train">Train</a>
       <a class="text-link" href="https://mazebench.com">mazebench.com</a>
     </footer>`;
