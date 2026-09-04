@@ -8,19 +8,23 @@ const {
   SUPPORTED_LOCAL_CLAUDE_VERSION,
   SUPPORTED_LOCAL_CODEX_VERSION,
   SUPPORTED_LOCAL_KIMI_VERSION,
+  SUPPORTED_LOCAL_MUSE_VERSION,
   agentCommand,
   assertLocalClaudeCommandIsolation,
   assertLocalCodexCommandIsolation,
   assertLocalKimiCommandIsolation,
+  assertLocalMuseCommandIsolation,
   buildMcpPrompt,
   claudeSandboxSettings,
   codexMcpConfigArgs,
   distillClaudeEvents,
   distillCodexEvents,
   distillKimiEvents,
+  distillMuseEvents,
   hasResumableGameSession,
   kimiAgentProfile,
   kimiMcpConfig,
+  museMcpConfig,
   migrateSeedSessionObservation,
   needsPrivateMcpServer,
   sanitizeKimiConfig
@@ -48,10 +52,12 @@ const baseConfig = {
   claudeBin: "claude",
   codexBin: "codex",
   kimiBin: "kimi",
+  museBin: "muse",
   kimiRuntimeDir: path.join(workspace, "kimi-home"),
   kimiSkillsDir: path.join(workspace, "kimi-home", "empty-skills"),
   agentKimiRuntimeDir: path.join(workspace, "kimi-home"),
   agentKimiSkillsDir: path.join(workspace, "kimi-home", "empty-skills"),
+  agentMuseRuntimeDir: path.join(workspace, "muse-home"),
   codexFast: false,
   gameId: "maze",
   gems: 100,
@@ -337,11 +343,13 @@ for (const unsafeCommand of [
 const expectedLocalAgentVersions = {
   codex: process.env.MAZEBENCH_LOCAL_CODEX_VERSION || DEFAULT_LOCAL_AGENT_VERSIONS.codex,
   claude: process.env.MAZEBENCH_LOCAL_CLAUDE_VERSION || DEFAULT_LOCAL_AGENT_VERSIONS.claude,
-  kimi: process.env.MAZEBENCH_LOCAL_KIMI_VERSION || DEFAULT_LOCAL_AGENT_VERSIONS.kimi
+  kimi: process.env.MAZEBENCH_LOCAL_KIMI_VERSION || DEFAULT_LOCAL_AGENT_VERSIONS.kimi,
+  muse: process.env.MAZEBENCH_LOCAL_MUSE_VERSION || DEFAULT_LOCAL_AGENT_VERSIONS.muse
 };
 assert.equal(SUPPORTED_LOCAL_CODEX_VERSION, expectedLocalAgentVersions.codex);
 assert.equal(SUPPORTED_LOCAL_CLAUDE_VERSION, expectedLocalAgentVersions.claude);
 assert.equal(SUPPORTED_LOCAL_KIMI_VERSION, expectedLocalAgentVersions.kimi);
+assert.equal(SUPPORTED_LOCAL_MUSE_VERSION, expectedLocalAgentVersions.muse);
 assert.deepEqual(SUPPORTED_LOCAL_AGENT_VERSIONS, expectedLocalAgentVersions);
 assert.match(localAgentDockerfile, /FROM mcr\.microsoft\.com\/playwright:v1\.60\.0-noble/);
 for (const packagePattern of [
@@ -351,7 +359,7 @@ for (const packagePattern of [
 ]) {
   assert.match(localAgentDockerfile, packagePattern);
 }
-for (const label of ["local-codex", "local-claude", "local-kimi"]) {
+for (const label of ["local-codex", "local-claude", "local-kimi", "local-muse"]) {
   assert.match(localAgentDockerfile, new RegExp("org\\.mazebench\\." + label + "\\.version"));
 }
 assert.match(localAgentDockerfile, new RegExp(LOCAL_AGENT_UPDATE_POLICY));
@@ -371,6 +379,7 @@ for (const boundary of [
   /"--ro-bind", authFile, "\/home\/pwuser\/\.codex\/auth\.json"/,
   /"--ro-bind", authFile, "\/home\/pwuser\/\.claude\/\.credentials\.json"/,
   /"--setenv", "KIMI_CODE_HOME", "\/home\/pwuser\/\.kimi-code"/,
+  /"--setenv", "MUSE_NO_AUTO_UPDATE", "1"/,
   /"--bounding-set=-all"/,
   /"--inh-caps=-all"/,
   /"--ambient-caps=-all"/,
@@ -711,6 +720,55 @@ const directGame = spawnSync(process.execPath, [guard], {
   encoding: "utf8"
 });
 assert.equal(directGame.status, 0);
+
+const museConfig = {
+  ...baseConfig,
+  inContainer: true,
+  model: "muse",
+  modelName: "muse-spark-exact-test-id",
+  reasoning: "ultra",
+  agentWorkspaceDir: "/app/workspace",
+  agentMuseRuntimeDir: "/home/pwuser/.local/share/muse"
+};
+const muse = agentCommand(museConfig, "Solve the game.");
+assert.equal(muse.bin, "muse");
+assert.equal(muse.argv[muse.argv.indexOf("--model") + 1], museConfig.modelName);
+assert.equal(muse.argv[muse.argv.indexOf("--reasoning-effort") + 1], "ultra");
+assert.equal(muse.argv[muse.argv.indexOf("--approval-mode") + 1], "never");
+assert.equal(muse.argv[muse.argv.indexOf("--sandbox-network") + 1], "restricted");
+for (const flag of ["--disable-shell", "--disable-write", "--disable-web-tools", "--no-foreign-personal-context"]) {
+  assert(muse.argv.includes(flag), `Muse Code must enforce ${flag}`);
+}
+assert.equal(assertLocalMuseCommandIsolation(museConfig, muse), true);
+assert.deepEqual(Object.keys(JSON.parse(museMcpConfig(museConfig)).mcp_servers), ["game"]);
+assert.equal(needsPrivateMcpServer(museConfig), true);
+assert.throws(
+  () => assertLocalMuseCommandIsolation(museConfig, { ...muse, argv: [...muse.argv, "--yolo"] }),
+  /attempted to enable/i
+);
+
+const museEvents = [
+  {
+    payload: {
+      event: {
+        kind: "assistant_tool_calls_committed",
+        tool_calls: [{ id: "muse-call-1", name: "game__game_action", arguments: { action: "left" } }]
+      }
+    }
+  },
+  {
+    payload: {
+      event: {
+        kind: "tool_result",
+        tool_call_id: "muse-call-1",
+        result: JSON.stringify({ moved: true, gem_count: 2, current_room: "HxI" })
+      }
+    }
+  }
+].map(JSON.stringify).join("\n");
+assert.deepEqual(distillMuseEvents(museEvents).entries.map(({ action, gems }) => ({ action, gems })), [
+  { action: "left", gems: 2 }
+]);
 
 {
   const resumeDir = fs.mkdtempSync(path.join(os.tmpdir(), "maze-resume-policy-"));

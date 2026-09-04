@@ -10,6 +10,7 @@ const {
   distillClaudeEvents,
   distillCodexEvents,
   distillKimiEvents,
+  distillMuseEvents,
   loadCodexModels
 } = require("../scripts/maze-agent-local");
 const {
@@ -637,7 +638,7 @@ function createAgentRunService({
     const validBoundary = meta?.harness_boundary === `${boundaryPrefix}game-tools-only` ||
       (toolUse === "offline" && meta?.harness_boundary === `${boundaryPrefix}game-tools+isolated-python`);
     if (
-      meta?.harness !== ({ codex: "codex", claude: "claude_code", kimi: "kimi_code" })[provider] ||
+      meta?.harness !== ({ codex: "codex", claude: "claude_code", kimi: "kimi_code", muse: "muse_code" })[provider] ||
       meta?.harness_version !== currentLocalAgentVersion(provider) ||
       !validBoundary ||
       meta?.container_image !== "mazebench-agent"
@@ -661,8 +662,8 @@ function createAgentRunService({
       ? agentEnvironment({ fresh: true })
       : {};
     if (!environment[provider]) {
-      const label = { claude: "Claude Code", kimi: "Kimi Code", codex: "Codex" }[provider] || provider;
-      const login = { claude: "claude auth login", kimi: "kimi login", codex: "codex login" }[provider] || "";
+      const label = { claude: "Claude Code", kimi: "Kimi Code", codex: "Codex", muse: "Muse Code" }[provider] || provider;
+      const login = { claude: "claude auth login", kimi: "kimi login", codex: "codex login", muse: "muse login" }[provider] || "";
       throw new Error(`${label} needs an active local account. Run \`${login}\`, then refresh the Agent page.`);
     }
   }
@@ -2852,7 +2853,9 @@ function createAgentRunService({
         ? distillClaudeEvents(raw)
         : model === "kimi"
           ? distillKimiEvents(raw)
-          : distillCodexEvents(raw);
+          : model === "muse"
+            ? distillMuseEvents(raw)
+            : distillCodexEvents(raw);
       const liveReasoning = distilled.entries || [];
       const liveWithText = liveReasoning.filter((entry) => entry.reasoning).length;
       const finalWithText = finalReasoning.filter((entry) => entry.reasoning).length;
@@ -3741,6 +3744,28 @@ function createAgentRunService({
               note: "Waiting for Kimi Code usage…",
               actions: []
             };
+      } else if (summary.provider === "muse") {
+        const events = fs.existsSync(eventsPath)
+          ? fs.readFileSync(eventsPath, "utf8").split(/\r?\n/).flatMap((line) => {
+              try { return line.trim() ? [JSON.parse(line)] : []; } catch (_error) { return []; }
+            })
+          : [];
+        const usage = [...events].reverse().map((event) => event.payload?.event?.usage || event.payload?.usage)
+          .find((candidate) => candidate && typeof candidate === "object") || {};
+        const inputTokens = Math.max(0, Number(usage.input_tokens ?? usage.inputTokens) || 0);
+        const outputTokens = Math.max(0, Number(usage.output_tokens ?? usage.outputTokens) || 0);
+        value = {
+          provider: "muse",
+          available: inputTokens + outputTokens > 0,
+          exact: inputTokens + outputTokens > 0,
+          note: inputTokens + outputTokens > 0 ? "Exact usage reported by Muse Code." : "Waiting for Muse Code usage…",
+          total_tokens: Math.max(0, Number(usage.total_tokens ?? usage.totalTokens) || inputTokens + outputTokens),
+          input_tokens: inputTokens,
+          cached_input_tokens: Math.max(0, Number(usage.cached_input_tokens ?? usage.cachedInputTokens) || 0),
+          output_tokens: outputTokens,
+          reasoning_tokens: Math.max(0, Number(usage.reasoning_tokens ?? usage.reasoningTokens) || 0),
+          actions: []
+        };
       } else if (summary.provider === "prime-agent") {
         value = parsePrimeAgentEvents(
           readFilteredUsageLines(
@@ -4941,6 +4966,44 @@ function createAgentRunService({
     return visionFamilies.some((pattern) => pattern.test(slug));
   }
 
+  function museModelCatalog() {
+    const result = spawnSync(process.execPath, [path.join(rootDir, "scripts", "muse-model-catalog.js")], {
+      encoding: "utf8", env: enrichedPathEnv(), timeout: 12_000, maxBuffer: 2 * 1024 * 1024
+    });
+    const version = spawnSync("muse", ["--version"], { encoding: "utf8", env: enrichedPathEnv(), timeout: 3_000 });
+    const versionText = String(version.stdout || version.stderr || "").trim();
+    let payload = {};
+    try { payload = JSON.parse(String(result.stdout || "{}")); } catch (_error) { /* fail closed */ }
+    const live = result.status === 0 && payload.providerId === "meta" && payload.source === "providerCatalog";
+    const models = live && Array.isArray(payload.models)
+      ? payload.models.filter((model) => model?.providerId === "meta" && String(model?.modelId || "")).map((model) => ({
+          id: String(model.modelId),
+          label: String(model.displayLabel || model.modelId),
+          description: String(model.description || "Meta Muse model through Muse Code"),
+          reasoning_levels: ["none", "minimal", "low", "medium", "high", "xhigh", "ultra"],
+          default_reasoning: "ultra",
+          vision: true,
+          input_price: model.cost?.input == null ? null : Number(model.cost.input),
+          output_price: model.cost?.output == null ? null : Number(model.cost.output),
+          cached_input_price: model.cost?.cached == null ? null : Number(model.cost.cached)
+        }))
+      : [];
+    // Meta currently marks the contributor profile as the provider default.
+    // Keep data contribution opt-in by preferring the newest standard profile.
+    const defaultId = live
+      ? String(models.find((model) => !model.id.endsWith("-contributor"))?.id || models[0]?.id || "")
+      : "";
+    return {
+      models,
+      source: versionText || "Muse Code CLI",
+      checked_at: modelCatalogCheckedAt(),
+      default_model_id: defaultId,
+      note: live && models.length
+        ? "Exact ids from Meta's authenticated live catalog. MazeBench verifies the runtime model-selection event and stops on any mismatch."
+        : "Run `muse login`, then refresh. MazeBench refuses bundled, guessed, or silently substituted Muse model ids."
+    };
+  }
+
   function primeModelCatalog() {
     const result = spawnSync("prime", ["--plain", "inference", "models", "--output", "json"], {
       encoding: "utf8",
@@ -5020,7 +5083,7 @@ function createAgentRunService({
   function listProviderModels(provider, { fresh = false, harness = "none" } = {}) {
     const normalized = String(provider || "").toLowerCase();
 
-    if (!["codex", "claude", "kimi", "prime"].includes(normalized)) {
+    if (!["codex", "claude", "kimi", "muse", "prime"].includes(normalized)) {
       throw new Error(`Unknown provider "${provider}".`);
     }
 
@@ -5042,6 +5105,8 @@ function createAgentRunService({
       ? claudeModelCatalog()
       : normalized === "kimi"
         ? kimiModelCatalog()
+        : normalized === "muse"
+          ? museModelCatalog()
         : primeModelCatalog();
     const ttl = value.models.length ? PROVIDER_MODEL_TTL_MS : PROVIDER_MODEL_ERROR_TTL_MS;
 
@@ -5073,7 +5138,7 @@ function createAgentRunService({
     const inference = String(params.inference || "subscription").trim().toLowerCase();
 
     if (!SUPPORTED_LOCAL_AGENT_VERSIONS[model]) {
-      throw new Error("Choose a certified local Codex, Claude Code, or Kimi Code runner.");
+      throw new Error("Choose a certified local Codex, Claude Code, Kimi Code, or Muse Code runner.");
     }
     if (!["subscription", "prime"].includes(inference) || (inference === "prime" && model !== "codex")) {
       throw new Error("Prime inference is supported only by the isolated Codex runner.");
@@ -5123,8 +5188,17 @@ function createAgentRunService({
       throw new Error(
         "The certified local-agent image is missing or stale. Run `npm run maze:build-local-agents` " +
         `(required Codex ${requiredVersions.codex}, Claude Code ${requiredVersions.claude}, ` +
-        `Kimi Code ${requiredVersions.kimi}).`
+        `Kimi Code ${requiredVersions.kimi}, Muse Code ${requiredVersions.muse}).`
       );
+    }
+    if (model === "muse") {
+      const requestedModel = String(params.model_name || "").trim();
+      if (!requestedModel || !museModelCatalog().models.some((entry) => entry.id === requestedModel)) {
+        throw new Error(
+          `Muse Code model ${requestedModel || "(missing)"} is not in Meta's live authenticated catalog; ` +
+          "MazeBench will not guess an id or accept an older/different model."
+        );
+      }
     }
     const args = [
       `model=${model}`,
@@ -5193,6 +5267,8 @@ function createAgentRunService({
         if (exact && supported.length && !supported.includes(reasoning)) {
           throw new Error(`${exact.id} supports Kimi effort: ${supported.join(", ")}.`);
         }
+      } else if (model === "muse" && !["none", "minimal", "low", "medium", "high", "xhigh", "ultra"].includes(reasoning)) {
+        throw new Error("Muse Code supports effort: none, minimal, low, medium, high, xhigh, ultra.");
       }
 
       args.push(`reasoning=${reasoning}`);
@@ -5680,8 +5756,8 @@ function createAgentRunService({
           model,
           model_name: exactModelName,
           model_alias: exactModelName !== requestedModelName ? requestedModelName : "",
-          harness: ({ codex: "codex", claude: "claude_code", kimi: "kimi_code" })[model],
-          harness_label: ({ codex: "Codex", claude: "Claude Code", kimi: "Kimi Code" })[model],
+          harness: ({ codex: "codex", claude: "claude_code", kimi: "kimi_code", muse: "muse_code" })[model],
+          harness_label: ({ codex: "Codex", claude: "Claude Code", kimi: "Kimi Code", muse: "Muse Code" })[model],
           harness_version: currentLocalAgentVersion(model),
           harness_boundary: toolUse === "offline"
             ? "disposable-container/game-tools+isolated-python"
@@ -6099,7 +6175,8 @@ function createAgentRunService({
 
       try {
         const event = JSON.parse(trimmed);
-        const id = event.thread_id || event.session_id;
+        const id = event.conversation_id || event.thread_id || event.session_id || event.init?.conversation_id ||
+          (event.stream?.kind === "session" ? event.stream.id : "");
         if (id) return String(id);
       } catch (_error) {
         /* skip non-JSON lines */

@@ -68,6 +68,7 @@ const MIRRORED_FILES = [
   "shared/maze-ascii-palette.js",
   "shared/maze-observation-contract.js",
   "scripts/maze-agent-local.js",
+  "scripts/muse-model-catalog.js",
   "scripts/ensure-local-agent-image.js",
   "scripts/local-agent-image.js",
   "scripts/maze-bridge.js",

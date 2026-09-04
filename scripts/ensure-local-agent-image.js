@@ -7,6 +7,7 @@ const {
   imageLabelsAreCertified,
   localAgentSourceFingerprint,
   resolveLatestLocalAgentVersions,
+  resolveLatestMuseRelease,
   versionsFromImageLabels
 } = require("./local-agent-image");
 
@@ -64,13 +65,15 @@ function dockerRunning() {
 }
 
 function installedProviderVersion(image, provider) {
-  const command = { codex: "codex", claude: "claude", kimi: "kimi" }[provider];
+  const command = { codex: "codex", claude: "claude", kimi: "kimi", muse: "muse" }[provider];
   const result = run(
     "docker",
     ["run", "--rm", "--entrypoint", command, image, "--version"],
     { capture: true, timeout: 30_000 }
   );
-  return String(result.stdout || result.stderr || "").match(/\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?/)?.[0] || "";
+  const output = String(result.stdout || result.stderr || "");
+  if (provider === "muse") return output.match(/\((\d+\.\d+\.\d+-R\d+(?:\.\d+)?)\)/)?.[1] || "";
+  return output.match(/\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?/)?.[0] || "";
 }
 
 function ensureLocalAgentImage(options = {}) {
@@ -83,7 +86,8 @@ function ensureLocalAgentImage(options = {}) {
   }
 
   console.log("MazeBench: resolving current coding-agent releases...");
-  const versions = resolveLatestLocalAgentVersions();
+  const museRelease = resolveLatestMuseRelease();
+  const versions = resolveLatestLocalAgentVersions({ museRelease });
   const sourceFingerprint = localAgentSourceFingerprint(ROOT_DIR);
   const existingLabels = inspectImageLabels(LOCAL_AGENT_IMAGE);
 
@@ -92,7 +96,8 @@ function ensureLocalAgentImage(options = {}) {
       imageLabelsAreCertified(existingLabels, ROOT_DIR, versions)) {
     console.log(
       "MazeBench: persistent local-agent image is current " +
-      "(Codex " + versions.codex + ", Claude Code " + versions.claude + ")."
+      "(Codex " + versions.codex + ", Claude Code " + versions.claude +
+      ", Kimi Code " + versions.kimi + ", Muse Code " + versions.muse + ")."
     );
     return { built: false, versions };
   }
@@ -100,7 +105,8 @@ function ensureLocalAgentImage(options = {}) {
   const candidate = "mazebench-agent:candidate-" + process.pid;
   console.log(
     "MazeBench: building a certified candidate with Codex " + versions.codex +
-    " and Claude Code " + versions.claude + "..."
+    ", Claude Code " + versions.claude + ", Kimi Code " + versions.kimi +
+    ", and Muse Code " + versions.muse + "..."
   );
   try {
     run("docker", [
@@ -109,6 +115,7 @@ function ensureLocalAgentImage(options = {}) {
       "--build-arg", "CODEX_VERSION=" + versions.codex,
       "--build-arg", "CLAUDE_CODE_VERSION=" + versions.claude,
       "--build-arg", "KIMI_CODE_VERSION=" + versions.kimi,
+      "--build-arg", "MUSE_CODE_VERSION=" + versions.muse,
       "--build-arg", "MAZEBENCH_SOURCE_FINGERPRINT=" + sourceFingerprint,
       "-t", candidate,
       "."
@@ -165,7 +172,8 @@ function ensureLocalAgentImage(options = {}) {
     run("docker", ["tag", candidate, LOCAL_AGENT_IMAGE], { timeout: 30_000 });
     console.log(
       "MazeBench: promoted the verified persistent image " +
-      "(Codex " + versions.codex + ", Claude Code " + versions.claude + ")."
+      "(Codex " + versions.codex + ", Claude Code " + versions.claude +
+      ", Kimi Code " + versions.kimi + ", Muse Code " + versions.muse + ")."
     );
     return {
       built: true,

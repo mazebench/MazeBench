@@ -33,6 +33,11 @@
       id: "kimi-code",
       name: "Kimi Code",
       logo: '<img src="/logos/kimi.svg" alt="" width="128" height="128" loading="eager" decoding="sync" fetchpriority="high">'
+    },
+    {
+      id: "muse-code",
+      name: "Muse Code",
+      logo: '<img src="/logos/muse-code.svg" alt="" width="128" height="128" loading="eager" decoding="sync" fetchpriority="high">'
     }
   ];
   const LOCAL_SETUP = {
@@ -50,6 +55,11 @@
       docs: "https://moonshotai.github.io/kimi-code/en/guides/getting-started.html",
       install: "npm install -g @moonshot-ai/kimi-code\nkimi login",
       login: "kimi login"
+    },
+    "muse-code": {
+      docs: "https://research.meta.ai/blog/introducing-muse-code-and-muse-spark-1-2/",
+      install: "curl -fsSL https://dev.meta.ai/install.sh | bash\nmuse login",
+      login: "muse login"
     }
   };
   const PRIME_SETUP = {
@@ -68,6 +78,7 @@
     codex: "OpenAI",
     claude: "Anthropic",
     kimi: "Moonshot AI",
+    muse: "Meta",
     prime: "Prime Intellect"
   };
   const RUN_STATUS_LABELS = {
@@ -465,6 +476,7 @@
     if (harnessId === "custom") return state.customHarnessId;
     if (harnessId === "claude-code") return "claude_code";
     if (harnessId === "kimi-code") return "kimi_code";
+    if (harnessId === "muse-code") return "muse_code";
     return harnessId;
   }
 
@@ -479,6 +491,7 @@
     if (harnessId === "codex") return "codex";
     if (harnessId === "claude-code") return "claude";
     if (harnessId === "kimi-code") return "kimi";
+    if (harnessId === "muse-code") return "muse";
     return "";
   }
 
@@ -925,7 +938,7 @@
     const providerHost = document.getElementById("provider-picker");
     const providerSelectionFrom = selectedRect(providerHost, ".provider-card.is-selected");
     localAvailabilityRequest += 1;
-    state.execution = "prime";
+    state.execution = harnessId === "muse-code" ? "local" : "prime";
     state.localAvailability = "idle";
     state.harness = harnessId;
     state.modelId = null;
@@ -1126,7 +1139,9 @@
     metaEl.textContent = [catalog.source, catalogTime(catalog)].filter(Boolean).join(" · ");
 
     const customChip = { id: "__custom__", label: "Custom…", description: "type any model id" };
-    const allowCustomModel = state.execution === "local" || state.harness === "none" || state.harness === "custom";
+    const allowCustomModel =
+      (state.execution === "local" && state.harness !== "muse-code") ||
+      state.harness === "none" || state.harness === "custom";
     const customMarkup = allowCustomModel
       ? `<div class="model-custom-row">${modelChip(customChip)}</div>`
       : "";
@@ -1259,6 +1274,11 @@
       return model && Array.isArray(model.reasoning_levels) && model.reasoning_levels.length
         ? model.reasoning_levels
         : ["high"];
+    }
+    if (state.harness === "muse-code") {
+      return model && Array.isArray(model.reasoning_levels) && model.reasoning_levels.length
+        ? model.reasoning_levels
+        : ["none", "minimal", "low", "medium", "high", "xhigh", "ultra"];
     }
     return model && Array.isArray(model.reasoning_levels) && model.reasoning_levels.length
       ? model.reasoning_levels
@@ -1859,7 +1879,7 @@
         }
       } else {
         const environment = await refreshEnvironment();
-        const launchedHarness = ({ codex: "codex", claude: "claude-code", kimi: "kimi-code" })[body.model];
+        const launchedHarness = ({ codex: "codex", claude: "claude-code", kimi: "kimi-code", muse: "muse-code" })[body.model];
         const availability = localRunAvailability(launchedHarness, environment);
         if (!availability.available) {
           showLocalSetup(launchedHarness, availability);
@@ -1940,7 +1960,7 @@
       ? (run.harness || "none") === "none"
         ? "Prime Intellect"
         : `${harnessName || "Prime Intellect"} via Prime`
-      : ({ codex: "Codex", claude: "Claude Code", kimi: "Kimi Code" }[run.provider || run.model] || run.model);
+      : ({ codex: "Codex", claude: "Claude Code", kimi: "Kimi Code", muse: "Muse Code" }[run.provider || run.model] || run.model);
     const reasoningEffort = String(run.reasoning || (run.provider === "prime" ? "off" : "auto")).toLowerCase();
     const showStartRoom = Boolean(run.level_id) && !run.start_room_is_default;
     const createdAt = escapeText(run.created_at ? new Date(run.created_at).toLocaleString() : "");

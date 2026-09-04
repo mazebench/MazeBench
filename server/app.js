@@ -74,6 +74,7 @@ const PUBLIC_FILE_ROUTES = new Map(
     "/logos/codex.png",
     "/logos/claude.png",
     "/logos/kimi.svg",
+    "/logos/muse-code.svg",
     "/logos/prime.png"
   ].map((routePath) => [routePath, path.join(PUBLIC_DIR, routePath.slice(1))])
 );
@@ -356,6 +357,14 @@ function kimiAccountStatus(result) {
   };
 }
 
+function museAccountStatus(result) {
+  let payload = {};
+  try { payload = JSON.parse(String(result?.stdout || "{}")); } catch (_error) { /* fail closed */ }
+  const models = Array.isArray(payload.models) ? payload.models : [];
+  const authenticated = result?.status === 0 && payload.source === "providerCatalog" && models.length > 0;
+  return { authenticated, subscription: authenticated, method: authenticated ? "meta-oauth" : "" };
+}
+
 function agentEnvironment(options = {}) {
   if (!options.fresh && agentEnvironmentCache && Date.now() - agentEnvironmentCache.at < 15000) {
     return agentEnvironmentCache.value;
@@ -382,6 +391,7 @@ function agentEnvironment(options = {}) {
   const codexInstalled = probe("codex");
   const claudeInstalled = probe("claude");
   const kimiInstalled = probe("kimi");
+  const museInstalled = probe("muse");
   const primeInstalled = probe("prime");
   const codexAuth = codexSubscriptionStatus(
     codexInstalled ? probeCommand("codex", ["login", "status"]) : null
@@ -391,6 +401,9 @@ function agentEnvironment(options = {}) {
   );
   const kimiAuth = kimiAccountStatus(
     kimiInstalled ? probeCommand("kimi", ["provider", "list", "--json"]) : null
+  );
+  const museAuth = museAccountStatus(
+    museInstalled ? probeCommand(process.execPath, [path.join(ROOT_DIR, "scripts", "muse-model-catalog.js")], 12_000) : null
   );
   // An API key can remain in the environment after it expires. Ask Prime to
   // validate the current credentials instead of treating presence as proof.
@@ -418,6 +431,11 @@ function agentEnvironment(options = {}) {
     kimi_authenticated: kimiAuth.authenticated,
     kimi_subscription: kimiAuth.subscription,
     kimi_auth_method: kimiAuth.method,
+    muse: museInstalled && museAuth.subscription && docker.running && docker.image,
+    muse_installed: museInstalled,
+    muse_authenticated: museAuth.authenticated,
+    muse_subscription: museAuth.subscription,
+    muse_auth_method: museAuth.method,
     // `docker` means "ready for a container run" — installed AND daemon up.
     docker: docker.running,
     docker_installed: docker.installed,
@@ -473,24 +491,27 @@ async function agentEnvironmentAsync(options = {}) {
   };
 
   agentEnvironmentPromise = (async () => {
-    const [codexInstalled, claudeInstalled, kimiInstalled, primeInstalled, uvInstalled, dockerInstalled] = await Promise.all([
+    const [codexInstalled, claudeInstalled, kimiInstalled, museInstalled, primeInstalled, uvInstalled, dockerInstalled] = await Promise.all([
       commandExists("codex"),
       commandExists("claude"),
       commandExists("kimi"),
+      commandExists("muse"),
       commandExists("prime"),
       commandExists("uv"),
       commandExists("docker")
     ]);
-    const [codexResult, claudeResult, kimiResult, primeResult, dockerResult] = await Promise.all([
+    const [codexResult, claudeResult, kimiResult, museResult, primeResult, dockerResult] = await Promise.all([
       codexInstalled ? runCommand("codex", ["login", "status"]) : null,
       claudeInstalled ? runCommand("claude", ["auth", "status", "--json"]) : null,
       kimiInstalled ? runCommand("kimi", ["provider", "list", "--json"]) : null,
+      museInstalled ? runCommand(process.execPath, [path.join(ROOT_DIR, "scripts", "muse-model-catalog.js")], 12_000) : null,
       primeInstalled ? runCommand("prime", ["whoami"], 8000) : null,
       dockerInstalled ? runCommand("docker", ["info", "--format", "{{.ServerVersion}}"], 8000) : null
     ]);
     const codexAuth = codexSubscriptionStatus(codexResult ? { ...codexResult, status: 0 } : null);
     const claudeAuth = claudeSubscriptionStatus(claudeResult ? { ...claudeResult, status: 0 } : null);
     const kimiAuth = kimiAccountStatus(kimiResult ? { ...kimiResult, status: 0 } : null);
+    const museAuth = museAccountStatus(museResult ? { ...museResult, status: 0 } : null);
     const primeAuthenticated = Boolean(primeResult);
     const dockerRunning = Boolean(dockerResult && String(dockerResult.stdout || "").trim());
     const imageResult = dockerRunning
@@ -531,6 +552,11 @@ async function agentEnvironmentAsync(options = {}) {
       kimi_authenticated: kimiAuth.authenticated,
       kimi_subscription: kimiAuth.subscription,
       kimi_auth_method: kimiAuth.method,
+      muse: museInstalled && museAuth.subscription && dockerRunning && localAgentImage,
+      muse_installed: museInstalled,
+      muse_authenticated: museAuth.authenticated,
+      muse_subscription: museAuth.subscription,
+      muse_auth_method: museAuth.method,
       docker: Boolean(dockerRunning),
       docker_installed: dockerInstalled,
       docker_running: Boolean(dockerRunning),
