@@ -629,8 +629,9 @@ function createAgentRunService({
       meta?.inference_provider === "prime";
   }
 
-  function requireIsolatedLocalAgentMeta(meta) {
+  function requireIsolatedLocalAgentMeta(meta, options = {}) {
     const provider = String(meta?.model || "").trim().toLowerCase();
+    const currentVersion = currentLocalAgentVersion(provider);
     const toolUse = String(meta?.tool_use || meta?.launch_params?.tool_use || "read-only").trim().toLowerCase();
     const boundaryPrefix = isPrimeLocalIsolatedRun(meta)
       ? "prime-inference/disposable-container/"
@@ -639,7 +640,7 @@ function createAgentRunService({
       (toolUse === "offline" && meta?.harness_boundary === `${boundaryPrefix}game-tools+isolated-python`);
     if (
       meta?.harness !== ({ codex: "codex", claude: "claude_code", kimi: "kimi_code", muse: "muse_code" })[provider] ||
-      meta?.harness_version !== currentLocalAgentVersion(provider) ||
+      (!options.allowVersionRefresh && meta?.harness_version !== currentVersion) ||
       !validBoundary ||
       meta?.container_image !== "mazebench-agent"
     ) {
@@ -653,6 +654,21 @@ function createAgentRunService({
       tool_use: meta?.tool_use,
       swarm: meta?.swarm
     });
+    if (meta?.harness_version !== currentVersion) {
+      if (!meta?.id || !currentVersion) throw new Error(RETIRED_LOCAL_AGENT_MESSAGE);
+      const refreshed = {
+        ...meta,
+        harness_version: currentVersion,
+        harness_version_history: [...new Set([
+          ...(Array.isArray(meta.harness_version_history) ? meta.harness_version_history : []),
+          String(meta.harness_version || "").trim()
+        ].filter(Boolean))],
+        harness_version_refreshed_at: new Date().toISOString()
+      };
+      writeRunMeta(meta.id, refreshed);
+      return refreshed;
+    }
+    return meta;
   }
 
   function requireLocalSubscription(params) {
@@ -6017,7 +6033,11 @@ function createAgentRunService({
       throw new Error(`Unknown run "${runId}".`);
     }
     const localIsolatedPrime = isPrimeLocalIsolatedRun(meta);
-    if (meta.kind !== "prime" || localIsolatedPrime) requireIsolatedLocalAgentMeta(meta);
+    if (meta.kind !== "prime" || localIsolatedPrime) {
+      meta = requireIsolatedLocalAgentMeta(meta, {
+        allowVersionRefresh: ["paused", "failed"].includes(meta.status)
+      });
+    }
 
     if (meta.kind === "prime" && !localIsolatedPrime && ["paused", "failed"].includes(meta.status)) {
       const base = {
