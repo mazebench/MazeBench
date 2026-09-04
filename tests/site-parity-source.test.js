@@ -138,7 +138,7 @@ assert.doesNotMatch(pages, /rel="preload" as="image" href="\/logos\/kimi\.svg"/)
 assert.match(appSource, /"\/logos\/kimi\.svg"/);
 assert.match(pages, /rel="preload" as="image" href="\/logos\/prime\.png"[^>]*fetchpriority="high"/);
 assert.doesNotMatch(agentScript, /logos\/(?:codex|claude|prime)\.png" alt="" loading="lazy"/);
-assert.equal((agentScript.match(/loading="eager" decoding="sync" fetchpriority="high"/g) || []).length, 4);
+assert.equal((agentScript.match(/loading="eager" decoding="sync" fetchpriority="high"/g) || []).length, 5);
 assert.match(agentScript, /const HARNESSES = \[/);
 assert.match(agentScript, /function runModeLabel\(value\)/);
 assert.match(agentScript, /run-card__badge--mode[^\n]*runModeLabel\(run\.mode\)/);
@@ -147,6 +147,7 @@ assert.match(agentScript, /id: "custom",\s*name: "Prime Agent",\s*logo: '<img sr
 assert.match(agentScript, /id: "codex",\s*name: "Codex",\s*logo: '<img src="\/logos\/codex\.png"/);
 assert.match(agentScript, /id: "claude-code",\s*name: "Claude Code",\s*logo: '<img src="\/logos\/claude\.png"/);
 assert.match(agentScript, /id: "kimi-code",\s*name: "Kimi Code",\s*logo: '<img src="\/logos\/kimi\.svg"/);
+assert.match(agentScript, /id: "kimi-code"[\s\S]*?id: "muse-code",\s*name: "Muse Code",\s*logo: '<img src="\/logos\/muse-code\.svg"/);
 assert.match(agentScript, /kind: "prime",\s*harness: effectiveHarnessId\(\)/);
 assert.match(agentScript, /kind: "local",\s*subscription: true,\s*model: localProviderId\(\)/);
 assert.match(pages, /id="custom-harness-panel"/);

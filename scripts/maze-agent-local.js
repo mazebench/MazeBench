@@ -19,18 +19,25 @@ const {
   inlinePermissionTable,
   preflightPythonSandbox
 } = require("./maze-python-sandbox");
+const { DEFAULT_LOCAL_AGENT_VERSIONS } = require("./local-agent-image");
 const DEFAULT_MAX_SWARM_WORKERS = 8;
-const SUPPORTED_LOCAL_CODEX_VERSION = "0.146.0";
-const SUPPORTED_LOCAL_CLAUDE_VERSION = "2.1.220";
-const SUPPORTED_LOCAL_KIMI_VERSION = "0.29.1";
+const SUPPORTED_LOCAL_CODEX_VERSION =
+  process.env.MAZEBENCH_LOCAL_CODEX_VERSION || DEFAULT_LOCAL_AGENT_VERSIONS.codex;
+const SUPPORTED_LOCAL_CLAUDE_VERSION =
+  process.env.MAZEBENCH_LOCAL_CLAUDE_VERSION || DEFAULT_LOCAL_AGENT_VERSIONS.claude;
+const SUPPORTED_LOCAL_KIMI_VERSION =
+  process.env.MAZEBENCH_LOCAL_KIMI_VERSION || DEFAULT_LOCAL_AGENT_VERSIONS.kimi;
+const SUPPORTED_LOCAL_MUSE_VERSION =
+  process.env.MAZEBENCH_LOCAL_MUSE_VERSION || DEFAULT_LOCAL_AGENT_VERSIONS.muse;
 const SUPPORTED_LOCAL_AGENT_VERSIONS = Object.freeze({
   codex: SUPPORTED_LOCAL_CODEX_VERSION,
   claude: SUPPORTED_LOCAL_CLAUDE_VERSION,
-  kimi: SUPPORTED_LOCAL_KIMI_VERSION
+  kimi: SUPPORTED_LOCAL_KIMI_VERSION,
+  muse: SUPPORTED_LOCAL_MUSE_VERSION
 });
 const SUPPORTED_KIMI_CODE_VERSIONS = new Set([SUPPORTED_LOCAL_KIMI_VERSION]);
 const RETIRED_LOCAL_AGENT_MESSAGE =
-  "Certified local coding-agent routes require a pinned Codex, Claude Code, or Kimi Code CLI " +
+  "Certified local coding-agent routes require a pinned Codex, Claude Code, Kimi Code, or Muse Code CLI " +
   "inside a fresh Docker container, reviewed game/Python tools only, and launch-time isolation preflights.";
 
 // Claude Code discovers MCP tools only when its default tool registry is
@@ -1062,6 +1069,17 @@ function kimiMcpConfig(config) {
   }, null, 2) + "\n";
 }
 
+function museMcpConfig(config) {
+  if (!config.mcpUrl) throw new Error("Muse Code requires the private MazeBench MCP endpoint.");
+  const serverName = config.toolUse === "read-only" ? "game" : "mazebench";
+  return JSON.stringify({
+    schema_version: 1,
+    mcp_servers: {
+      [serverName]: { transport: "streamable_http", url: config.mcpUrl, mode: "required" }
+    }
+  }, null, 2) + "\n";
+}
+
 function prepareKimiRuntime(config) {
   const sourceHome = config.kimiAuthDir || process.env.KIMI_CODE_HOME || path.join(os.homedir(), ".kimi-code");
   const sourceConfig = path.join(sourceHome, "config.toml");
@@ -1171,7 +1189,7 @@ async function startPrivateMcpServer(config) {
 }
 
 function needsPrivateMcpServer(config) {
-  return Boolean(config.mcpEnabled && (config.inContainer || ["claude", "kimi"].includes(config.model)));
+  return Boolean(config.mcpEnabled && (config.inContainer || ["claude", "kimi", "muse"].includes(config.model)));
 }
 
 function isolatedDockerAgentCommand(config, command) {
@@ -1311,6 +1329,30 @@ function isolatedDockerAgentCommand(config, command) {
     }
     chownTree(sessionsDir);
     fs.chownSync(sessionIndex, config.agentUid, config.agentGid);
+  } else if (config.model === "muse") {
+    const authFile = process.env.MAZEBENCH_MUSE_AUTH_FILE || "/run/mazebench-credentials/muse-auth.json";
+    if (!fs.existsSync(authFile) || !fs.statSync(authFile).isFile() || fs.statSync(authFile).size === 0) {
+      throw new Error("The isolated Muse Code runtime has no Meta credential. Run `muse login`, then retry.");
+    }
+    const configDir = path.join(providerHomeDir, ".config", "muse");
+    const sessionsDir = path.join(config.outDir, "agent-state", "muse", "sessions");
+    fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
+    fs.mkdirSync(path.join(providerHomeDir, ".local", "share", "muse", "sessions"), { recursive: true, mode: 0o700 });
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    fs.writeFileSync(path.join(configDir, "auth.json"), "", { mode: 0o600 });
+    fs.writeFileSync(path.join(configDir, "settings.json"), museMcpConfig(config), { mode: 0o600 });
+    providerBindArgs.push(
+      "--ro-bind", authFile, "/home/pwuser/.config/muse/auth.json",
+      "--bind", sessionsDir, "/home/pwuser/.local/share/muse/sessions"
+    );
+    credentialSources.push(authFile);
+    providerSetenv.push(
+      "--setenv", "XDG_CONFIG_HOME", "/home/pwuser/.config",
+      "--setenv", "XDG_DATA_HOME", "/home/pwuser/.local/share",
+      "--setenv", "MUSE_LOGIN", "0",
+      "--setenv", "MUSE_NO_AUTO_UPDATE", "1"
+    );
+    chownTree(sessionsDir);
   } else {
     throw new Error(`Unknown local provider: ${config.model}`);
   }
@@ -1580,7 +1622,36 @@ function agentCommand(config, prompt) {
     };
   }
 
-  throw new Error(`Unknown model: ${config.model} (expected "codex", "claude", or "kimi")`);
+  if (config.model === "muse") {
+    if (!config.modelName || !/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(config.modelName)) {
+      throw new Error("Muse Code requires an exact id from its authenticated Meta model catalog.");
+    }
+    const argv = [
+      "exec", "--json", "--provider", "meta", "--model", config.modelName,
+      "--reasoning-effort", config.reasoning || "ultra",
+      "--workspace", config.agentWorkspaceDir,
+      "--approval-mode", "never", "--approval-judge", "off",
+      "--disable-web-tools", "--no-foreign-personal-context", "--disable-write", "--disable-shell",
+      "--sandbox-network", "restricted", "--no-parallel-tool-calls"
+    ];
+    if (!config.unlimited) argv.push("--max-model-steps", maxTurns);
+    if (config.resume) argv.push("--session-id", config.resume);
+    argv.push(prompt);
+    return {
+      bin: config.museBin,
+      argv,
+      env: {
+        XDG_CONFIG_HOME: "/home/pwuser/.config",
+        XDG_DATA_HOME: "/home/pwuser/.local/share",
+        MUSE_LOGIN: "0",
+        MUSE_NO_AUTO_UPDATE: "1",
+        NO_COLOR: "1",
+        CI: "1"
+      }
+    };
+  }
+
+  throw new Error(`Unknown model: ${config.model} (expected "codex", "claude", "kimi", or "muse")`);
 }
 
 const REQUIRED_LOCAL_CODEX_DISABLED_FEATURES = Object.freeze([
@@ -1815,10 +1886,52 @@ function assertLocalKimiCommandIsolation(config, command) {
   return true;
 }
 
+function assertLocalMuseCommandIsolation(config, command) {
+  if (!config.inContainer || config.model !== "muse") {
+    throw new Error("Muse Code must run inside the certified disposable container boundary.");
+  }
+  const offline = config.toolUse === "offline";
+  if (!["read-only", "offline"].includes(config.toolUse) || Boolean(config.tools) !== offline || config.swarm) {
+    throw new Error("Muse Code supports one agent with game controls and the optional isolated Python tool only.");
+  }
+  if (command.bin !== config.museBin) throw new Error("The evaluated process must be the pinned Muse Code CLI.");
+  const args = command.argv.map(String);
+  const indexes = (flag) => args.flatMap((value, index) => value === flag ? [index] : []);
+  const valueAfter = (flag) => {
+    const matches = indexes(flag);
+    if (matches.length !== 1 || matches[0] + 1 >= args.length) throw new Error(`Muse Code needs one exact ${flag} setting.`);
+    return args[matches[0] + 1];
+  };
+  if (args[0] !== "exec" || !args.includes("--json") || valueAfter("--provider") !== "meta" ||
+      valueAfter("--model") !== config.modelName || valueAfter("--workspace") !== config.agentWorkspaceDir ||
+      valueAfter("--approval-mode") !== "never" || valueAfter("--approval-judge") !== "off" ||
+      valueAfter("--sandbox-network") !== "restricted") {
+    throw new Error("Muse Code launch is missing its exact model or fail-closed execution policy.");
+  }
+  for (const required of ["--disable-web-tools", "--no-foreign-personal-context", "--disable-write", "--disable-shell", "--no-parallel-tool-calls"]) {
+    if (indexes(required).length !== 1) throw new Error(`Muse Code did not enforce ${required}.`);
+  }
+  for (const forbidden of ["--yolo", "--trust-workspace", "--disable-approval", "--disable-sandbox", "--enable-shell-tool", "--allow-workspace-switch", "--base-url", "--preset"]) {
+    if (args.includes(forbidden)) throw new Error(`Muse Code launch attempted to enable ${forbidden}.`);
+  }
+  if (!["none", "minimal", "low", "medium", "high", "xhigh", "ultra"].includes(valueAfter("--reasoning-effort"))) {
+    throw new Error("Muse Code launch requested an unsupported reasoning effort.");
+  }
+  const settings = JSON.parse(museMcpConfig(config));
+  const servers = Object.entries(settings.mcp_servers || {});
+  const expectedServer = offline ? "mazebench" : "game";
+  if (servers.length !== 1 || servers[0][0] !== expectedServer || servers[0][1]?.transport !== "streamable_http" ||
+      servers[0][1]?.url !== config.mcpUrl || servers[0][1]?.mode !== "required") {
+    throw new Error("Muse Code must use exactly one required private HTTP MCP endpoint.");
+  }
+  return true;
+}
+
 function assertLocalAgentCommandIsolation(config, command) {
   if (config.model === "codex") return assertLocalCodexCommandIsolation(config, command);
   if (config.model === "claude") return assertLocalClaudeCommandIsolation(config, command);
   if (config.model === "kimi") return assertLocalKimiCommandIsolation(config, command);
+  if (config.model === "muse") return assertLocalMuseCommandIsolation(config, command);
   throw new Error(`Unsupported local provider: ${config.model}`);
 }
 
@@ -1830,7 +1943,14 @@ function isolatedAgentEnvironment(config, commandEnv = {}) {
     ? { CODEX_HOME: "/home/pwuser/.codex" }
     : config.model === "claude"
       ? { CLAUDE_CONFIG_DIR: "/home/pwuser/.claude" }
-      : { KIMI_CODE_HOME: "/home/pwuser/.kimi-code" };
+      : config.model === "kimi"
+        ? { KIMI_CODE_HOME: "/home/pwuser/.kimi-code" }
+        : {
+            XDG_CONFIG_HOME: "/home/pwuser/.config",
+            XDG_DATA_HOME: "/home/pwuser/.local/share",
+            MUSE_LOGIN: "0",
+            MUSE_NO_AUTO_UPDATE: "1"
+          };
   return {
     PATH: process.env.PATH || "/usr/local/bin:/usr/bin:/bin",
     HOME: "/home/pwuser",
@@ -1852,15 +1972,17 @@ function localAgentIsolationPreflight(config) {
   const command = agentCommand(preflightConfig, "Isolation preflight only.");
   assertLocalAgentCommandIsolation(preflightConfig, command);
 
-  const providerBin = { codex: config.codexBin, claude: config.claudeBin, kimi: config.kimiBin }[config.model];
+  const providerBin = { codex: config.codexBin, claude: config.claudeBin, kimi: config.kimiBin, muse: config.museBin }[config.model];
   const requiredVersion = SUPPORTED_LOCAL_AGENT_VERSIONS[config.model];
   const versionProbe = spawnSync(providerBin, ["--version"], {
     encoding: "utf8",
     env: isolatedAgentEnvironment(config),
     timeout: 10_000
   });
-  const installedVersion = String(versionProbe.stdout || versionProbe.stderr || "")
-    .match(/\d+\.\d+\.\d+/)?.[0] || "";
+  const versionOutput = String(versionProbe.stdout || versionProbe.stderr || "");
+  const installedVersion = config.model === "muse"
+    ? versionOutput.match(/\((\d+\.\d+\.\d+-R\d+(?:\.\d+)?)\)/)?.[1] || ""
+    : versionOutput.match(/\d+\.\d+\.\d+/)?.[0] || "";
   if (versionProbe.status !== 0 || installedVersion !== requiredVersion) {
     throw new Error(
       `Local ${config.model} ${installedVersion || "unknown"} has not passed MazeBench's isolation review; ` +
@@ -1873,7 +1995,8 @@ function localAgentIsolationPreflight(config) {
       ? process.env.MAZEBENCH_PRIME_CONFIG_FILE || "/run/mazebench-credentials/prime-config.json"
       : process.env.MAZEBENCH_CODEX_AUTH_FILE || "/run/mazebench-credentials/codex-auth.json",
     claude: process.env.MAZEBENCH_CLAUDE_AUTH_FILE || "/run/mazebench-credentials/claude-credentials.json",
-    kimi: process.env.MAZEBENCH_KIMI_CONFIG_FILE || "/run/mazebench-credentials/kimi-config.toml"
+    kimi: process.env.MAZEBENCH_KIMI_CONFIG_FILE || "/run/mazebench-credentials/kimi-config.toml",
+    muse: process.env.MAZEBENCH_MUSE_AUTH_FILE || "/run/mazebench-credentials/muse-auth.json"
   }[config.model];
   const probeSource = `
     const fs = require("node:fs");
@@ -2395,6 +2518,62 @@ function distillKimiEvents(raw) {
   return { entries, transcript: transcript.join("\n\n"), finalMessage };
 }
 
+function distillMuseEvents(raw) {
+  const entries = [];
+  const transcript = [];
+  const pending = new Map();
+  let commentary = "";
+  let finalMessage = "";
+  let move = 0;
+  for (const line of String(raw || "").split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    let event;
+    try { event = JSON.parse(line); } catch (_error) { continue; }
+    const payload = event.payload || {};
+    const detail = payload.event || payload;
+    const kind = String(detail.kind || payload.kind || event.payload_type || "");
+    const text = String(detail.text || detail.delta || detail.message?.text || "").trim();
+    if (/reasoning|assistant_message|text_delta|run_output_delta/.test(kind) && text) {
+      commentary = [commentary, text].filter(Boolean).join("\n");
+      finalMessage = text;
+      transcript.push(`[agent] ${text}`);
+    }
+    if (/assistant_tool_calls_committed|tool_call/.test(kind)) {
+      const calls = detail.tool_calls || detail.calls || (detail.tool_call ? [detail.tool_call] : []);
+      for (const call of Array.isArray(calls) ? calls : []) {
+        const name = String(call.name || call.tool_name || call.function?.name || "");
+        let input = call.input ?? call.arguments ?? call.function?.arguments ?? {};
+        if (typeof input === "string") { try { input = JSON.parse(input); } catch (_error) { input = {}; } }
+        const actions = actionsFromToolCall(name, input);
+        const id = String(call.id || call.tool_call_id || call.call_id || "");
+        transcript.push(`[tool] ${name || "mcp"} ${JSON.stringify(input)}`);
+        if (id && (actions.length || isActionSequenceTool(name))) {
+          pending.set(id, { actions, sequence: isActionSequenceTool(name), reasoning: commentary.trim(), timestamp: event._mazebench_received_at || event.recorded_at || null });
+          commentary = "";
+        }
+      }
+    }
+    if (/tool_result/.test(kind)) {
+      const id = String(detail.tool_call_id || detail.call_id || detail.id || "");
+      const batch = pending.get(id);
+      if (!batch) continue;
+      const output = toolResultText(detail.output ?? detail.result ?? detail.content);
+      if (!detail.error && detail.is_error !== true) {
+        const results = resultsFromOutput(output);
+        const executed = executedToolActions(batch.actions, results, output, batch.sequence);
+        executed.forEach((action, index) => {
+          move += 1;
+          entries.push({ move, action, reasoning: batch.reasoning, timestamp: batch.timestamp, ...(results[index] || {}) });
+        });
+      }
+      if (output) transcript.push(output.split("\n").slice(0, 3).join("\n"));
+      pending.delete(id);
+    }
+    if (kind === "run_terminal" && text) finalMessage = text;
+  }
+  return { entries, transcript: transcript.join("\n\n"), finalMessage };
+}
+
 function writeReasoningArtifacts(config, raw, distilled, options = {}) {
   try {
     // When the caller already streamed agent-events.jsonl live, don't rewrite it.
@@ -2463,6 +2642,11 @@ function providerFailureFromEvents(raw, provider) {
       };
     }
     if (provider === "codex" && ["turn.completed", "thread.started"].includes(event.type)) return null;
+    if (provider === "muse" && /run\.terminal|runtime\.error/.test(String(event.payload_type || ""))) {
+      const detail = event.payload?.event || event.payload || {};
+      if (detail.terminal === "completed") return null;
+      return { provider, status: null, message: String(detail.reason || detail.text || detail.message || "Muse Code request failed.").trim().slice(0, 500) };
+    }
     if (provider === "kimi" && event.role === "meta" && /(?:error|failed)/i.test(String(event.type || ""))) {
       return {
         provider,
@@ -2541,7 +2725,9 @@ function runAgent(config, prompt) {
     ? distillCodexEvents
     : config.model === "claude"
       ? distillClaudeEvents
-      : distillKimiEvents;
+      : config.model === "kimi"
+        ? distillKimiEvents
+        : distillMuseEvents;
   const eventsPath = path.join(config.outDir, "agent-events.jsonl");
   // On a resume we keep the prior run's events and append the new turns, so the
   // reasoning feed shows the whole journey. A fresh run starts the file empty.
@@ -2559,6 +2745,8 @@ function runAgent(config, prompt) {
     const child = spawn(bin, argv, { cwd, env, stdio: ["ignore", "pipe", "inherit"] });
     let raw = "";
     let eventBuffer = "";
+    let exactModelFailure = null;
+    let museInitVerified = config.model !== "muse";
     let primeInactivityTimer = null;
     let timeoutFailure = null;
     const resetPrimeInactivityTimer = () => {
@@ -2591,6 +2779,24 @@ function runAgent(config, prompt) {
         try {
           const event = JSON.parse(line);
           event._mazebench_received_at = new Date().toISOString();
+          if (config.model === "muse") {
+            const detail = event.payload?.event || event.payload || {};
+            const kind = String(detail.kind || event.payload_type || "");
+            if (["model_selection_initialized", "run_model_configured", "model_request_configured"].includes(kind)) {
+              const actualModel = String(detail.model_id || detail.modelId || detail.model || "");
+              const actualProvider = String(detail.provider_id || detail.providerId || detail.provider || "meta");
+              if (actualModel !== config.modelName || actualProvider !== "meta") {
+                exactModelFailure = {
+                  provider: config.model,
+                  status: null,
+                  message: `Exact-model guard stopped Muse Code: requested ${config.modelName}, received ${actualModel || "no model id"} from ${actualProvider || "no provider"}.`
+                };
+                child.kill("SIGTERM");
+              } else {
+                museInitVerified = true;
+              }
+            }
+          }
           output = JSON.stringify(event);
         } catch (_error) {
           /* preserve unexpected provider output verbatim */
@@ -2632,10 +2838,13 @@ function runAgent(config, prompt) {
         }
       }
       if (full.trim()) writeReasoningArtifacts(config, full, distill(full), { skipEvents: true });
+      if (!museInitVerified && !exactModelFailure) {
+        exactModelFailure = { provider: config.model, status: null, message: "Exact-model guard stopped Muse Code because its runtime model-selection event was missing." };
+      }
       if (code !== 0) {
         console.warn(`\n(agent exited with status ${code}; continuing to export whatever it played)`);
       }
-      resolve({ code, failure: timeoutFailure || providerFailureFromEvents(raw, config.model) });
+      resolve({ code, failure: exactModelFailure || timeoutFailure || providerFailureFromEvents(raw, config.model) });
     });
   });
 }
@@ -2695,6 +2904,19 @@ function exportReplay(config) {
 function expandTilde(value) {
   const text = String(value || "");
   return text.startsWith("~") ? path.join(process.env.HOME || "", text.slice(1)) : text;
+}
+
+function resolveMuseAuthRequest(raw = {}) {
+  if (raw.muse_auth) return path.resolve(expandTilde(raw.muse_auth));
+  if (process.env.MAZEBENCH_MUSE_AUTH_FILE) {
+    return path.resolve(expandTilde(process.env.MAZEBENCH_MUSE_AUTH_FILE));
+  }
+  const configRoot = process.env.XDG_CONFIG_HOME || path.join(process.env.HOME || "", ".config");
+  const isolatedAuth = path.join(configRoot, "mazebench-muse-container", "auth.json");
+  if (fs.existsSync(isolatedAuth) && fs.statSync(isolatedAuth).isFile() && fs.statSync(isolatedAuth).size > 0) {
+    return isolatedAuth;
+  }
+  return path.join(configRoot, "muse", "auth.json");
 }
 
 function readPrimeCredential(filePath) {
@@ -2872,7 +3094,7 @@ function runInContainer(config, raw) {
     }
     credentialEnvironment.push("-e", "MAZEBENCH_CLAUDE_AUTH_FILE=/run/mazebench-credentials/claude-credentials.json");
     credentialMounts.push("-v", `${authPath}:/run/mazebench-credentials/claude-credentials.json:ro`);
-  } else {
+  } else if (config.model === "kimi") {
     const requested = raw.kimi_auth
       ? path.resolve(expandTilde(raw.kimi_auth))
       : path.resolve(process.env.KIMI_CODE_HOME || path.join(process.env.HOME || "", ".kimi-code"));
@@ -2897,6 +3119,16 @@ function runInContainer(config, raw) {
       credentialEnvironment.push("-e", "MAZEBENCH_KIMI_DEVICE_ID_FILE=/run/mazebench-credentials/kimi-device-id");
       credentialMounts.push("-v", `${deviceId}:/run/mazebench-credentials/kimi-device-id:ro`);
     }
+  } else if (config.model === "muse") {
+    const requested = resolveMuseAuthRequest(raw);
+    const authPath = fs.existsSync(requested) && fs.statSync(requested).isDirectory()
+      ? path.join(requested, "auth.json")
+      : requested;
+    if (!fs.existsSync(authPath) || !fs.statSync(authPath).isFile() || fs.statSync(authPath).size === 0) {
+      throw new Error("Muse Code account configuration is unavailable. Run `muse login`, then retry.");
+    }
+    credentialEnvironment.push("-e", "MAZEBENCH_MUSE_AUTH_FILE=/run/mazebench-credentials/muse-auth.json");
+    credentialMounts.push("-v", `${authPath}:/run/mazebench-credentials/muse-auth.json:ro`);
   }
 
   const dockerArgs = [
@@ -3225,7 +3457,7 @@ async function localCodexMain() {
   const model = String(raw.model || "").toLowerCase();
 
   if (!SUPPORTED_LOCAL_AGENT_VERSIONS[model]) {
-    console.error("Usage: node scripts/maze-agent-local.js --model codex|claude|kimi [moves=N level=HxI ...]");
+    console.error("Usage: node scripts/maze-agent-local.js --model codex|claude|kimi|muse [moves=N level=HxI ...]");
     process.exit(2);
   }
   const inference = String(raw.inference || "subscription").trim().toLowerCase();
@@ -3236,7 +3468,8 @@ async function localCodexMain() {
       (raw.docker_bin && raw.docker_bin !== "docker") ||
       (raw.codex_bin && raw.codex_bin !== "codex") ||
       (raw.claude_bin && raw.claude_bin !== "claude") ||
-      (raw.kimi_bin && raw.kimi_bin !== "kimi")) {
+      (raw.kimi_bin && raw.kimi_bin !== "kimi") ||
+      (raw.muse_bin && raw.muse_bin !== "muse")) {
     throw new Error("Local agents use the pinned mazebench-agent image and its bundled provider CLIs.");
   }
 
@@ -3282,6 +3515,7 @@ async function localCodexMain() {
   const pythonSandboxStateDir = path.join(outDir, ".python-sandbox");
   const kimiRuntimeDir = path.join(outDir, "agent-state", "kimi");
   const kimiSkillsDir = path.join(kimiRuntimeDir, "empty-skills");
+  const museRuntimeDir = path.join(outDir, "agent-state", "muse");
   const primeCredential = inference === "prime"
     ? readPrimeCredential(
         inContainer
@@ -3300,6 +3534,7 @@ async function localCodexMain() {
     codexBin: raw.codex_bin || "codex",
     kimiBin: raw.kimi_bin || "kimi",
     kimiAuthDir: raw.kimi_auth ? path.resolve(expandTilde(raw.kimi_auth)) : "",
+    museBin: raw.muse_bin || "muse",
     pythonBin: raw.python_bin || "",
     container: wantsContainer,
     dockerBin: raw.docker_bin || "docker",
@@ -3346,6 +3581,7 @@ async function localCodexMain() {
     codexRuntimeDir,
     kimiRuntimeDir,
     kimiSkillsDir,
+    museRuntimeDir,
     pythonSandboxStateDir,
     agentWorkspaceDir: inContainer ? "/app/workspace" : workspaceDir,
     agentSwarmWorkspaceDir: inContainer ? "/app/swarm-workspaces" : swarmWorkspaceDir,
@@ -3353,6 +3589,7 @@ async function localCodexMain() {
     agentKimiRuntimeDir: inContainer ? "/home/pwuser/.kimi-code" : kimiRuntimeDir,
     agentKimiSkillsDir: inContainer ? "/home/pwuser/.kimi-code/empty-skills" : kimiSkillsDir,
     agentKimiProfile: inContainer ? "/home/pwuser/.kimi-code/mazebench-agent.md" : path.join(kimiRuntimeDir, "mazebench-agent.md"),
+    agentMuseRuntimeDir: inContainer ? "/home/pwuser/.local/share/muse" : museRuntimeDir,
     // The outer Docker launcher re-execs before starting an agent. Actual host
     // and in-container agents both use MCP so maze persistence stays outside
     // their file/tool sandbox.
@@ -3499,12 +3736,14 @@ module.exports = {
   SUPPORTED_LOCAL_CLAUDE_VERSION,
   SUPPORTED_LOCAL_CODEX_VERSION,
   SUPPORTED_LOCAL_KIMI_VERSION,
+  SUPPORTED_LOCAL_MUSE_VERSION,
   actionFromShellCommand,
   agentCommand,
   assertLocalAgentCommandIsolation,
   assertLocalClaudeCommandIsolation,
   assertLocalCodexCommandIsolation,
   assertLocalKimiCommandIsolation,
+  assertLocalMuseCommandIsolation,
   actionsFromShellCommand,
   actionsFromToolCall,
   buildMcpPrompt,
@@ -3514,10 +3753,12 @@ module.exports = {
   distillClaudeEvents,
   distillCodexEvents,
   distillKimiEvents,
+  distillMuseEvents,
   hasResumableGameSession,
   kimiAllowedTools,
   kimiAgentProfile,
   kimiMcpConfig,
+  museMcpConfig,
   loadCodexModels,
   localAgentIsolationPreflight,
   localCodexIsolationPreflight,
@@ -3527,6 +3768,7 @@ module.exports = {
   recordNoMoveIfIdle,
   resultFromOutput,
   resultsFromOutput,
+  resolveMuseAuthRequest,
   sanitizeKimiConfig
 };
 

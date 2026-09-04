@@ -805,6 +805,41 @@ try {
     service.deleteRun(isolatedLocalTools.id);
   }
 
+  const [refreshableLocal] = service.launchRuns({
+    kind: "local",
+    subscription: true,
+    model: "codex",
+    container: true,
+    tools: false,
+    tool_use: "read-only",
+    swarm: false,
+    moves: 1,
+    video: false
+  });
+  const refreshableLocalDir = path.join(rootDir, "outputs", "maze-local", "site", refreshableLocal.id);
+  const refreshableLocalMetaPath = path.join(refreshableLocalDir, "run.json");
+  service.stopRun(refreshableLocal.id);
+  const refreshableLocalMeta = JSON.parse(fs.readFileSync(refreshableLocalMetaPath, "utf8"));
+  fs.writeFileSync(
+    refreshableLocalMetaPath,
+    `${JSON.stringify({
+      ...refreshableLocalMeta,
+      status: "paused",
+      pid: null,
+      pause_mode: "cold",
+      harness_version: "0.0.0"
+    }, null, 2)}\n`
+  );
+  const refreshedLocal = service.resumeRun(refreshableLocal.id);
+  const upgradedSourceMeta = JSON.parse(fs.readFileSync(refreshableLocalMetaPath, "utf8"));
+  assert.notEqual(upgradedSourceMeta.harness_version, "0.0.0");
+  assert.deepEqual(upgradedSourceMeta.harness_version_history, ["0.0.0"]);
+  if (refreshedLocal.id !== refreshableLocal.id) {
+    service.stopRun(refreshedLocal.id);
+    service.deleteRun(refreshedLocal.id);
+  }
+  service.deleteRun(refreshableLocal.id);
+
   const retiredLocalId = "retired-local-run";
   const retiredLocalDir = path.join(rootDir, "outputs", "maze-local", "site", retiredLocalId);
   fs.mkdirSync(retiredLocalDir, { recursive: true });

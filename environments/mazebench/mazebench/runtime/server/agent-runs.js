@@ -10,8 +10,13 @@ const {
   distillClaudeEvents,
   distillCodexEvents,
   distillKimiEvents,
+  distillMuseEvents,
   loadCodexModels
 } = require("../scripts/maze-agent-local");
+const {
+  LOCAL_AGENT_IMAGE,
+  imageLabelsAreCertified
+} = require("../scripts/local-agent-image");
 const {
   findClaudeSessionFile,
   findCodexSessionFile,
@@ -134,6 +139,78 @@ function claudeReasoningLevels(modelId) {
     ...(supportsXhigh ? ["xhigh"] : []),
     ...(supportsMax ? ["max"] : [])
   ];
+}
+
+function compareClaudeModelVersions(left, right) {
+  const leftParts = String(left).split(".").map(Number);
+  const rightParts = String(right).split(".").map(Number);
+  const length = Math.max(leftParts.length, rightParts.length);
+
+  for (let index = 0; index < length; index += 1) {
+    const difference = (rightParts[index] || 0) - (leftParts[index] || 0);
+    if (difference) return difference;
+  }
+  return 0;
+}
+
+function claudeCatalogModelsFromMetadata(metadataLines, detectedAliases = []) {
+  const lines = Array.isArray(metadataLines)
+    ? metadataLines.map((line) => String(line || "").trim()).filter(Boolean)
+    : [];
+  const pickerFamilies = lines.flatMap((line) => {
+    const match = line.match(/^Custom ([a-z][a-z0-9-]*) model$/i);
+    return match ? [match[1].toLowerCase()] : [];
+  });
+  const aliases = [...new Set([...detectedAliases, ...pickerFamilies]
+    .map((alias) => String(alias || "").trim().toLowerCase())
+    .filter((alias) => /^[a-z][a-z0-9-]*$/.test(alias)))];
+  const descriptions = {
+    fable: "Latest Fable tier — highest capability",
+    opus: "Latest Opus tier — deep reasoning",
+    sonnet: "Latest Sonnet tier — balanced speed and capability",
+    haiku: "Latest Haiku tier — fastest responses"
+  };
+
+  return aliases.flatMap((alias) => {
+    const escapedAlias = alias.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const versionPattern = new RegExp(
+      "^" + escapedAlias + "\\s+(\\d+(?:\\.\\d+)*)\\s*(?:-|$)",
+      "i"
+    );
+    const versions = [...new Set(lines.flatMap((line) => {
+      const match = line.match(versionPattern);
+      return match ? [match[1]] : [];
+    }))].sort(compareClaudeModelVersions);
+    const title = alias.charAt(0).toUpperCase() + alias.slice(1);
+
+    // Fable releases are distinct benchmark choices. Their picker entries must
+    // submit the full immutable id instead of the moving fable alias.
+    if (alias === "fable" && versions.length) {
+      return versions.map((version, index) => {
+        const id = "claude-fable-" + version.replace(/\./g, "-");
+        return {
+          id,
+          label: "Fable " + version,
+          description: "Exact Claude Fable " + version + " model" +
+            (index ? " (previous release)" : " — highest capability"),
+          resolved_model_id: id,
+          reasoning_levels: claudeReasoningLevels(id)
+        };
+      });
+    }
+
+    const version = versions[0];
+    const resolvedModelId = version
+      ? "claude-" + alias + "-" + version.replace(/\./g, "-")
+      : "";
+    return [{
+      id: alias,
+      label: version ? title + " " + version : title + " (latest)",
+      description: descriptions[alias] || "Latest model behind the " + alias + " alias",
+      resolved_model_id: resolvedModelId,
+      reasoning_levels: claudeReasoningLevels(resolvedModelId)
+    }];
+  });
 }
 
 // Keep Prime's runner contract provider-neutral. Provider-specific extensions
@@ -513,6 +590,21 @@ function createAgentRunService({
   const codexSessionPaths = new Map();
   const autoQuitMonitors = new Map();
 
+  function currentLocalAgentVersions(options = {}) {
+    const environment = typeof agentEnvironment === "function"
+      ? agentEnvironment(options)
+      : {};
+    const imageVersions = environment?.local_agent_image_versions;
+    return {
+      ...SUPPORTED_LOCAL_AGENT_VERSIONS,
+      ...(imageVersions && typeof imageVersions === "object" ? imageVersions : {})
+    };
+  }
+
+  function currentLocalAgentVersion(provider, options = {}) {
+    return currentLocalAgentVersions(options)[provider] || "";
+  }
+
   function requireIsolatedLocalAgentLaunch(params) {
     const model = String(params?.model || "").trim().toLowerCase();
     const container = !(params?.container === false || params?.container === "false");
@@ -537,8 +629,9 @@ function createAgentRunService({
       meta?.inference_provider === "prime";
   }
 
-  function requireIsolatedLocalAgentMeta(meta) {
+  function requireIsolatedLocalAgentMeta(meta, options = {}) {
     const provider = String(meta?.model || "").trim().toLowerCase();
+    const currentVersion = currentLocalAgentVersion(provider);
     const toolUse = String(meta?.tool_use || meta?.launch_params?.tool_use || "read-only").trim().toLowerCase();
     const boundaryPrefix = isPrimeLocalIsolatedRun(meta)
       ? "prime-inference/disposable-container/"
@@ -546,8 +639,8 @@ function createAgentRunService({
     const validBoundary = meta?.harness_boundary === `${boundaryPrefix}game-tools-only` ||
       (toolUse === "offline" && meta?.harness_boundary === `${boundaryPrefix}game-tools+isolated-python`);
     if (
-      meta?.harness !== ({ codex: "codex", claude: "claude_code", kimi: "kimi_code" })[provider] ||
-      meta?.harness_version !== SUPPORTED_LOCAL_AGENT_VERSIONS[provider] ||
+      meta?.harness !== ({ codex: "codex", claude: "claude_code", kimi: "kimi_code", muse: "muse_code" })[provider] ||
+      (!options.allowVersionRefresh && meta?.harness_version !== currentVersion) ||
       !validBoundary ||
       meta?.container_image !== "mazebench-agent"
     ) {
@@ -561,6 +654,21 @@ function createAgentRunService({
       tool_use: meta?.tool_use,
       swarm: meta?.swarm
     });
+    if (meta?.harness_version !== currentVersion) {
+      if (!meta?.id || !currentVersion) throw new Error(RETIRED_LOCAL_AGENT_MESSAGE);
+      const refreshed = {
+        ...meta,
+        harness_version: currentVersion,
+        harness_version_history: [...new Set([
+          ...(Array.isArray(meta.harness_version_history) ? meta.harness_version_history : []),
+          String(meta.harness_version || "").trim()
+        ].filter(Boolean))],
+        harness_version_refreshed_at: new Date().toISOString()
+      };
+      writeRunMeta(meta.id, refreshed);
+      return refreshed;
+    }
+    return meta;
   }
 
   function requireLocalSubscription(params) {
@@ -570,8 +678,8 @@ function createAgentRunService({
       ? agentEnvironment({ fresh: true })
       : {};
     if (!environment[provider]) {
-      const label = { claude: "Claude Code", kimi: "Kimi Code", codex: "Codex" }[provider] || provider;
-      const login = { claude: "claude auth login", kimi: "kimi login", codex: "codex login" }[provider] || "";
+      const label = { claude: "Claude Code", kimi: "Kimi Code", codex: "Codex", muse: "Muse Code" }[provider] || provider;
+      const login = { claude: "claude auth login", kimi: "kimi login", codex: "codex login", muse: "muse login" }[provider] || "";
       throw new Error(`${label} needs an active local account. Run \`${login}\`, then refresh the Agent page.`);
     }
   }
@@ -647,15 +755,13 @@ function createAgentRunService({
     }
     const result = spawnSync(
       "docker",
-      ["image", "inspect", "docker.io/library/mazebench-agent:latest", "--format", "{{json .Config.Labels}}"],
+      ["image", "inspect", LOCAL_AGENT_IMAGE, "--format", "{{json .Config.Labels}}"],
       { encoding: "utf8", env: enrichedPathEnv(), timeout: 8000, maxBuffer: 128 * 1024 }
     );
     if (result.status !== 0) return false;
     try {
       const labels = JSON.parse(String(result.stdout || "{}"));
-      return labels["org.mazebench.local-codex.version"] === SUPPORTED_LOCAL_AGENT_VERSIONS.codex &&
-        labels["org.mazebench.local-claude.version"] === SUPPORTED_LOCAL_AGENT_VERSIONS.claude &&
-        labels["org.mazebench.local-kimi.version"] === SUPPORTED_LOCAL_AGENT_VERSIONS.kimi;
+      return imageLabelsAreCertified(labels, rootDir);
     } catch (_error) {
       return false;
     }
@@ -2763,7 +2869,9 @@ function createAgentRunService({
         ? distillClaudeEvents(raw)
         : model === "kimi"
           ? distillKimiEvents(raw)
-          : distillCodexEvents(raw);
+          : model === "muse"
+            ? distillMuseEvents(raw)
+            : distillCodexEvents(raw);
       const liveReasoning = distilled.entries || [];
       const liveWithText = liveReasoning.filter((entry) => entry.reasoning).length;
       const finalWithText = finalReasoning.filter((entry) => entry.reasoning).length;
@@ -3652,6 +3760,28 @@ function createAgentRunService({
               note: "Waiting for Kimi Code usage…",
               actions: []
             };
+      } else if (summary.provider === "muse") {
+        const events = fs.existsSync(eventsPath)
+          ? fs.readFileSync(eventsPath, "utf8").split(/\r?\n/).flatMap((line) => {
+              try { return line.trim() ? [JSON.parse(line)] : []; } catch (_error) { return []; }
+            })
+          : [];
+        const usage = [...events].reverse().map((event) => event.payload?.event?.usage || event.payload?.usage)
+          .find((candidate) => candidate && typeof candidate === "object") || {};
+        const inputTokens = Math.max(0, Number(usage.input_tokens ?? usage.inputTokens) || 0);
+        const outputTokens = Math.max(0, Number(usage.output_tokens ?? usage.outputTokens) || 0);
+        value = {
+          provider: "muse",
+          available: inputTokens + outputTokens > 0,
+          exact: inputTokens + outputTokens > 0,
+          note: inputTokens + outputTokens > 0 ? "Exact usage reported by Muse Code." : "Waiting for Muse Code usage…",
+          total_tokens: Math.max(0, Number(usage.total_tokens ?? usage.totalTokens) || inputTokens + outputTokens),
+          input_tokens: inputTokens,
+          cached_input_tokens: Math.max(0, Number(usage.cached_input_tokens ?? usage.cachedInputTokens) || 0),
+          output_tokens: outputTokens,
+          reasoning_tokens: Math.max(0, Number(usage.reasoning_tokens ?? usage.reasoningTokens) || 0),
+          actions: []
+        };
       } else if (summary.provider === "prime-agent") {
         value = parsePrimeAgentEvents(
           readFilteredUsageLines(
@@ -4599,28 +4729,58 @@ function createAgentRunService({
     // complete (for example, current builds expose Haiku in /model but omit it
     // from the --model help example). Read both so this catalog follows the
     // installed CLI instead of maintaining a stale model list here.
-    const help = spawnSync("claude", ["--help"], {
-      encoding: "utf8",
-      env: enrichedPathEnv(),
-      timeout: 5000,
-      maxBuffer: 2 * 1024 * 1024
-    });
+    const useLocalImage = localAgentImageAvailable();
+    const runClaudeCatalogCommand = (args, timeout = 5000, maxBuffer = 2 * 1024 * 1024) =>
+      spawnSync(
+        useLocalImage ? "docker" : "claude",
+        useLocalImage
+          ? ["run", "--rm", "--entrypoint", "claude", LOCAL_AGENT_IMAGE, ...args]
+          : args,
+        {
+          encoding: "utf8",
+          env: enrichedPathEnv(),
+          timeout,
+          maxBuffer
+        }
+      );
+    const help = runClaudeCatalogCommand(["--help"]);
     const helpText = String(help.stdout || help.stderr || "");
     const aliasExample = helpText.match(/alias for the latest model[\s\S]{0,180}?\((?:e\.g\.\s*)?([^)]*)\)/i);
     const detectedAliases = aliasExample
       ? [...aliasExample[1].matchAll(/['"]([a-z][a-z0-9-]*)['"]/gi)].map((match) => match[1].toLowerCase())
       : [];
 
+    let metadataLines = [];
     const pickerLabels = new Map();
     const pickerModelIds = new Map();
-    const executable = spawnSync("sh", ["-c", "command -v claude"], {
+    const executable = useLocalImage
+      ? { status: 1, stdout: "" }
+      : spawnSync("sh", ["-c", "command -v claude"], {
       encoding: "utf8",
       env: enrichedPathEnv(),
       timeout: 2000
-    });
+      });
     const executablePath = String(executable.stdout || "").trim();
 
-    if (executable.status === 0 && executablePath) {
+    if (useLocalImage) {
+      const pickerMetadata = spawnSync(
+        "docker",
+        [
+          "run", "--rm", "--entrypoint", "sh", LOCAL_AGENT_IMAGE, "-lc",
+          "LC_ALL=C strings \"$(command -v claude)\" | awk '/^Custom [[:alnum:]-]+ model$/ || /^[[:alnum:]-]+ [0-9]+([.][0-9]+)*([[:space:]]+-|[[:space:]]*$)/'"
+        ],
+        {
+          encoding: "utf8",
+          env: enrichedPathEnv(),
+          timeout: 10_000,
+          maxBuffer: 2 * 1024 * 1024
+        }
+      );
+      metadataLines = String(pickerMetadata.stdout || "")
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+    } else if (executable.status === 0 && executablePath) {
       // `strings` lets us read the same static labels used by /model without
       // opening an interactive session, changing the user's default, or making
       // an API request. The awk filter keeps the 200MB+ executable out of memory.
@@ -4639,7 +4799,7 @@ function createAgentRunService({
           maxBuffer: 2 * 1024 * 1024
         }
       );
-      const metadataLines = String(pickerMetadata.stdout || "")
+      metadataLines = String(pickerMetadata.stdout || "")
         .split(/\r?\n/)
         .map((line) => line.trim())
         .filter(Boolean);
@@ -4683,31 +4843,22 @@ function createAgentRunService({
       sonnet: "Latest Sonnet tier — balanced speed and capability",
       haiku: "Latest Haiku tier — fastest responses"
     };
-    const version = spawnSync("claude", ["--version"], {
-      encoding: "utf8",
-      env: enrichedPathEnv(),
-      timeout: 5000
-    });
+    const models = claudeCatalogModelsFromMetadata(metadataLines, aliases);
+    const version = runClaudeCatalogCommand(["--version"]);
     const versionText = String(version.stdout || "").trim().replace(/\s*\(Claude Code\)\s*$/i, "");
 
     return {
-      models: aliases.map((alias) => ({
-        id: alias,
-        label: pickerLabels.get(alias) || `${alias.charAt(0).toUpperCase()}${alias.slice(1)} (latest)`,
-        description: descriptions[alias] || `Latest model behind the ${alias} alias`,
-        resolved_model_id: pickerModelIds.get(alias) || "",
-        reasoning_levels: claudeReasoningLevels(pickerModelIds.get(alias) || "")
-      })),
+      models,
       source: versionText ? `Claude Code ${versionText}` : "Installed Claude Code CLI",
       checked_at: modelCatalogCheckedAt(),
-      default_model_id: aliases[0] || "",
+      default_model_id: models[0]?.id || "",
       // The CLI accepts this complete syntax set, but each model above carries
       // its own supported subset. Versioned Claude family ids deliberately use
       // a family-level rule so newly released aliases keep their effort control.
       reasoning_levels: ["low", "medium", "high", "xhigh", "max"],
       reasoning_default: "",
       note: pickerLabels.size
-        ? "Models and display versions detected from this installed Claude Code build. Aliases stay dynamic when Claude rolls them forward."
+        ? "Models detected from this installed Claude Code build. Fable releases launch by exact full model id."
         : detectedAliases.length
           ? "Aliases detected from the installed CLI; this build did not expose exact picker labels."
           : "Claude Code did not expose a model list. Use Custom… for a full model id."
@@ -4831,6 +4982,44 @@ function createAgentRunService({
     return visionFamilies.some((pattern) => pattern.test(slug));
   }
 
+  function museModelCatalog() {
+    const result = spawnSync(process.execPath, [path.join(rootDir, "scripts", "muse-model-catalog.js")], {
+      encoding: "utf8", env: enrichedPathEnv(), timeout: 12_000, maxBuffer: 2 * 1024 * 1024
+    });
+    const version = spawnSync("muse", ["--version"], { encoding: "utf8", env: enrichedPathEnv(), timeout: 3_000 });
+    const versionText = String(version.stdout || version.stderr || "").trim();
+    let payload = {};
+    try { payload = JSON.parse(String(result.stdout || "{}")); } catch (_error) { /* fail closed */ }
+    const live = result.status === 0 && payload.providerId === "meta" && payload.source === "providerCatalog";
+    const models = live && Array.isArray(payload.models)
+      ? payload.models.filter((model) => model?.providerId === "meta" && String(model?.modelId || "")).map((model) => ({
+          id: String(model.modelId),
+          label: String(model.displayLabel || model.modelId),
+          description: String(model.description || "Meta Muse model through Muse Code"),
+          reasoning_levels: ["none", "minimal", "low", "medium", "high", "xhigh", "ultra"],
+          default_reasoning: "ultra",
+          vision: true,
+          input_price: model.cost?.input == null ? null : Number(model.cost.input),
+          output_price: model.cost?.output == null ? null : Number(model.cost.output),
+          cached_input_price: model.cost?.cached == null ? null : Number(model.cost.cached)
+        }))
+      : [];
+    // Meta currently marks the contributor profile as the provider default.
+    // Keep data contribution opt-in by preferring the newest standard profile.
+    const defaultId = live
+      ? String(models.find((model) => !model.id.endsWith("-contributor"))?.id || models[0]?.id || "")
+      : "";
+    return {
+      models,
+      source: versionText || "Muse Code CLI",
+      checked_at: modelCatalogCheckedAt(),
+      default_model_id: defaultId,
+      note: live && models.length
+        ? "Exact ids from Meta's authenticated live catalog. MazeBench verifies the runtime model-selection event and stops on any mismatch."
+        : "Run `muse login`, then refresh. MazeBench refuses bundled, guessed, or silently substituted Muse model ids."
+    };
+  }
+
   function primeModelCatalog() {
     const result = spawnSync("prime", ["--plain", "inference", "models", "--output", "json"], {
       encoding: "utf8",
@@ -4910,7 +5099,7 @@ function createAgentRunService({
   function listProviderModels(provider, { fresh = false, harness = "none" } = {}) {
     const normalized = String(provider || "").toLowerCase();
 
-    if (!["codex", "claude", "kimi", "prime"].includes(normalized)) {
+    if (!["codex", "claude", "kimi", "muse", "prime"].includes(normalized)) {
       throw new Error(`Unknown provider "${provider}".`);
     }
 
@@ -4932,6 +5121,8 @@ function createAgentRunService({
       ? claudeModelCatalog()
       : normalized === "kimi"
         ? kimiModelCatalog()
+        : normalized === "muse"
+          ? museModelCatalog()
         : primeModelCatalog();
     const ttl = value.models.length ? PROVIDER_MODEL_TTL_MS : PROVIDER_MODEL_ERROR_TTL_MS;
 
@@ -4963,7 +5154,7 @@ function createAgentRunService({
     const inference = String(params.inference || "subscription").trim().toLowerCase();
 
     if (!SUPPORTED_LOCAL_AGENT_VERSIONS[model]) {
-      throw new Error("Choose a certified local Codex, Claude Code, or Kimi Code runner.");
+      throw new Error("Choose a certified local Codex, Claude Code, Kimi Code, or Muse Code runner.");
     }
     if (!["subscription", "prime"].includes(inference) || (inference === "prime" && model !== "codex")) {
       throw new Error("Prime inference is supported only by the isolated Codex runner.");
@@ -5009,11 +5200,21 @@ function createAgentRunService({
       );
     }
     if (!localAgentImageAvailable()) {
+      const requiredVersions = currentLocalAgentVersions();
       throw new Error(
         "The certified local-agent image is missing or stale. Run `npm run maze:build-local-agents` " +
-        `(required Codex ${SUPPORTED_LOCAL_AGENT_VERSIONS.codex}, Claude Code ${SUPPORTED_LOCAL_AGENT_VERSIONS.claude}, ` +
-        `Kimi Code ${SUPPORTED_LOCAL_AGENT_VERSIONS.kimi}).`
+        `(required Codex ${requiredVersions.codex}, Claude Code ${requiredVersions.claude}, ` +
+        `Kimi Code ${requiredVersions.kimi}, Muse Code ${requiredVersions.muse}).`
       );
+    }
+    if (model === "muse") {
+      const requestedModel = String(params.model_name || "").trim();
+      if (!requestedModel || !museModelCatalog().models.some((entry) => entry.id === requestedModel)) {
+        throw new Error(
+          `Muse Code model ${requestedModel || "(missing)"} is not in Meta's live authenticated catalog; ` +
+          "MazeBench will not guess an id or accept an older/different model."
+        );
+      }
     }
     const args = [
       `model=${model}`,
@@ -5082,6 +5283,8 @@ function createAgentRunService({
         if (exact && supported.length && !supported.includes(reasoning)) {
           throw new Error(`${exact.id} supports Kimi effort: ${supported.join(", ")}.`);
         }
+      } else if (model === "muse" && !["none", "minimal", "low", "medium", "high", "xhigh", "ultra"].includes(reasoning)) {
+        throw new Error("Muse Code supports effort: none, minimal, low, medium, high, xhigh, ultra.");
       }
 
       args.push(`reasoning=${reasoning}`);
@@ -5226,7 +5429,7 @@ function createAgentRunService({
         display,
         harness,
         harnessConfig,
-        harnessVersion: SUPPORTED_LOCAL_AGENT_VERSIONS.codex,
+        harnessVersion: currentLocalAgentVersion("codex"),
         harnessLabel: definition.label,
         harnessBoundary: toolUse === "offline"
           ? "prime-inference/disposable-container/game-tools+isolated-python"
@@ -5569,9 +5772,9 @@ function createAgentRunService({
           model,
           model_name: exactModelName,
           model_alias: exactModelName !== requestedModelName ? requestedModelName : "",
-          harness: ({ codex: "codex", claude: "claude_code", kimi: "kimi_code" })[model],
-          harness_label: ({ codex: "Codex", claude: "Claude Code", kimi: "Kimi Code" })[model],
-          harness_version: SUPPORTED_LOCAL_AGENT_VERSIONS[model],
+          harness: ({ codex: "codex", claude: "claude_code", kimi: "kimi_code", muse: "muse_code" })[model],
+          harness_label: ({ codex: "Codex", claude: "Claude Code", kimi: "Kimi Code", muse: "Muse Code" })[model],
+          harness_version: currentLocalAgentVersion(model),
           harness_boundary: toolUse === "offline"
             ? "disposable-container/game-tools+isolated-python"
             : "disposable-container/game-tools-only",
@@ -5830,7 +6033,11 @@ function createAgentRunService({
       throw new Error(`Unknown run "${runId}".`);
     }
     const localIsolatedPrime = isPrimeLocalIsolatedRun(meta);
-    if (meta.kind !== "prime" || localIsolatedPrime) requireIsolatedLocalAgentMeta(meta);
+    if (meta.kind !== "prime" || localIsolatedPrime) {
+      meta = requireIsolatedLocalAgentMeta(meta, {
+        allowVersionRefresh: ["paused", "failed"].includes(meta.status)
+      });
+    }
 
     if (meta.kind === "prime" && !localIsolatedPrime && ["paused", "failed"].includes(meta.status)) {
       const base = {
@@ -5988,7 +6195,8 @@ function createAgentRunService({
 
       try {
         const event = JSON.parse(trimmed);
-        const id = event.thread_id || event.session_id;
+        const id = event.conversation_id || event.thread_id || event.session_id || event.init?.conversation_id ||
+          (event.stream?.kind === "session" ? event.stream.id : "");
         if (id) return String(id);
       } catch (_error) {
         /* skip non-JSON lines */
@@ -6984,6 +7192,7 @@ function createAgentRunService({
 module.exports = {
   apiPricingForRun,
   branchLaunchParams,
+  claudeCatalogModelsFromMetadata,
   claudeReasoningLevels,
   collectedAllWorldGems,
   createAgentRunService,
