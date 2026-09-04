@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 // Certified local coding-agent launcher. The trusted runner stays in the outer
-// Docker container; the evaluated Codex, Claude Code, or Kimi Code process runs
+// Docker container; the evaluated Codex, Claude Code, Kimi Code, or Grok Build
+// process runs
 // in a second bubblewrap namespace that hides the repository, run output,
 // credential sources, and host files. Only a fresh workspace, run-scoped
 // provider state, and the private MazeBench MCP game controls cross into the
@@ -23,14 +24,16 @@ const DEFAULT_MAX_SWARM_WORKERS = 8;
 const SUPPORTED_LOCAL_CODEX_VERSION = "0.146.0";
 const SUPPORTED_LOCAL_CLAUDE_VERSION = "2.1.220";
 const SUPPORTED_LOCAL_KIMI_VERSION = "0.29.1";
+const SUPPORTED_LOCAL_GROK_VERSION = "1.0.13";
 const SUPPORTED_LOCAL_AGENT_VERSIONS = Object.freeze({
   codex: SUPPORTED_LOCAL_CODEX_VERSION,
   claude: SUPPORTED_LOCAL_CLAUDE_VERSION,
-  kimi: SUPPORTED_LOCAL_KIMI_VERSION
+  kimi: SUPPORTED_LOCAL_KIMI_VERSION,
+  grok: SUPPORTED_LOCAL_GROK_VERSION
 });
 const SUPPORTED_KIMI_CODE_VERSIONS = new Set([SUPPORTED_LOCAL_KIMI_VERSION]);
 const RETIRED_LOCAL_AGENT_MESSAGE =
-  "Certified local coding-agent routes require a pinned Codex, Claude Code, or Kimi Code CLI " +
+  "Certified local coding-agent routes require a pinned Codex, Claude Code, Kimi Code, or Grok Build CLI " +
   "inside a fresh Docker container, reviewed game/Python tools only, and launch-time isolation preflights.";
 
 // Claude Code discovers MCP tools only when its default tool registry is
@@ -106,6 +109,41 @@ const KIMI_RESTRICTED_BUILTIN_TOOLS = [
   "WebSearch",
   "FetchURL",
   "Write"
+];
+
+// Grok Build keeps its two MCP meta-tools available when the built-in tool
+// allowlist is empty. That lets the model discover and invoke our exact private
+// MCP surface without also receiving shell, filesystem, web, memory, or task
+// tools. Keep a denylist too as defense in depth for the reviewed pinned CLI.
+const GROK_RESTRICTED_BUILTIN_TOOLS = [
+  "run_terminal_cmd",
+  "run_terminal_command",
+  "grep",
+  "read_file",
+  "search_replace",
+  "list_dir",
+  "web_search",
+  "web_fetch",
+  "todo_write",
+  "task",
+  "Agent",
+  "kill_command_or_subagent",
+  "get_command_or_subagent_output",
+  "spawn_subagent",
+  "scheduler_create",
+  "scheduler_delete",
+  "scheduler_list",
+  "monitor",
+  "search_tool",
+  "workflow",
+  "enter_plan_mode",
+  "exit_plan_mode",
+  "ask_user_question",
+  "image_gen",
+  "image_edit",
+  "image_to_video",
+  "reference_to_video",
+  "write"
 ];
 
 const ROOT_DIR = path.resolve(__dirname, "..");
@@ -1062,6 +1100,41 @@ function kimiMcpConfig(config) {
   }, null, 2) + "\n";
 }
 
+function grokAllowedTools(config) {
+  const restricted = config.toolUse === "read-only";
+  return restricted
+    ? [
+        "game__game_start",
+        "game__game_observe",
+        "game__game_action"
+      ]
+    : [
+        "mazebench__maze_start",
+        "mazebench__maze_observe",
+        "mazebench__maze_action",
+        ...(config.autoRunTools ? ["mazebench__maze_action_sequence"] : []),
+        "mazebench__python_exec"
+      ];
+}
+
+function grokMcpConfig(config) {
+  if (!config.mcpUrl) {
+    throw new Error("Grok Build requires the private MazeBench MCP endpoint.");
+  }
+  const serverName = config.toolUse === "read-only" ? "game" : "mazebench";
+  return [
+    "[cli]",
+    "auto_update = false",
+    "",
+    `[mcp_servers.${serverName}]`,
+    `url = ${tomlString(config.mcpUrl)}`,
+    "enabled = true",
+    "startup_timeout_sec = 15",
+    "tool_timeout_sec = 300",
+    ""
+  ].join("\n");
+}
+
 function prepareKimiRuntime(config) {
   const sourceHome = config.kimiAuthDir || process.env.KIMI_CODE_HOME || path.join(os.homedir(), ".kimi-code");
   const sourceConfig = path.join(sourceHome, "config.toml");
@@ -1171,7 +1244,7 @@ async function startPrivateMcpServer(config) {
 }
 
 function needsPrivateMcpServer(config) {
-  return Boolean(config.mcpEnabled && (config.inContainer || ["claude", "kimi"].includes(config.model)));
+  return Boolean(config.mcpEnabled && (config.inContainer || ["claude", "kimi", "grok"].includes(config.model)));
 }
 
 function isolatedDockerAgentCommand(config, command) {
@@ -1311,6 +1384,25 @@ function isolatedDockerAgentCommand(config, command) {
     }
     chownTree(sessionsDir);
     fs.chownSync(sessionIndex, config.agentUid, config.agentGid);
+  } else if (config.model === "grok") {
+    const authFile = process.env.MAZEBENCH_GROK_AUTH_FILE ||
+      "/run/mazebench-credentials/grok-auth.json";
+    if (!fs.existsSync(authFile) || !fs.statSync(authFile).isFile()) {
+      throw new Error("The isolated Grok Build runtime has no mounted subscription credential.");
+    }
+    const providerDir = path.join(providerHomeDir, ".grok");
+    const sessionsDir = path.join(config.outDir, "agent-state", "grok", "sessions");
+    fs.mkdirSync(path.join(providerDir, "sessions"), { recursive: true, mode: 0o700 });
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    fs.writeFileSync(path.join(providerDir, "auth.json"), "", { mode: 0o600 });
+    fs.writeFileSync(path.join(providerDir, "config.toml"), grokMcpConfig(config), { mode: 0o600 });
+    providerBindArgs.push(
+      "--ro-bind", authFile, "/home/pwuser/.grok/auth.json",
+      "--bind", sessionsDir, "/home/pwuser/.grok/sessions"
+    );
+    credentialSources.push(authFile);
+    providerSetenv.push("--setenv", "GROK_HOME", "/home/pwuser/.grok");
+    chownTree(sessionsDir);
   } else {
     throw new Error(`Unknown local provider: ${config.model}`);
   }
@@ -1580,7 +1672,50 @@ function agentCommand(config, prompt) {
     };
   }
 
-  throw new Error(`Unknown model: ${config.model} (expected "codex", "claude", or "kimi")`);
+  if (config.model === "grok") {
+    const argv = [
+      "-p", prompt,
+      "--output-format", "streaming-messages-json",
+      "--include-partial-messages",
+      "--permission-mode", "dontAsk",
+      "--tools", "",
+      "--disallowed-tools", GROK_RESTRICTED_BUILTIN_TOOLS.join(","),
+      "--no-plan",
+      "--no-subagents",
+      "--disable-web-search",
+      "--no-auto-update",
+      "--verbatim"
+    ];
+    for (const tool of grokAllowedTools(config)) {
+      argv.push("--allow", `MCPTool(${tool})`);
+    }
+    for (const denied of ["Bash", "Read", "Edit", "Write", "Grep", "WebFetch", "WebSearch"]) {
+      argv.push("--deny", denied);
+    }
+    if (config.resume) {
+      argv.push("--resume", config.resume);
+      if (config.forkSession) {
+        argv.push("--fork-session");
+        if (config.sessionId) argv.push("--session-id", config.sessionId);
+      }
+    }
+    if (maxTurns) argv.push("--max-turns", maxTurns);
+    argv.push("--model", config.modelName || "grok-4.6");
+    if (["none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(config.reasoning)) {
+      argv.push("--reasoning-effort", config.reasoning);
+    }
+    return {
+      bin: config.grokBin,
+      argv,
+      env: {
+        GROK_HOME: config.agentGrokRuntimeDir,
+        NO_COLOR: "1",
+        CI: "1"
+      }
+    };
+  }
+
+  throw new Error(`Unknown model: ${config.model} (expected "codex", "claude", "kimi", or "grok")`);
 }
 
 const REQUIRED_LOCAL_CODEX_DISABLED_FEATURES = Object.freeze([
@@ -1815,10 +1950,63 @@ function assertLocalKimiCommandIsolation(config, command) {
   return true;
 }
 
+function assertLocalGrokCommandIsolation(config, command) {
+  if (!config.inContainer || config.model !== "grok") {
+    throw new Error("Grok Build must run inside the certified disposable container boundary.");
+  }
+  const offline = config.toolUse === "offline";
+  if (!['read-only', 'offline'].includes(config.toolUse) || Boolean(config.tools) !== offline || config.swarm) {
+    throw new Error("Grok Build supports one agent with game controls and the optional isolated Python tool only.");
+  }
+  if (command.bin !== config.grokBin) {
+    throw new Error("The evaluated process must be the pinned Grok Build CLI.");
+  }
+  const args = command.argv.map(String);
+  const indexes = (flag) => args.flatMap((value, index) => value === flag ? [index] : []);
+  const valueAfter = (flag) => {
+    const matches = indexes(flag);
+    if (matches.length !== 1 || matches[0] + 1 >= args.length) {
+      throw new Error(`Grok Build needs one exact ${flag} setting.`);
+    }
+    return args[matches[0] + 1];
+  };
+  for (const required of [
+    "--include-partial-messages", "--no-plan", "--no-subagents",
+    "--disable-web-search", "--no-auto-update", "--verbatim"
+  ]) {
+    if (indexes(required).length !== 1) throw new Error(`Grok Build did not enforce ${required}.`);
+  }
+  if (valueAfter("--output-format") !== "streaming-messages-json" ||
+      valueAfter("--permission-mode") !== "dontAsk" || valueAfter("--tools") !== "") {
+    throw new Error("Grok Build launch has an unsafe tool or permission mode.");
+  }
+  const restricted = new Set(valueAfter("--disallowed-tools").split(",").filter(Boolean));
+  if (!GROK_RESTRICTED_BUILTIN_TOOLS.every((tool) => restricted.has(tool))) {
+    throw new Error("Grok Build did not remove every reviewed built-in tool.");
+  }
+  const allowed = indexes("--allow").map((index) => args[index + 1]);
+  const expectedAllowed = grokAllowedTools(config).map((tool) => `MCPTool(${tool})`);
+  if (allowed.length !== expectedAllowed.length || !expectedAllowed.every((rule) => allowed.includes(rule))) {
+    throw new Error("Grok Build exposed an unreviewed MCP tool.");
+  }
+  const denied = new Set(indexes("--deny").map((index) => args[index + 1]));
+  if (!["Bash", "Read", "Edit", "Write", "Grep", "WebFetch", "WebSearch"].every((rule) => denied.has(rule))) {
+    throw new Error("Grok Build did not deny every reviewed capability class.");
+  }
+  const configText = grokMcpConfig(config);
+  const serverName = offline ? "mazebench" : "game";
+  if (!configText.includes(`[mcp_servers.${serverName}]`) || !configText.includes(`url = ${tomlString(config.mcpUrl)}`) ||
+      /\[mcp_servers\.(?!mazebench\]|game\])/.test(configText)) {
+    throw new Error("Grok Build must use exactly one private HTTP MCP endpoint.");
+  }
+  return true;
+}
+
 function assertLocalAgentCommandIsolation(config, command) {
   if (config.model === "codex") return assertLocalCodexCommandIsolation(config, command);
   if (config.model === "claude") return assertLocalClaudeCommandIsolation(config, command);
   if (config.model === "kimi") return assertLocalKimiCommandIsolation(config, command);
+  if (config.model === "grok") return assertLocalGrokCommandIsolation(config, command);
   throw new Error(`Unsupported local provider: ${config.model}`);
 }
 
@@ -1830,7 +2018,9 @@ function isolatedAgentEnvironment(config, commandEnv = {}) {
     ? { CODEX_HOME: "/home/pwuser/.codex" }
     : config.model === "claude"
       ? { CLAUDE_CONFIG_DIR: "/home/pwuser/.claude" }
-      : { KIMI_CODE_HOME: "/home/pwuser/.kimi-code" };
+      : config.model === "kimi"
+        ? { KIMI_CODE_HOME: "/home/pwuser/.kimi-code" }
+        : { GROK_HOME: "/home/pwuser/.grok" };
   return {
     PATH: process.env.PATH || "/usr/local/bin:/usr/bin:/bin",
     HOME: "/home/pwuser",
@@ -1852,7 +2042,12 @@ function localAgentIsolationPreflight(config) {
   const command = agentCommand(preflightConfig, "Isolation preflight only.");
   assertLocalAgentCommandIsolation(preflightConfig, command);
 
-  const providerBin = { codex: config.codexBin, claude: config.claudeBin, kimi: config.kimiBin }[config.model];
+  const providerBin = {
+    codex: config.codexBin,
+    claude: config.claudeBin,
+    kimi: config.kimiBin,
+    grok: config.grokBin
+  }[config.model];
   const requiredVersion = SUPPORTED_LOCAL_AGENT_VERSIONS[config.model];
   const versionProbe = spawnSync(providerBin, ["--version"], {
     encoding: "utf8",
@@ -1862,9 +2057,11 @@ function localAgentIsolationPreflight(config) {
   const installedVersion = String(versionProbe.stdout || versionProbe.stderr || "")
     .match(/\d+\.\d+\.\d+/)?.[0] || "";
   if (versionProbe.status !== 0 || installedVersion !== requiredVersion) {
+    const detail = String(versionProbe.error?.message || versionProbe.stderr || versionProbe.stdout || "").trim();
     throw new Error(
       `Local ${config.model} ${installedVersion || "unknown"} has not passed MazeBench's isolation review; ` +
-      `rebuild the image with ${config.model} ${requiredVersion}.`
+      `rebuild the image with ${config.model} ${requiredVersion}` +
+      `${detail ? ` (${detail.slice(0, 300)})` : ""}.`
     );
   }
 
@@ -1873,7 +2070,8 @@ function localAgentIsolationPreflight(config) {
       ? process.env.MAZEBENCH_PRIME_CONFIG_FILE || "/run/mazebench-credentials/prime-config.json"
       : process.env.MAZEBENCH_CODEX_AUTH_FILE || "/run/mazebench-credentials/codex-auth.json",
     claude: process.env.MAZEBENCH_CLAUDE_AUTH_FILE || "/run/mazebench-credentials/claude-credentials.json",
-    kimi: process.env.MAZEBENCH_KIMI_CONFIG_FILE || "/run/mazebench-credentials/kimi-config.toml"
+    kimi: process.env.MAZEBENCH_KIMI_CONFIG_FILE || "/run/mazebench-credentials/kimi-config.toml",
+    grok: process.env.MAZEBENCH_GROK_AUTH_FILE || "/run/mazebench-credentials/grok-auth.json"
   }[config.model];
   const probeSource = `
     const fs = require("node:fs");
@@ -1963,7 +2161,7 @@ function ensureAgentAvailable(bin) {
   if (probe.status !== 0) {
     throw new Error(
       `Agent CLI not found on PATH: ${bin}\n` +
-        `Install it (or pass ${bin === "codex" ? "codex_bin=" : bin === "claude" ? "claude_bin=" : "kimi_bin="}<path>) and try again.`
+        `Install it (or pass ${{ codex: "codex_bin", claude: "claude_bin", kimi: "kimi_bin", grok: "grok_bin" }[bin] || "agent_bin"}=<path>) and try again.`
     );
   }
 }
@@ -2395,6 +2593,14 @@ function distillKimiEvents(raw) {
   return { entries, transcript: transcript.join("\n\n"), finalMessage };
 }
 
+// Grok Build's streaming-messages-json format intentionally follows the
+// Anthropic Messages wire shape used above, including assistant tool_use and
+// user tool_result blocks. Keep a named wrapper so callers can report the
+// correct provider while sharing the mature action/reasoning parser.
+function distillGrokEvents(raw) {
+  return distillClaudeEvents(raw);
+}
+
 function writeReasoningArtifacts(config, raw, distilled, options = {}) {
   try {
     // When the caller already streamed agent-events.jsonl live, don't rewrite it.
@@ -2444,12 +2650,12 @@ function providerFailureFromEvents(raw, provider) {
 
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index];
-    if (provider === "claude" && event.type === "result") {
+    if (["claude", "grok"].includes(provider) && event.type === "result") {
       if (!event.is_error && !event.api_error_status) return null;
       return {
         provider,
         status: Number(event.api_error_status) || null,
-        message: String(event.result || event.error || "Claude Code request failed.").trim().slice(0, 500)
+        message: String(event.result || event.error || `${provider === "grok" ? "Grok Build" : "Claude Code"} request failed.`).trim().slice(0, 500)
       };
     }
     if (provider === "codex" && ["error", "turn.failed"].includes(event.type)) {
@@ -2516,9 +2722,7 @@ function recordNoMoveIfIdle(config, actionCountBefore) {
 
 function runAgent(config, prompt) {
   const agent = agentCommand(config, prompt);
-  if (config.inContainer && config.model === "codex") {
-    assertLocalCodexCommandIsolation(config, agent);
-  }
+  if (config.inContainer) assertLocalAgentCommandIsolation(config, agent);
   const { bin, argv, env: commandEnv = {} } = isolatedDockerAgentCommand(config, agent);
   ensureAgentAvailable(bin);
 
@@ -2541,7 +2745,9 @@ function runAgent(config, prompt) {
     ? distillCodexEvents
     : config.model === "claude"
       ? distillClaudeEvents
-      : distillKimiEvents;
+      : config.model === "kimi"
+        ? distillKimiEvents
+        : distillGrokEvents;
   const eventsPath = path.join(config.outDir, "agent-events.jsonl");
   // On a resume we keep the prior run's events and append the new turns, so the
   // reasoning feed shows the whole journey. A fresh run starts the file empty.
@@ -2559,6 +2765,8 @@ function runAgent(config, prompt) {
     const child = spawn(bin, argv, { cwd, env, stdio: ["ignore", "pipe", "inherit"] });
     let raw = "";
     let eventBuffer = "";
+    let exactModelFailure = null;
+    let grokInitVerified = config.model !== "grok";
     let primeInactivityTimer = null;
     let timeoutFailure = null;
     const resetPrimeInactivityTimer = () => {
@@ -2591,6 +2799,30 @@ function runAgent(config, prompt) {
         try {
           const event = JSON.parse(line);
           event._mazebench_received_at = new Date().toISOString();
+          if (config.model === "grok" && event.type === "system" && event.subtype === "init") {
+            const requestedModel = String(config.modelName || "grok-4.6");
+            const actualModel = String(event.model || "");
+            const tools = Array.isArray(event.tools) ? event.tools.map(String) : [];
+            const expectedServer = config.toolUse === "offline" ? "mazebench" : "game";
+            const servers = Array.isArray(event.mcp_servers) ? event.mcp_servers : [];
+            const serverReady = servers.length === 1 &&
+              String(servers[0]?.name || "") === expectedServer &&
+              String(servers[0]?.status || "") === "connected";
+            if (actualModel !== requestedModel ||
+                tools.some((tool) => tool !== "use_tool") ||
+                !serverReady) {
+              exactModelFailure = {
+                provider: config.model,
+                status: null,
+                message:
+                  `Exact-model guard stopped Grok Build: requested ${requestedModel}, ` +
+                  `received ${actualModel || "no model id"}; only the reviewed MazeBench MCP bridge is permitted.`
+              };
+              child.kill("SIGTERM");
+            } else {
+              grokInitVerified = true;
+            }
+          }
           output = JSON.stringify(event);
         } catch (_error) {
           /* preserve unexpected provider output verbatim */
@@ -2632,10 +2864,20 @@ function runAgent(config, prompt) {
         }
       }
       if (full.trim()) writeReasoningArtifacts(config, full, distill(full), { skipEvents: true });
+      if (!grokInitVerified && !exactModelFailure) {
+        exactModelFailure = {
+          provider: config.model,
+          status: null,
+          message: "Exact-model guard stopped Grok Build because its initialization event was missing."
+        };
+      }
       if (code !== 0) {
         console.warn(`\n(agent exited with status ${code}; continuing to export whatever it played)`);
       }
-      resolve({ code, failure: timeoutFailure || providerFailureFromEvents(raw, config.model) });
+      resolve({
+        code,
+        failure: exactModelFailure || timeoutFailure || providerFailureFromEvents(raw, config.model)
+      });
     });
   });
 }
@@ -2676,7 +2918,7 @@ function exportReplay(config) {
     if (config.width) argv.push("--width", String(config.width));
     if (config.height) argv.push("--height", String(config.height));
     if (config.fps) argv.push("--fps", String(config.fps));
-  } else {
+  } else if (config.model === "kimi") {
     argv.push("--no-video");
   }
 
@@ -2872,7 +3114,7 @@ function runInContainer(config, raw) {
     }
     credentialEnvironment.push("-e", "MAZEBENCH_CLAUDE_AUTH_FILE=/run/mazebench-credentials/claude-credentials.json");
     credentialMounts.push("-v", `${authPath}:/run/mazebench-credentials/claude-credentials.json:ro`);
-  } else {
+  } else if (config.model === "kimi") {
     const requested = raw.kimi_auth
       ? path.resolve(expandTilde(raw.kimi_auth))
       : path.resolve(process.env.KIMI_CODE_HOME || path.join(process.env.HOME || "", ".kimi-code"));
@@ -2897,6 +3139,18 @@ function runInContainer(config, raw) {
       credentialEnvironment.push("-e", "MAZEBENCH_KIMI_DEVICE_ID_FILE=/run/mazebench-credentials/kimi-device-id");
       credentialMounts.push("-v", `${deviceId}:/run/mazebench-credentials/kimi-device-id:ro`);
     }
+  } else if (config.model === "grok") {
+    const requested = raw.grok_auth
+      ? path.resolve(expandTilde(raw.grok_auth))
+      : path.resolve(process.env.GROK_HOME || path.join(process.env.HOME || "", ".grok"));
+    const authPath = fs.existsSync(requested) && fs.statSync(requested).isDirectory()
+      ? path.join(requested, "auth.json")
+      : requested;
+    if (!fs.existsSync(authPath) || !fs.statSync(authPath).isFile()) {
+      throw new Error("Grok Build subscription credentials are unavailable. Run `grok login --device-auth`, then retry.");
+    }
+    credentialEnvironment.push("-e", "MAZEBENCH_GROK_AUTH_FILE=/run/mazebench-credentials/grok-auth.json");
+    credentialMounts.push("-v", `${authPath}:/run/mazebench-credentials/grok-auth.json:ro`);
   }
 
   const dockerArgs = [
@@ -3225,7 +3479,7 @@ async function localCodexMain() {
   const model = String(raw.model || "").toLowerCase();
 
   if (!SUPPORTED_LOCAL_AGENT_VERSIONS[model]) {
-    console.error("Usage: node scripts/maze-agent-local.js --model codex|claude|kimi [moves=N level=HxI ...]");
+    console.error("Usage: node scripts/maze-agent-local.js --model codex|claude|kimi|grok [moves=N level=HxI ...]");
     process.exit(2);
   }
   const inference = String(raw.inference || "subscription").trim().toLowerCase();
@@ -3236,7 +3490,8 @@ async function localCodexMain() {
       (raw.docker_bin && raw.docker_bin !== "docker") ||
       (raw.codex_bin && raw.codex_bin !== "codex") ||
       (raw.claude_bin && raw.claude_bin !== "claude") ||
-      (raw.kimi_bin && raw.kimi_bin !== "kimi")) {
+      (raw.kimi_bin && raw.kimi_bin !== "kimi") ||
+      (raw.grok_bin && raw.grok_bin !== "grok")) {
     throw new Error("Local agents use the pinned mazebench-agent image and its bundled provider CLIs.");
   }
 
@@ -3282,6 +3537,7 @@ async function localCodexMain() {
   const pythonSandboxStateDir = path.join(outDir, ".python-sandbox");
   const kimiRuntimeDir = path.join(outDir, "agent-state", "kimi");
   const kimiSkillsDir = path.join(kimiRuntimeDir, "empty-skills");
+  const grokRuntimeDir = path.join(outDir, "agent-state", "grok");
   const primeCredential = inference === "prime"
     ? readPrimeCredential(
         inContainer
@@ -3300,6 +3556,7 @@ async function localCodexMain() {
     codexBin: raw.codex_bin || "codex",
     kimiBin: raw.kimi_bin || "kimi",
     kimiAuthDir: raw.kimi_auth ? path.resolve(expandTilde(raw.kimi_auth)) : "",
+    grokBin: raw.grok_bin || "grok",
     pythonBin: raw.python_bin || "",
     container: wantsContainer,
     dockerBin: raw.docker_bin || "docker",
@@ -3346,6 +3603,7 @@ async function localCodexMain() {
     codexRuntimeDir,
     kimiRuntimeDir,
     kimiSkillsDir,
+    grokRuntimeDir,
     pythonSandboxStateDir,
     agentWorkspaceDir: inContainer ? "/app/workspace" : workspaceDir,
     agentSwarmWorkspaceDir: inContainer ? "/app/swarm-workspaces" : swarmWorkspaceDir,
@@ -3353,6 +3611,7 @@ async function localCodexMain() {
     agentKimiRuntimeDir: inContainer ? "/home/pwuser/.kimi-code" : kimiRuntimeDir,
     agentKimiSkillsDir: inContainer ? "/home/pwuser/.kimi-code/empty-skills" : kimiSkillsDir,
     agentKimiProfile: inContainer ? "/home/pwuser/.kimi-code/mazebench-agent.md" : path.join(kimiRuntimeDir, "mazebench-agent.md"),
+    agentGrokRuntimeDir: inContainer ? "/home/pwuser/.grok" : grokRuntimeDir,
     // The outer Docker launcher re-execs before starting an agent. Actual host
     // and in-container agents both use MCP so maze persistence stays outside
     // their file/tool sandbox.
@@ -3499,12 +3758,14 @@ module.exports = {
   SUPPORTED_LOCAL_CLAUDE_VERSION,
   SUPPORTED_LOCAL_CODEX_VERSION,
   SUPPORTED_LOCAL_KIMI_VERSION,
+  SUPPORTED_LOCAL_GROK_VERSION,
   actionFromShellCommand,
   agentCommand,
   assertLocalAgentCommandIsolation,
   assertLocalClaudeCommandIsolation,
   assertLocalCodexCommandIsolation,
   assertLocalKimiCommandIsolation,
+  assertLocalGrokCommandIsolation,
   actionsFromShellCommand,
   actionsFromToolCall,
   buildMcpPrompt,
@@ -3514,10 +3775,13 @@ module.exports = {
   distillClaudeEvents,
   distillCodexEvents,
   distillKimiEvents,
+  distillGrokEvents,
   hasResumableGameSession,
   kimiAllowedTools,
   kimiAgentProfile,
   kimiMcpConfig,
+  grokAllowedTools,
+  grokMcpConfig,
   loadCodexModels,
   localAgentIsolationPreflight,
   localCodexIsolationPreflight,

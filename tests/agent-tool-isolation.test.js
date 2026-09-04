@@ -7,20 +7,25 @@ const {
   SUPPORTED_LOCAL_AGENT_VERSIONS,
   SUPPORTED_LOCAL_CLAUDE_VERSION,
   SUPPORTED_LOCAL_CODEX_VERSION,
+  SUPPORTED_LOCAL_GROK_VERSION,
   SUPPORTED_LOCAL_KIMI_VERSION,
   agentCommand,
   assertLocalClaudeCommandIsolation,
   assertLocalCodexCommandIsolation,
   assertLocalKimiCommandIsolation,
+  assertLocalGrokCommandIsolation,
   buildMcpPrompt,
   claudeSandboxSettings,
   codexMcpConfigArgs,
   distillClaudeEvents,
   distillCodexEvents,
   distillKimiEvents,
+  distillGrokEvents,
   hasResumableGameSession,
   kimiAgentProfile,
   kimiMcpConfig,
+  grokAllowedTools,
+  grokMcpConfig,
   migrateSeedSessionObservation,
   needsPrivateMcpServer,
   sanitizeKimiConfig
@@ -39,10 +44,12 @@ const baseConfig = {
   claudeBin: "claude",
   codexBin: "codex",
   kimiBin: "kimi",
+  grokBin: "grok",
   kimiRuntimeDir: path.join(workspace, "kimi-home"),
   kimiSkillsDir: path.join(workspace, "kimi-home", "empty-skills"),
   agentKimiRuntimeDir: path.join(workspace, "kimi-home"),
   agentKimiSkillsDir: path.join(workspace, "kimi-home", "empty-skills"),
+  agentGrokRuntimeDir: path.join(workspace, "grok-home"),
   codexFast: false,
   gameId: "maze",
   gems: 100,
@@ -328,20 +335,23 @@ for (const unsafeCommand of [
 assert.equal(SUPPORTED_LOCAL_CODEX_VERSION, "0.146.0");
 assert.equal(SUPPORTED_LOCAL_CLAUDE_VERSION, "2.1.220");
 assert.equal(SUPPORTED_LOCAL_KIMI_VERSION, "0.29.1");
+assert.equal(SUPPORTED_LOCAL_GROK_VERSION, "1.0.13");
 assert.deepEqual(SUPPORTED_LOCAL_AGENT_VERSIONS, {
   codex: "0.146.0",
   claude: "2.1.220",
-  kimi: "0.29.1"
+  kimi: "0.29.1",
+  grok: "1.0.13"
 });
 assert.match(localAgentDockerfile, /FROM mcr\.microsoft\.com\/playwright:v1\.60\.0-noble/);
 for (const packagePattern of [
   /"@openai\/codex@\$\{CODEX_VERSION\}"/,
   /"@anthropic-ai\/claude-code@\$\{CLAUDE_CODE_VERSION\}"/,
-  /"@moonshot-ai\/kimi-code@\$\{KIMI_CODE_VERSION\}"/
+  /"@moonshot-ai\/kimi-code@\$\{KIMI_CODE_VERSION\}"/,
+  /"@xai-official\/grok@\$\{GROK_BUILD_VERSION\}"/
 ]) {
   assert.match(localAgentDockerfile, packagePattern);
 }
-for (const label of ["local-codex", "local-claude", "local-kimi"]) {
+for (const label of ["local-codex", "local-claude", "local-kimi", "local-grok"]) {
   assert.match(localAgentDockerfile, new RegExp(`org\\.mazebench\\.${label}\\.version`));
 }
 for (const boundary of [
@@ -353,6 +363,7 @@ for (const boundary of [
   /"--ro-bind", authFile, "\/home\/pwuser\/\.codex\/auth\.json"/,
   /"--ro-bind", authFile, "\/home\/pwuser\/\.claude\/\.credentials\.json"/,
   /"--setenv", "KIMI_CODE_HOME", "\/home\/pwuser\/\.kimi-code"/,
+  /"--setenv", "GROK_HOME", "\/home\/pwuser\/\.grok"/,
   /"--bounding-set=-all"/,
   /"--inh-caps=-all"/,
   /"--ambient-caps=-all"/,
@@ -412,6 +423,7 @@ assert.deepEqual(
 );
 assert.equal(needsPrivateMcpServer(claudeConfig), true, "host Claude runs need a prestarted MCP service");
 assert.equal(needsPrivateMcpServer({ ...baseConfig, model: "kimi" }), true, "host Kimi runs need a private MCP service");
+assert.equal(needsPrivateMcpServer({ ...baseConfig, model: "grok" }), true, "host Grok runs need a private MCP service");
 assert.equal(needsPrivateMcpServer(codexConfig), false, "host Codex can use its synchronous stdio MCP startup");
 assert.equal(needsPrivateMcpServer({ ...codexConfig, inContainer: true }), true);
 
@@ -532,6 +544,54 @@ const isolatedKimiToolsConfig = { ...isolatedKimiConfig, toolUse: "offline", too
 const isolatedKimiTools = agentCommand(isolatedKimiToolsConfig, buildMcpPrompt(isolatedKimiToolsConfig));
 assert.equal(assertLocalKimiCommandIsolation(isolatedKimiToolsConfig, isolatedKimiTools), true);
 assert.match(kimiAgentProfile(isolatedKimiToolsConfig), /mcp__mazebench__python_exec/);
+
+const isolatedGrokConfig = {
+  ...baseConfig,
+  model: "grok",
+  modelName: "grok-4.6",
+  reasoning: "xhigh",
+  agentGrokRuntimeDir: "/home/pwuser/.grok",
+  agentWorkspaceDir: "/app/workspace",
+  inContainer: true,
+  outDir: "/run/mazebench-output",
+  workspaceDir: "/run/mazebench-workspace/workspace"
+};
+const isolatedGrok = agentCommand(isolatedGrokConfig, buildMcpPrompt(isolatedGrokConfig));
+assert.equal(isolatedGrok.bin, "grok");
+assert.equal(isolatedGrok.argv[isolatedGrok.argv.indexOf("--model") + 1], "grok-4.6");
+assert.equal(isolatedGrok.argv[isolatedGrok.argv.indexOf("--reasoning-effort") + 1], "xhigh");
+assert.equal(isolatedGrok.argv[isolatedGrok.argv.indexOf("--output-format") + 1], "streaming-messages-json");
+assert.equal(isolatedGrok.argv[isolatedGrok.argv.indexOf("--permission-mode") + 1], "dontAsk");
+assert.equal(isolatedGrok.argv[isolatedGrok.argv.indexOf("--tools") + 1], "");
+const grokDisallowedTools = isolatedGrok.argv[
+  isolatedGrok.argv.indexOf("--disallowed-tools") + 1
+].split(",");
+for (const tool of [
+  "run_terminal_cmd", "run_terminal_command", "read_file", "search_replace", "list_dir",
+  "web_search", "web_fetch", "spawn_subagent", "scheduler_create", "monitor", "workflow",
+  "image_gen", "write"
+]) {
+  assert(grokDisallowedTools.includes(tool), `Grok Build must remove ${tool}`);
+}
+assert(!grokDisallowedTools.includes("use_tool"), "Grok Build needs only its MCP invocation bridge");
+assert.equal(assertLocalGrokCommandIsolation(isolatedGrokConfig, isolatedGrok), true);
+assert.deepEqual(grokAllowedTools(isolatedGrokConfig), [
+  "game__game_start", "game__game_observe", "game__game_action"
+]);
+const isolatedGrokToolsConfig = {
+  ...isolatedGrokConfig,
+  toolUse: "offline",
+  tools: true,
+  autoRunTools: true
+};
+const isolatedGrokTools = agentCommand(isolatedGrokToolsConfig, buildMcpPrompt(isolatedGrokToolsConfig));
+assert.equal(assertLocalGrokCommandIsolation(isolatedGrokToolsConfig, isolatedGrokTools), true);
+assert(grokAllowedTools(isolatedGrokToolsConfig).includes("mazebench__python_exec"));
+assert(grokAllowedTools(isolatedGrokToolsConfig).includes("mazebench__maze_action_sequence"));
+assert.match(grokMcpConfig(isolatedGrokToolsConfig), /\[mcp_servers\.mazebench\]/);
+assert.match(grokMcpConfig(isolatedGrokToolsConfig), /auto_update = false/);
+assert.match(localAgentSource, /Exact-model guard stopped Grok Build/);
+assert.match(localAgentSource, /tools\.some\(\(tool\) => tool !== "use_tool"\)/);
 assert.throws(
   () => assertLocalKimiCommandIsolation(isolatedKimiConfig, {
     ...isolatedKimi,
@@ -618,6 +678,14 @@ assert.deepEqual(distillKimiEvents(kimiEvents).entries, [{
   room_changed: false,
   player_dead: false
 }]);
+const grokEvents = [
+  { type: "stream_event", event: { type: "content_block_delta", delta: { type: "thinking_delta", thinking: "Try right." } } },
+  { type: "assistant", message: { content: [{ type: "tool_use", id: "grok-call-1", name: "game__game_action", input: { action: "right" } }] }, session_id: "grok-session" },
+  { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "grok-call-1", content: JSON.stringify({ moved: true, gem_count: 1, current_room: "HxI" }), is_error: false }] }, session_id: "grok-session" }
+].map(JSON.stringify).join("\n");
+assert.deepEqual(distillGrokEvents(grokEvents).entries.map(({ action, reasoning, gems }) => ({ action, reasoning, gems })), [
+  { action: "right", reasoning: "Try right.", gems: 1 }
+]);
 const savedRouteSequenceResult = {
     requested_count: 3,
     completed_count: 2,

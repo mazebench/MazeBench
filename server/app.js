@@ -68,7 +68,9 @@ const PUBLIC_FILE_ROUTES = new Map(
     "/logos/codex.png",
     "/logos/claude.png",
     "/logos/kimi.svg",
-    "/logos/prime.png"
+    "/logos/prime.png",
+    "/logos/grok-build.svg",
+    "/logos/google-deepmind.svg"
   ].map((routePath) => [routePath, path.join(PUBLIC_DIR, routePath.slice(1))])
 );
 
@@ -267,12 +269,14 @@ const LOCAL_AGENT_IMAGE = "docker.io/library/mazebench-agent:latest";
 const LOCAL_AGENT_VERSIONS = Object.freeze({
   codex: "0.146.0",
   claude: "2.1.220",
-  kimi: "0.29.1"
+  kimi: "0.29.1",
+  grok: "1.0.13"
 });
 const LOCAL_AGENT_IMAGE_LABELS = Object.freeze({
   codex: "org.mazebench.local-codex.version",
   claude: "org.mazebench.local-claude.version",
-  kimi: "org.mazebench.local-kimi.version"
+  kimi: "org.mazebench.local-kimi.version",
+  grok: "org.mazebench.local-grok.version"
 });
 
 // A container run needs BOTH the docker binary AND a reachable daemon. Report
@@ -364,6 +368,16 @@ function kimiAccountStatus(result) {
   };
 }
 
+function grokAccountStatus(result) {
+  const output = `${String(result?.stdout || "")}\n${String(result?.stderr || "")}`.trim();
+  const authenticated = result?.status === 0 && /logged in with grok\.com/i.test(output);
+  return {
+    authenticated,
+    subscription: authenticated,
+    method: authenticated ? "x-oauth" : ""
+  };
+}
+
 function agentEnvironment(options = {}) {
   if (!options.fresh && agentEnvironmentCache && Date.now() - agentEnvironmentCache.at < 15000) {
     return agentEnvironmentCache.value;
@@ -390,6 +404,7 @@ function agentEnvironment(options = {}) {
   const codexInstalled = probe("codex");
   const claudeInstalled = probe("claude");
   const kimiInstalled = probe("kimi");
+  const grokInstalled = probe("grok");
   const primeInstalled = probe("prime");
   const codexAuth = codexSubscriptionStatus(
     codexInstalled ? probeCommand("codex", ["login", "status"]) : null
@@ -399,6 +414,9 @@ function agentEnvironment(options = {}) {
   );
   const kimiAuth = kimiAccountStatus(
     kimiInstalled ? probeCommand("kimi", ["provider", "list", "--json"]) : null
+  );
+  const grokAuth = grokAccountStatus(
+    grokInstalled ? probeCommand("grok", ["models"], 10000) : null
   );
   // An API key can remain in the environment after it expires. Ask Prime to
   // validate the current credentials instead of treating presence as proof.
@@ -423,6 +441,11 @@ function agentEnvironment(options = {}) {
     kimi_authenticated: kimiAuth.authenticated,
     kimi_subscription: kimiAuth.subscription,
     kimi_auth_method: kimiAuth.method,
+    grok: grokInstalled && grokAuth.subscription && docker.running && docker.image,
+    grok_installed: grokInstalled,
+    grok_authenticated: grokAuth.authenticated,
+    grok_subscription: grokAuth.subscription,
+    grok_auth_method: grokAuth.method,
     // `docker` means "ready for a container run" — installed AND daemon up.
     docker: docker.running,
     docker_installed: docker.installed,
@@ -478,24 +501,27 @@ async function agentEnvironmentAsync(options = {}) {
   };
 
   agentEnvironmentPromise = (async () => {
-    const [codexInstalled, claudeInstalled, kimiInstalled, primeInstalled, uvInstalled, dockerInstalled] = await Promise.all([
+    const [codexInstalled, claudeInstalled, kimiInstalled, grokInstalled, primeInstalled, uvInstalled, dockerInstalled] = await Promise.all([
       commandExists("codex"),
       commandExists("claude"),
       commandExists("kimi"),
+      commandExists("grok"),
       commandExists("prime"),
       commandExists("uv"),
       commandExists("docker")
     ]);
-    const [codexResult, claudeResult, kimiResult, primeResult, dockerResult] = await Promise.all([
+    const [codexResult, claudeResult, kimiResult, grokResult, primeResult, dockerResult] = await Promise.all([
       codexInstalled ? runCommand("codex", ["login", "status"]) : null,
       claudeInstalled ? runCommand("claude", ["auth", "status", "--json"]) : null,
       kimiInstalled ? runCommand("kimi", ["provider", "list", "--json"]) : null,
+      grokInstalled ? runCommand("grok", ["models"], 10000) : null,
       primeInstalled ? runCommand("prime", ["whoami"], 8000) : null,
       dockerInstalled ? runCommand("docker", ["info", "--format", "{{.ServerVersion}}"], 8000) : null
     ]);
     const codexAuth = codexSubscriptionStatus(codexResult ? { ...codexResult, status: 0 } : null);
     const claudeAuth = claudeSubscriptionStatus(claudeResult ? { ...claudeResult, status: 0 } : null);
     const kimiAuth = kimiAccountStatus(kimiResult ? { ...kimiResult, status: 0 } : null);
+    const grokAuth = grokAccountStatus(grokResult ? { ...grokResult, status: 0 } : null);
     const primeAuthenticated = Boolean(primeResult);
     const dockerRunning = Boolean(dockerResult && String(dockerResult.stdout || "").trim());
     const imageResult = dockerRunning
@@ -534,6 +560,11 @@ async function agentEnvironmentAsync(options = {}) {
       kimi_authenticated: kimiAuth.authenticated,
       kimi_subscription: kimiAuth.subscription,
       kimi_auth_method: kimiAuth.method,
+      grok: grokInstalled && grokAuth.subscription && dockerRunning && localAgentImage,
+      grok_installed: grokInstalled,
+      grok_authenticated: grokAuth.authenticated,
+      grok_subscription: grokAuth.subscription,
+      grok_auth_method: grokAuth.method,
       docker: Boolean(dockerRunning),
       docker_installed: dockerInstalled,
       docker_running: Boolean(dockerRunning),
