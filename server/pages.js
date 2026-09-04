@@ -1612,6 +1612,25 @@ function createPageRenderer({
           <div id="leaderboard-tooltip" class="leaderboard-tooltip" hidden></div>
           <p id="leaderboard-chart-note" class="leaderboard-chart-note" hidden></p>
           <div id="leaderboard-legend" class="leaderboard-legend" aria-label="Selected run legend"></div>
+          <section id="leaderboard-heatmaps-section" class="leaderboard-heatmaps" aria-labelledby="leaderboard-heatmaps-title" hidden>
+            <div class="leaderboard-heatmaps__head">
+              <div>
+                <span class="leaderboard-kicker">Exploration footprints</span>
+                <h3 id="leaderboard-heatmaps-title">Visit heatmaps</h3>
+              </div>
+              <div class="leaderboard-heatmaps__settings">
+                <p id="leaderboard-heatmaps-scale">Shared world coordinates and visit scale</p>
+                <div class="leaderboard-segments leaderboard-heatmap-columns" role="group" aria-label="Heatmap cards per row">
+                  <button type="button" data-heatmap-columns="2" aria-pressed="true">2 per row</button>
+                  <button type="button" data-heatmap-columns="3" aria-pressed="false">3 per row</button>
+                </div>
+              </div>
+            </div>
+            <div id="leaderboard-heatmaps" class="leaderboard-heatmaps__grid"></div>
+            <div class="leaderboard-heatmaps__legend" aria-hidden="true">
+              <span>Less visited</span><i></i><span>Most visited</span>
+            </div>
+          </section>
         </section>
 
         <section class="panel leaderboard-models" aria-labelledby="leaderboard-models-title">
@@ -1628,7 +1647,7 @@ function createPageRenderer({
           <p class="muted">Each item is one exact starred run, so two runs of the same model can still be compared independently.</p>
           <div id="leaderboard-run-picker" class="leaderboard-run-picker"></div>
         </section>
-        <script src="/leaderboard.js?v=20260902-milestone-lines-1" defer></script>`
+        <script src="/leaderboard.js?v=20260904-heatmap-columns-1" defer></script>`
     });
   }
 

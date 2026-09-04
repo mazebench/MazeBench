@@ -2702,6 +2702,87 @@ function createAgentRunService({
   // Compact, chart-ready telemetry for the local leaderboard. The endpoint is
   // deliberately limited to starred runs: stars are the explicit curation
   // boundary shared by the Agent page, this leaderboard, and MazeJam exports.
+  function leaderboardHeatmap(runId, summary, actions) {
+    const roomSize = 16;
+    const visits = new Map();
+    const rooms = new Map();
+    let totalVisits = 0;
+    let currentRoom = String(summary.level_id || "");
+    let initialPlayer = readInitialPlayer(runId);
+    let reconstructed = null;
+
+    if (!initialPlayer || actions.some((action) => !action.player)) {
+      reconstructed = reconstructBoardStateTimeline(runId, summary);
+      initialPlayer ||= reconstructed?.initial_player || null;
+    }
+
+    const coordinatesForRoom = (roomId) => {
+      const parsed = worldMaps.parseMazeWorldLevelId?.(summary.game_id || "maze", roomId);
+      if (parsed) return parsed;
+      const match = String(roomId || "").match(/^level_([A-Z])x([A-Z])$/i);
+      return match
+        ? {
+            column: match[1].toUpperCase(),
+            row: match[2].toUpperCase(),
+            columnIndex: match[1].toUpperCase().charCodeAt(0) - 65,
+            rowIndex: match[2].toUpperCase().charCodeAt(0) - 65
+          }
+        : null;
+    };
+    const addVisit = (player, roomId) => {
+      const position = normalizedPlayerPosition(player);
+      const coordinates = coordinatesForRoom(roomId);
+      const localX = Math.round(position?.x);
+      const localY = Math.round(position?.y);
+      if (
+        !position ||
+        !coordinates ||
+        localX < 0 ||
+        localX >= roomSize ||
+        localY < 0 ||
+        localY >= roomSize
+      ) return;
+      const x = coordinates.columnIndex * roomSize + localX;
+      const y = coordinates.rowIndex * roomSize + localY;
+      const key = `${x},${y}`;
+      visits.set(key, (visits.get(key) || 0) + 1);
+      totalVisits += 1;
+      rooms.set(String(roomId), {
+        id: String(roomId),
+        label: String(roomId).replace(/^level_/, ""),
+        column: coordinates.columnIndex,
+        row: coordinates.rowIndex
+      });
+    };
+
+    addVisit(initialPlayer, currentRoom);
+    actions.forEach((action, index) => {
+      if (action?.current_room) currentRoom = String(action.current_room);
+      const turn = Number(action?.turn) || index + 1;
+      addVisit(action?.player || reconstructed?.players.get(turn), currentRoom);
+    });
+    if (!visits.size || !rooms.size) return null;
+
+    const roomList = [...rooms.values()].sort((left, right) =>
+      left.row - right.row || left.column - right.column
+    );
+    const counts = [...visits.values()];
+    return {
+      room_size: roomSize,
+      rooms: roomList,
+      cells: [...visits.entries()]
+        .map(([key, count]) => [...key.split(",").map(Number), count])
+        .sort((left, right) => left[1] - right[1] || left[0] - right[0]),
+      total_visits: totalVisits,
+      unique_cells: visits.size,
+      max_count: Math.max(...counts),
+      min_room_column: Math.min(...roomList.map((room) => room.column)),
+      max_room_column: Math.max(...roomList.map((room) => room.column)),
+      min_room_row: Math.min(...roomList.map((room) => room.row)),
+      max_room_row: Math.max(...roomList.map((room) => room.row))
+    };
+  }
+
   function getLeaderboardRun(runId) {
     const summary = summarizeRun(runId);
     if (!summary || !summary.favorited) return null;
@@ -2793,6 +2874,7 @@ function createAgentRunService({
         input_tokens: totalInputTokens,
         api_cost_usd: hasApiCost ? totalApiCost : null
       },
+      heatmap: leaderboardHeatmap(runId, summary, actions),
       points
     };
   }

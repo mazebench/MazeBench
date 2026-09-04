@@ -15,6 +15,9 @@
     chart: document.querySelector("#leaderboard-chart"),
     note: document.querySelector("#leaderboard-chart-note"),
     legend: document.querySelector("#leaderboard-legend"),
+    heatmaps: document.querySelector("#leaderboard-heatmaps"),
+    heatmapsScale: document.querySelector("#leaderboard-heatmaps-scale"),
+    heatmapsSection: document.querySelector("#leaderboard-heatmaps-section"),
     picker: document.querySelector("#leaderboard-run-picker"),
     status: document.querySelector("#leaderboard-status"),
     tooltip: document.querySelector("#leaderboard-tooltip"),
@@ -28,8 +31,12 @@
     loading: new Set(),
     xAxis: axisFromUrl("x", X_AXES, "move_count"),
     yAxis: axisFromUrl("y", Y_AXES, "gems"),
-    renderVersion: 0
+    heatmapColumns: heatmapColumnsFromUrl(),
+    renderVersion: 0,
+    heatmapRender: null
   };
+
+  let heatmapResizeFrame = 0;
 
   document.querySelectorAll("[data-x-axis]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -47,10 +54,22 @@
       renderChart();
     });
   });
+  document.querySelectorAll("[data-heatmap-columns]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.heatmapColumns = Number(button.dataset.heatmapColumns) === 3 ? 3 : 2;
+      updateControls();
+      updateUrl();
+      updateHeatmapColumns();
+    });
+  });
   elements.defaults?.addEventListener("click", () => selectDefaults(true));
   elements.clear?.addEventListener("click", () => {
     state.selected.clear();
     selectionChanged();
+  });
+  window.addEventListener("resize", () => {
+    window.cancelAnimationFrame(heatmapResizeFrame);
+    heatmapResizeFrame = window.requestAnimationFrame(drawHeatmapComparisons);
   });
 
   boot();
@@ -190,12 +209,14 @@
       elements.status.textContent = "Select at least one run";
       renderEmpty("Select models below to draw their starred runs.");
       renderLegend([]);
+      renderHeatmaps([]);
       return;
     }
     if (!selected.length && pending) {
       elements.status.textContent = `Loading ${state.selected.size} selected run${state.selected.size === 1 ? "" : "s"}…`;
       renderEmpty("Loading run timelines…", true);
       renderLegend([]);
+      renderHeatmaps([]);
       return;
     }
 
@@ -212,12 +233,13 @@
       elements.status.textContent = `No ${X_AXES[xKey].short} timeline`;
       renderEmpty(`The selected runs do not contain a ${X_AXES[xKey].short} timeline.`);
       renderLegend(selected);
+      renderHeatmaps(selected);
       return;
     }
 
     const width = 1180;
     const height = 510;
-    const pad = { top: 28, right: 36, bottom: 64, left: 74 };
+    const pad = { top: 28, right: 230, bottom: 64, left: 74 };
     const xMax = niceMaximum(Math.max(...plotted.flatMap((series) => series.points.map((point) => point.x)), 1));
     const yMax = niceMaximum(Math.max(...plotted.flatMap((series) => series.points.map((point) => point.y)), 1), true);
     const x = (value) => pad.left + value / xMax * (width - pad.left - pad.right);
@@ -250,6 +272,7 @@
       svgText(19, (pad.top + height - pad.bottom) / 2, Y_AXES[yKey].label, "middle", "leaderboard-chart__axis-label", `rotate(-90 19 ${(pad.top + height - pad.bottom) / 2})`)
     );
 
+    const labelPositions = lineLabelPositions(plotted, y, pad.top + 8, height - pad.bottom - 8);
     plotted.forEach((series) => {
       const points = milestoneLineSeries(series.points);
       const path = points.map((point, index) => {
@@ -264,7 +287,27 @@
         svg("path", { d: path, class: "leaderboard-chart__line" })
       );
       const last = points[points.length - 1];
-      group.append(svg("circle", { cx: x(last.x), cy: y(last.y), r: 4.5, class: "leaderboard-chart__endpoint" }));
+      points.forEach((point, index) => {
+        group.append(svg("circle", {
+          cx: x(point.x),
+          cy: y(point.y),
+          r: index === points.length - 1 ? 4.8 : 3.5,
+          class: `leaderboard-chart__point${index === points.length - 1 ? " is-endpoint" : ""}`
+        }));
+      });
+      const endpointX = x(last.x);
+      const endpointY = y(last.y);
+      const labelY = labelPositions.get(series.entry.run.id) ?? endpointY;
+      group.append(
+        svg("line", {
+          x1: endpointX + 6,
+          y1: endpointY,
+          x2: endpointX + 13,
+          y2: labelY,
+          class: "leaderboard-chart__label-leader"
+        }),
+        svgText(endpointX + 17, labelY + 4, displayModel(series.entry.run), "start", "leaderboard-chart__series-label")
+      );
       chart.append(group);
     });
 
@@ -290,6 +333,7 @@
     elements.note.hidden = !notes.length;
     elements.note.textContent = notes.join(" ");
     renderLegend(selected);
+    renderHeatmaps(selected);
   }
 
   function renderEmpty(message, loading = false) {
@@ -309,6 +353,158 @@
         <span class="leaderboard-legend-item__stats"><b>${formatInteger(run.gem_count)}</b> gems · <b>${formatInteger(run.room_count)}</b> rooms · <b>${formatInteger(run.turns)}</b> moves${cost == null ? "" : ` · <b>${formatUsd(cost)}</b>`}</span>
       </a>`;
     }).join("");
+  }
+
+  function renderHeatmaps(entries) {
+    if (!elements.heatmaps || !elements.heatmapsSection) return;
+    if (!entries.length) {
+      elements.heatmapsSection.hidden = true;
+      elements.heatmaps.replaceChildren();
+      state.heatmapRender = null;
+      return;
+    }
+
+    const available = entries.filter((entry) => entry.heatmap?.cells?.length && entry.heatmap?.rooms?.length);
+    const bounds = available.length ? {
+      minRoomColumn: Math.min(...available.map((entry) => entry.heatmap.min_room_column)),
+      maxRoomColumn: Math.max(...available.map((entry) => entry.heatmap.max_room_column)),
+      minRoomRow: Math.min(...available.map((entry) => entry.heatmap.min_room_row)),
+      maxRoomRow: Math.max(...available.map((entry) => entry.heatmap.max_room_row))
+    } : null;
+    const maxCount = Math.max(1, ...available.map((entry) => Number(entry.heatmap.max_count) || 1));
+    state.heatmapRender = { available, bounds, maxCount };
+    elements.heatmapsSection.hidden = false;
+    if (elements.heatmapsScale) {
+      elements.heatmapsScale.textContent = available.length
+        ? `Shared world coordinates · 1–${formatInteger(maxCount)} visits per cell`
+        : "Position history is unavailable for these runs";
+    }
+    elements.heatmaps.innerHTML = entries.map((entry) => {
+      const run = entry.run;
+      const heatmap = entry.heatmap;
+      const index = available.indexOf(entry);
+      const color = colorForRun(run.id, state.runs.findIndex((candidate) => candidate.id === run.id));
+      const summary = heatmap
+        ? `${formatInteger(heatmap.unique_cells)} cells · ${formatInteger(heatmap.total_visits)} visits · ${formatInteger(heatmap.rooms.length)} rooms`
+        : "Position history unavailable";
+      return `<article class="leaderboard-heatmap-card" style="--run-color:${color}">
+        <header class="leaderboard-heatmap-card__head">
+          <span class="leaderboard-heatmap-card__title"><i aria-hidden="true"></i><a href="${escapeText(run.url)}">${escapeText(displayModel(run))}</a></span>
+          <span>${escapeText(summary)}</span>
+        </header>
+        <div class="leaderboard-heatmap-card__viewport">
+          ${index >= 0
+            ? `<canvas class="leaderboard-heatmap-card__canvas" data-heatmap-index="${index}" role="img" aria-label="${escapeText(`${displayModel(run)} visit heatmap: ${summary}`)}"></canvas>`
+            : '<div class="leaderboard-heatmap-card__empty">No recorded player coordinates for this run.</div>'}
+        </div>
+      </article>`;
+    }).join("");
+    updateHeatmapColumns();
+    window.cancelAnimationFrame(heatmapResizeFrame);
+    heatmapResizeFrame = window.requestAnimationFrame(drawHeatmapComparisons);
+  }
+
+  function drawHeatmapComparisons() {
+    const render = state.heatmapRender;
+    if (!render?.bounds || !elements.heatmaps) return;
+    elements.heatmaps.querySelectorAll("[data-heatmap-index]").forEach((canvas) => {
+      const entry = render.available[Number(canvas.dataset.heatmapIndex)];
+      if (entry) paintHeatmapComparison(canvas, entry.heatmap, render.bounds, render.maxCount);
+    });
+  }
+
+  function paintHeatmapComparison(canvas, heatmap, bounds, maxCount) {
+    const roomSize = Math.max(1, Number(heatmap.room_size) || 16);
+    const columns = (bounds.maxRoomColumn - bounds.minRoomColumn + 1) * roomSize;
+    const rows = (bounds.maxRoomRow - bounds.minRoomRow + 1) * roomSize;
+    const width = Math.max(260, Math.floor(canvas.parentElement.clientWidth - 24));
+    const height = Math.max(180, Math.round(width * rows / columns));
+    const ratio = Math.min(2, window.devicePixelRatio || 1);
+    canvas.style.aspectRatio = `${columns} / ${rows}`;
+    canvas.width = Math.round(width * ratio);
+    canvas.height = Math.round(height * ratio);
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    context.setTransform(ratio, 0, 0, ratio, 0, 0);
+    context.fillStyle = "#070a16";
+    context.fillRect(0, 0, width, height);
+
+    const cellWidth = width / columns;
+    const cellHeight = height / rows;
+    const gap = Math.min(0.9, Math.min(cellWidth, cellHeight) * 0.1);
+    const counts = new Map(heatmap.cells.map(([x, y, count]) => [`${x},${y}`, Number(count) || 0]));
+    const low = Math.log1p(1);
+    const range = Math.max(Number.EPSILON, Math.log1p(maxCount) - low);
+    const minX = bounds.minRoomColumn * roomSize;
+    const minY = bounds.minRoomRow * roomSize;
+    for (let row = 0; row < rows; row += 1) {
+      for (let column = 0; column < columns; column += 1) {
+        const count = counts.get(`${minX + column},${minY + row}`) || 0;
+        context.fillStyle = count
+          ? heatmapColor((Math.log1p(count) - low) / range)
+          : "rgba(21, 26, 51, 0.72)";
+        context.fillRect(
+          column * cellWidth + gap,
+          row * cellHeight + gap,
+          Math.max(0.5, cellWidth - gap * 2),
+          Math.max(0.5, cellHeight - gap * 2)
+        );
+      }
+    }
+
+    context.strokeStyle = "rgba(124, 143, 255, 0.5)";
+    context.lineWidth = Math.max(0.75, Math.min(1.5, Math.min(cellWidth, cellHeight) * 0.08));
+    context.beginPath();
+    for (let column = 0; column <= columns; column += roomSize) {
+      const lineX = column * cellWidth;
+      context.moveTo(lineX, 0);
+      context.lineTo(lineX, height);
+    }
+    for (let row = 0; row <= rows; row += roomSize) {
+      const lineY = row * cellHeight;
+      context.moveTo(0, lineY);
+      context.lineTo(width, lineY);
+    }
+    context.stroke();
+  }
+
+  function heatmapColor(intensity) {
+    const stops = [
+      [0, [255, 216, 77]],
+      [0.34, [255, 151, 45]],
+      [0.67, [239, 62, 84]],
+      [1, [139, 76, 220]]
+    ];
+    const value = Math.max(0, Math.min(1, Number(intensity) || 0));
+    const upperIndex = stops.findIndex(([stop]) => stop >= value);
+    if (upperIndex <= 0) return `rgb(${stops[0][1].join(", ")})`;
+    const [lowerStop, lowerColor] = stops[upperIndex - 1];
+    const [upperStop, upperColor] = stops[upperIndex];
+    const amount = (value - lowerStop) / (upperStop - lowerStop);
+    return `rgb(${lowerColor.map((channel, index) =>
+      Math.round(channel + (upperColor[index] - channel) * amount)
+    ).join(", ")})`;
+  }
+
+  function lineLabelPositions(series, y, minimum, maximum) {
+    const labels = series
+      .map((entry) => ({ id: entry.entry.run.id, desired: y(entry.points.at(-1).y), placed: 0 }))
+      .sort((left, right) => left.desired - right.desired);
+    const gap = 19;
+    labels.forEach((label, index) => {
+      label.placed = Math.max(label.desired, index ? labels[index - 1].placed + gap : minimum);
+    });
+    if (labels.at(-1)?.placed > maximum) {
+      labels[labels.length - 1].placed = maximum;
+      for (let index = labels.length - 2; index >= 0; index -= 1) {
+        labels[index].placed = Math.min(labels[index].placed, labels[index + 1].placed - gap);
+      }
+    }
+    if (labels[0]?.placed < minimum) {
+      const shift = minimum - labels[0].placed;
+      labels.forEach((label) => { label.placed += shift; });
+    }
+    return new Map(labels.map((label) => [label.id, label.placed]));
   }
 
   function attachTooltip(hit, guide, plotted, chartState) {
@@ -384,6 +580,15 @@
     document.querySelectorAll("[data-y-axis]").forEach((button) =>
       button.setAttribute("aria-pressed", button.dataset.yAxis === state.yAxis ? "true" : "false")
     );
+    document.querySelectorAll("[data-heatmap-columns]").forEach((button) =>
+      button.setAttribute("aria-pressed", Number(button.dataset.heatmapColumns) === state.heatmapColumns ? "true" : "false")
+    );
+  }
+
+  function updateHeatmapColumns() {
+    if (elements.heatmaps) elements.heatmaps.dataset.columns = String(state.heatmapColumns);
+    window.cancelAnimationFrame(heatmapResizeFrame);
+    heatmapResizeFrame = window.requestAnimationFrame(drawHeatmapComparisons);
   }
 
   function updateUrl() {
@@ -392,6 +597,8 @@
     else url.searchParams.set("x", state.xAxis);
     if (state.yAxis === "gems") url.searchParams.delete("y");
     else url.searchParams.set("y", state.yAxis);
+    if (state.heatmapColumns === 2) url.searchParams.delete("heatmap_columns");
+    else url.searchParams.set("heatmap_columns", String(state.heatmapColumns));
     if (state.selected.size) url.searchParams.set("runs", [...state.selected].join(","));
     else url.searchParams.delete("runs");
     window.history.replaceState(null, "", url);
@@ -448,6 +655,10 @@
   function axisFromUrl(name, axes, fallback) {
     const value = new URLSearchParams(window.location.search).get(name);
     return value && Object.hasOwn(axes, value) ? value : fallback;
+  }
+
+  function heatmapColumnsFromUrl() {
+    return Number(new URLSearchParams(window.location.search).get("heatmap_columns")) === 3 ? 3 : 2;
   }
 
   function finiteMetric(value) {

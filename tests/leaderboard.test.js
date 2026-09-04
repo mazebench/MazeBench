@@ -23,7 +23,16 @@ assert.match(clientSource, /Number\(right\.gem_count\).*Number\(left\.gem_count\
 assert.match(clientSource, /milestoneLineSeries/);
 assert.match(clientSource, /if \(point\.y === lastScore\) continue/);
 assert.match(clientSource, /return `L \$\{px\.toFixed\(2\)\} \$\{py\.toFixed\(2\)\}`/);
+assert.match(clientSource, /leaderboard-chart__point/);
+assert.match(clientSource, /leaderboard-chart__series-label/);
+assert.match(clientSource, /function renderHeatmaps\(entries\)/);
+assert.match(clientSource, /function paintHeatmapComparison\(canvas, heatmap, bounds, maxCount\)/);
+assert.match(clientSource, /function heatmapColumnsFromUrl\(\)/);
+assert.match(pagesSource, /id="leaderboard-heatmaps"/);
+assert.match(pagesSource, /data-heatmap-columns="2"[\s\S]*data-heatmap-columns="3"/);
 assert.match(themeSource, /\.leaderboard-chart__line/);
+assert.match(themeSource, /\.leaderboard-heatmaps__grid/);
+assert.match(themeSource, /\.leaderboard-heatmaps__grid\[data-columns="3"\]/);
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mazebench-leaderboard-"));
 const runId = "2026-09-01T12-00-00-000-fable51";
@@ -48,9 +57,12 @@ fs.writeFileSync(path.join(runDir, "favorite.json"), JSON.stringify({
   favorite: true,
   favorited_at: "2026-09-01T12:01:00.000Z"
 }));
+fs.writeFileSync(path.join(runDir, "initial-status.json"), JSON.stringify({
+  player: { x: 0, y: 0, elevation: 0 }
+}));
 fs.writeFileSync(path.join(runDir, "actions.jsonl"), [
-  { turn: 1, command_text: "up", status: { gem_count: 1, current_room: "level_HxI" } },
-  { turn: 2, command_text: "right", status: { gem_count: 2, current_room: "level_IxI" } }
+  { turn: 1, command_text: "up", status: { gem_count: 1, current_room: "level_HxI", player: { x: 1, y: 2 } } },
+  { turn: 2, command_text: "right", status: { gem_count: 2, current_room: "level_IxI", player: { x: 3, y: 4 } } }
 ].map((row) => JSON.stringify(row)).join("\n") + "\n");
 fs.writeFileSync(path.join(runDir, "agent-events.jsonl"), JSON.stringify({
   type: "result",
@@ -96,6 +108,10 @@ try {
   assert.equal(comparison.points.at(-1).api_cost_usd, comparison.usage.api_cost_usd);
   assert.ok(comparison.usage.api_cost_usd > 0);
   assert.equal(comparison.usage.approximate_timeline, true);
+  assert.equal(comparison.heatmap.total_visits, 3, "move zero and both action positions are counted");
+  assert.equal(comparison.heatmap.unique_cells, 3);
+  assert.equal(comparison.heatmap.rooms.length, 2);
+  assert.deepEqual(comparison.heatmap.cells, [[112, 128, 1], [113, 130, 1], [131, 132, 1]]);
 
   service.setRunFavorite(runId, false);
   assert.equal(service.getLeaderboardRun(runId), null, "unstarred runs leave the curated API");
